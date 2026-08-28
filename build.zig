@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const shaders = [_]Shader{
     .{ .name = "quad.vert", .glslang_stage = "vert", .shadercross_stage = "vertex" },
@@ -28,7 +29,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const sdl = b.dependency("sdl", .{ .target = target, .optimize = optimize });
+    const sdk = macosSdk(b, target);
+    const sdl = sdlDependency(b, target, optimize, sdk);
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -41,6 +43,19 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{ .name = "yaz", .root_module = exe_mod });
     b.installArtifact(exe);
 
+    if (sdk) |paths| {
+        // The frameworks SDL links against have to resolve when our executable
+        // links too, not just while SDL itself compiles.
+        exe_mod.addSystemIncludePath(paths.include);
+        exe_mod.addSystemFrameworkPath(paths.frameworks);
+        exe_mod.addLibraryPath(paths.lib);
+
+        const setup = b.addSystemCommand(&.{ "sh", b.pathFromRoot("vendor/setup-macos-sdk.sh") });
+        setup.has_side_effects = true;
+        sdl.artifact("SDL3").step.dependOn(&setup.step);
+        exe.step.dependOn(&setup.step);
+    }
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
@@ -52,6 +67,51 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+}
+
+const MacosSdk = struct {
+    include: std.Build.LazyPath,
+    frameworks: std.Build.LazyPath,
+    lib: std.Build.LazyPath,
+};
+
+/// Cross-compiling to macOS needs an SDK, which Zig does not ship. Returns null
+/// for other targets, and on a Mac, where the system SDK is found natively.
+fn macosSdk(b: *std.Build, target: std.Build.ResolvedTarget) ?MacosSdk {
+    switch (target.result.os.tag) {
+        .macos, .ios, .tvos, .watchos => {},
+        else => return null,
+    }
+    switch (builtin.os.tag) {
+        .macos, .ios, .tvos, .watchos => return null,
+        else => {},
+    }
+
+    // Fetched by vendor/setup-macos-sdk.sh, which the build depends on.
+    const root = b.pathFromRoot("vendor/macos-sdk");
+    return .{
+        .include = .{ .cwd_relative = b.pathJoin(&.{ root, "usr/include" }) },
+        .frameworks = .{ .cwd_relative = b.pathJoin(&.{ root, "System/Library/Frameworks" }) },
+        .lib = .{ .cwd_relative = b.pathJoin(&.{ root, "usr/lib" }) },
+    };
+}
+
+fn sdlDependency(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    sdk: ?MacosSdk,
+) *std.Build.Dependency {
+    const paths = sdk orelse {
+        return b.dependency("sdl", .{ .target = target, .optimize = optimize });
+    };
+    return b.dependency("sdl", .{
+        .target = target,
+        .optimize = optimize,
+        .system_include_path = paths.include,
+        .system_framework_path = paths.frameworks,
+        .library_path = paths.lib,
+    });
 }
 
 /// Compiles each shader to the target's bytecode format and makes the result
