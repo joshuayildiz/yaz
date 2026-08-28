@@ -1,0 +1,4 @@
+# LF everywhere, whatever core.autocrlf a clone happens to have. A CRLF shebang
+# is not a valid interpreter line, so the vendor/ scripts depend on this.
+* text=auto eol=lf
+*.sh text eol=lf
