@@ -38,6 +38,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe_mod.linkLibrary(sdl.artifact("SDL3"));
+
+    const freetype = b.dependency("freetype", .{ .target = target, .optimize = optimize });
+    exe_mod.linkLibrary(freetype.artifact("freetype"));
+
+    // Assets live outside the source tree, so `@embedFile` cannot name them by
+    // path; an import gives it a name it can reach.
+    exe_mod.addAnonymousImport("DejaVuSans.ttf", .{ .root_source_file = b.path("assets/DejaVuSans.ttf") });
+
     addShaders(b, exe_mod, shaderFormat(target.result.os.tag));
 
     const exe = b.addExecutable(.{ .name = "yaz", .root_module = exe_mod });

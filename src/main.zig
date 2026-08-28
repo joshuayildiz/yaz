@@ -5,6 +5,11 @@ const c = @cImport({
     @cInclude("SDL3/SDL.h");
 });
 
+const ft = @cImport({
+    @cInclude("ft2build.h");
+    @cInclude("freetype/freetype.h");
+});
+
 /// The build compiles shaders to exactly one bytecode format, chosen from the
 /// target. Declaring it here rather than probing at runtime also pins the
 /// backend: SDL can only pick one that accepts this format, so Windows gets
@@ -21,7 +26,12 @@ const shader_target: struct {
 const vertex_shader_code = @embedFile("quad.vert");
 const fragment_shader_code = @embedFile("quad.frag");
 
+/// Embedded rather than discovered on the system, so every platform renders
+/// the same pixels and there is no font-matching code to get wrong.
+const font_data = @embedFile("DejaVuSans.ttf");
+
 const atlas_size = 64;
+const glyph_pixel_size = 48;
 
 /// SDL reports failures out of band; this is only meaningful right after one.
 fn sdlError() []const u8 {
@@ -140,18 +150,52 @@ fn createPipeline(gpu: *c.SDL_GPUDevice, window: *c.SDL_Window) !*c.SDL_GPUGraph
     };
 }
 
-/// Stand-in for the glyph atlas: single channel, same format and upload path.
+/// Draws one glyph's coverage into a square, centred on its own ink so the
+/// result is visible without any layout. Real text positions glyphs by their
+/// bearings and advance instead; that arrives with shaping.
+fn rasterizeGlyph(codepoint: u32, pixels: *[atlas_size * atlas_size]u8) !void {
+    @memset(pixels, 0);
+
+    var library: ft.FT_Library = null;
+    if (ft.FT_Init_FreeType(&library) != 0) {
+        return error.FreetypeInit;
+    }
+    defer _ = ft.FT_Done_FreeType(library);
+
+    // From memory, not from a path: the font is part of the binary.
+    var face: ft.FT_Face = null;
+    if (ft.FT_New_Memory_Face(library, font_data, font_data.len, 0, &face) != 0) {
+        return error.FreetypeNewFace;
+    }
+    defer _ = ft.FT_Done_Face(face);
+
+    if (ft.FT_Set_Pixel_Sizes(face, 0, glyph_pixel_size) != 0) {
+        return error.FreetypeSetPixelSizes;
+    }
+    if (ft.FT_Load_Char(face, codepoint, ft.FT_LOAD_RENDER) != 0) {
+        return error.FreetypeLoadChar;
+    }
+
+    const bitmap = face.*.glyph.*.bitmap;
+    const width = @min(@as(usize, bitmap.width), atlas_size);
+    const rows = @min(@as(usize, bitmap.rows), atlas_size);
+    const left = (atlas_size - width) / 2;
+    const top = (atlas_size - rows) / 2;
+
+    // Rows are `pitch` bytes apart, which is not `width`: FreeType pads them.
+    const pitch: usize = @intCast(bitmap.pitch);
+    for (0..rows) |row| {
+        const source = bitmap.buffer + row * pitch;
+        const start = (top + row) * atlas_size + left;
+        @memcpy(pixels[start..][0..width], source[0..width]);
+    }
+}
+
+/// Stand-in for the glyph atlas: one glyph rather than many, but the same
+/// coverage format and upload path.
 fn createAtlas(gpu: *c.SDL_GPUDevice) !*c.SDL_GPUTexture {
     var pixels: [atlas_size * atlas_size]u8 = undefined;
-    for (0..atlas_size) |y| {
-        for (0..atlas_size) |x| {
-            // Solid block in the first rows and columns, so that a vertically
-            // flipped image is obvious rather than hidden by the symmetry.
-            const marker = x < atlas_size / 4 and y < atlas_size / 4;
-            const dark = (x / 8 + y / 8) % 2 == 0;
-            pixels[y * atlas_size + x] = if (marker) 0xff else if (dark) 0x20 else 0xe0;
-        }
-    }
+    try rasterizeGlyph('a', &pixels);
 
     const texture = c.SDL_CreateGPUTexture(gpu, &std.mem.zeroInit(c.SDL_GPUTextureCreateInfo, .{
         .type = c.SDL_GPU_TEXTURETYPE_2D,

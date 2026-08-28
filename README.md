@@ -7,8 +7,9 @@ macOS, and Windows.
 
 ## Status
 
-Early. Currently: a window, a GPU device, and a textured quad drawn from a
-single-channel atlas texture — the plumbing the glyph renderer will use.
+Early. Currently: a window, a GPU device, and one glyph rasterized by FreeType
+from the embedded font and drawn from a single-channel coverage texture — the
+plumbing the glyph renderer will use.
 
 Built and run on Linux, Windows and macOS. Building happens on a Linux or macOS
 host; Windows and macOS binaries are cross-compiled.
@@ -22,8 +23,8 @@ host; Windows and macOS binaries are cross-compiled.
 - Targeting macOS additionally needs `git` and a C++ compiler. See
   [macOS](#macos).
 
-SDL is built from source by the Zig build system and linked statically, so no
-system `-dev` packages are needed.
+SDL and FreeType are built from source by the Zig build system and linked
+statically, so no system `-dev` packages are needed.
 
 ## Build and run
 
@@ -100,6 +101,24 @@ only cross-compiling to it is.
 Apple's SDK is not ours to redistribute, and its licence contemplates use on
 Apple hardware. It is downloaded at build time from a third-party mirror rather
 than vendored, so nothing of Apple's enters the repository.
+
+## Fonts
+
+One font ships inside the binary: `assets/DejaVuSans.ttf`, embedded with
+`@embedFile` and rasterized by FreeType. There is no system font discovery, and
+there is not meant to be. Every platform then renders the same pixels from the
+same bytes, which makes rendering bugs reproducible and removes a whole class of
+platform-specific font-matching code.
+
+The cost is 759KB of binary. Subsetting to the ranges the editor actually draws
+would cut most of that if it ever matters.
+
+DejaVu Sans is under the Bitstream Vera licence, which permits redistribution;
+see `assets/DejaVuSans.LICENSE`.
+
+Proportional, not monospace — that choice is what makes shaping and a per-line
+layout cache necessary rather than optional, and it is the constraint the text
+pipeline is designed around.
 
 ## Shaders
 
