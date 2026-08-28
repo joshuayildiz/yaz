@@ -4,6 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const sdl = b.dependency("sdl", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "yaz",
         .root_module = b.createModule(.{
@@ -12,6 +17,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.linkLibrary(sdl.artifact("SDL3"));
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
