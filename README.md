@@ -9,8 +9,9 @@ macOS, and Windows.
 
 Early. Currently: a window, a GPU device, and lines of text shaped by HarfBuzz
 and drawn from a glyph atlas that FreeType fills as glyphs are asked for.
-Proportional and kerned. The text comes out of a gap buffer and you can type
-into it, though there is no caret yet and nowhere to put one but the end.
+Proportional and kerned, with a per-line layout cache so a keystroke reshapes
+one line rather than the screen. The text comes out of a gap buffer and you can
+type into it, though there is no caret yet and nowhere to put one but the end.
 
 Built and run on Linux, Windows and macOS. Building happens on a Linux or macOS
 host; Windows and macOS binaries are cross-compiled.
@@ -237,9 +238,54 @@ Both ways a glyph can fail to *reach* the atlas — no room, and FreeType refusi
 to rasterize it — panic instead. The font is compiled into the binary, so a
 glyph it will not rasterize is a broken build rather than bad input.
 
-Lines are reshaped on every redraw, which is more often than they change. The
-per-line layout cache that fixes it needs an editable buffer to invalidate
-against, and there is not one yet.
+### The layout cache
+
+Shaping is the expensive half of turning a line into pixels, and it depends on
+**the line's bytes and nothing else** — not on where the line sits. So each
+line's sprites are shaped once and kept, in coordinates of the line's own: x
+from where the line starts, y from its baseline. Placing them is then an add.
+
+That is what makes the cache survive an ordinary edit. Typing a newline at the
+top of the file moves every line below it down a row, but moves nothing within
+any of them; those lines are the same shaped lines at a different baseline. Had
+the cache been keyed by screen position, that edit would have invalidated the
+whole document — exactly backwards.
+
+Two things follow from it. The origin has to be a whole number of pixels, or the
+translation would change which subpixel variant each glyph points at; `layout`
+asserts that. And each line's baseline is rounded once for the line rather than
+once per glyph, which is the same answer for anything without a fractional
+vertical offset, meaning everything in this font.
+
+Invalidation is not a search. `Buffer.insert` and `Buffer.delete` already work
+out which line an edit landed in and how many lines it created or destroyed —
+they have to, to patch the line index — so they return it as an `Edit` and the
+cache gets the same splice the index got. Every other entry survives. The buffer
+never learns that shaping exists; the atlas never learns that a document does.
+
+Measured on a synthetic Latin document, ReleaseFast, native x86-64. This is all
+CPU work — HarfBuzz and FreeType — so no GPU enters into it:
+
+| lines | glyphs | before, every redraw | after, one keystroke | after, nothing changed |
+| ---: | ---: | ---: | ---: | ---: |
+| 20 | 1,125 | 55 µs | 4 µs | 1.1 µs |
+| 200 | 11,230 | 686 µs | 14 µs | 10 µs |
+| 2,000 | 112,297 | 7.0 ms | 130 µs | 120 µs |
+
+A screenful is 14× cheaper per keystroke and 50× cheaper per redraw. The first
+frame is 7–20% *slower*, since a cold line is now shaped into its own array and
+then copied into the frame's — the one case the cache cannot help and does have
+to pay for.
+
+What remains is that copy: at 2,000 lines it is essentially all of the 120 µs,
+about a nanosecond a glyph. It is also work spent on lines nobody can see, since
+the window holds twenty of them. Laying out only what is on screen is the next
+thing worth doing and the cache is what makes it possible, but it is not done
+yet.
+
+The cost is memory: 24 bytes a glyph, so 37KB for a screenful and 3.7MB for a
+2,000-line document. Nothing is evicted, for the same reason nothing is evicted
+from the atlas — and the same day will fix both.
 
 ### Drawing
 
@@ -352,9 +398,8 @@ are all step 13. And in-progress IME conversion — `SDL_EVENT_TEXT_EDITING`, th
 underlined preedit text a CJK input method shows before you commit it — is not
 drawn, because there is no caret to anchor it to.
 
-Every keystroke currently reshapes every line on screen. That is the cost step
-12's per-line layout cache exists to remove, and it needed an edit to invalidate
-against before it could be written.
+A keystroke reshapes the one line it landed in. See the layout cache above for
+how the rest are spared.
 
 ## Layout
 
@@ -362,7 +407,7 @@ against before it could be written.
 src/
   main.zig         # SDL setup, the window, the event loop, the document
   renderer.zig     # GPU device, pipeline, drawing
-  glyph_atlas.zig  # shaping, layout, rasterizing, atlas uploads
+  glyph_atlas.zig  # shaping, layout, the line cache, rasterizing, atlas uploads
   sdl.zig          # the one @cImport of SDL
   config.zig       # font file and size
 assets/

@@ -78,7 +78,7 @@ pub fn main(init: std.process.Init) !void {
                         dirty = true;
                     },
                     c.SDLK_BACKSPACE => {
-                        if (app.backspace()) dirty = true;
+                        if (try app.backspace()) dirty = true;
                     },
                     else => {},
                 },
@@ -106,17 +106,19 @@ const App = struct {
     }
 
     fn insert(self: *App, text: []const u8) !void {
-        try self.document.insert(self.cursor, text);
+        const edit = try self.document.insert(self.cursor, text);
+        try self.renderer.atlas.splice(edit.line, edit.removed, edit.added);
         self.cursor += text.len;
     }
 
     /// Deletes the character before the cursor, answering whether there was
     /// one.
-    fn backspace(self: *App) bool {
+    fn backspace(self: *App) !bool {
         const from = self.document.stepBack(self.cursor);
         if (from == self.cursor) return false;
 
-        self.document.delete(from, self.cursor - from);
+        const edit = self.document.delete(from, self.cursor - from);
+        try self.renderer.atlas.splice(edit.line, edit.removed, edit.added);
         self.cursor = from;
         return true;
     }
@@ -155,6 +157,18 @@ const sample_text =
     // Neither script is in DejaVu Sans, so these come back as .notdef.
     "\u{6f22}\u{5b57} \u{e17}\u{e35} \u{2014} not in this font\n" ++
     "iiiii mmmmm WWWWW ..... proportional, not monospace";
+
+/// What an edit did to the line index, so that anything else keyed by line can
+/// be spliced the same way rather than thrown away and rebuilt. Both counts are
+/// of lines after `line`.
+const Edit = struct {
+    /// The line the edit landed in. Its bytes changed; no other line's did.
+    line: usize,
+    /// Lines that stopped existing, their newlines having been deleted.
+    removed: usize,
+    /// Lines that came into being, from newlines in the inserted text.
+    added: usize,
+};
 
 /// How much room a reallocation leaves ahead of the text. Typing arrives one
 /// character at a time, and a buffer sized to fit exactly would reallocate on
@@ -231,9 +245,10 @@ const Buffer = struct {
     }
 
     /// Inserts `text` so that its first byte lands at `at`.
-    fn insert(self: *Buffer, at: usize, text: []const u8) !void {
+    fn insert(self: *Buffer, at: usize, text: []const u8) !Edit {
         std.debug.assert(at <= self.byteLen());
-        if (text.len == 0) return;
+        const line = self.lineAt(at);
+        if (text.len == 0) return .{ .line = line, .removed = 0, .added = 0 };
 
         // Both allocations happen before a byte is written, so failing here
         // leaves the document and its index exactly as they were.
@@ -245,19 +260,21 @@ const Buffer = struct {
         @memcpy(self.bytes[self.gap_start..][0..text.len], text);
         self.gap_start += text.len;
 
-        self.reindexInsert(at, text, added);
+        self.reindexInsert(line, at, text, added);
+        return .{ .line = line, .removed = 0, .added = added };
     }
 
     /// Deletes the `count` bytes starting at `at`. Cannot fail: the text stays
     /// where it is and the hole grows over it.
-    fn delete(self: *Buffer, at: usize, count: usize) void {
+    fn delete(self: *Buffer, at: usize, count: usize) Edit {
         std.debug.assert(at + count <= self.byteLen());
-        if (count == 0) return;
+        const line = self.lineAt(at);
+        if (count == 0) return .{ .line = line, .removed = 0, .added = 0 };
 
         self.moveGap(at);
         self.gap_end += count;
 
-        self.reindexDelete(at, count);
+        return .{ .line = line, .removed = self.reindexDelete(line, at, count), .added = 0 };
     }
 
     /// Line `index` without its newline. The result borrows from the buffer and
@@ -374,11 +391,11 @@ const Buffer = struct {
     /// newline inside it begins a line of its own. `added` is how many, counted
     /// by the caller so the room for them could be reserved before anything
     /// was written.
-    fn reindexInsert(self: *Buffer, at: usize, text: []const u8, added: usize) void {
+    fn reindexInsert(self: *Buffer, line: usize, at: usize, text: []const u8, added: usize) void {
         const starts = &self.starts;
         // Line starts at exactly `at` do not move: text inserted there becomes
         // the beginning of that line rather than the end of the one before.
-        const after = self.lineAt(at) + 1;
+        const after = line + 1;
 
         // One shift for all the new lines rather than one shift each, which
         // would make pasting a large block quadratic in its line count.
@@ -401,9 +418,10 @@ const Buffer = struct {
     /// A line start in `(at, at + count]` is one whose newline was inside the
     /// deleted range, so it stops being a line; what is left after the range
     /// shifts back by its length.
-    fn reindexDelete(self: *Buffer, at: usize, count: usize) void {
+    /// Answers how many lines stopped existing.
+    fn reindexDelete(self: *Buffer, line: usize, at: usize, count: usize) usize {
         const starts = &self.starts;
-        const first = self.lineAt(at) + 1;
+        const first = line + 1;
 
         var last = first;
         while (last < starts.items.len and starts.items[last] <= at + count) last += 1;
@@ -412,6 +430,7 @@ const Buffer = struct {
         starts.items.len -= last - first;
 
         for (starts.items[first..]) |*start| start.* -= count;
+        return last - first;
     }
 };
 
@@ -450,11 +469,11 @@ test "inserting reads back through the gap it leaves behind" {
 
     // Mid-line, so the gap ends up inside line 0 and reading it has to splice
     // the two halves back together.
-    try buffer.insert(5, ",");
+    _ = try buffer.insert(5, ",");
     try std.testing.expectEqualStrings("hello, world", try buffer.lineSlice(0));
 
-    try buffer.insert(0, ">> ");
-    try buffer.insert(buffer.byteLen(), "!");
+    _ = try buffer.insert(0, ">> ");
+    _ = try buffer.insert(buffer.byteLen(), "!");
     try std.testing.expectEqualStrings(">> hello, world!", try buffer.lineSlice(0));
 }
 
@@ -463,10 +482,10 @@ test "the gap moving back and forth does not disturb the text" {
     defer buffer.deinit();
 
     // Alternating ends, so every insert drags the gap across most of the text.
-    try buffer.insert(0, "1");
-    try buffer.insert(buffer.byteLen(), "2");
-    try buffer.insert(1, "3");
-    try buffer.insert(buffer.byteLen() - 1, "4");
+    _ = try buffer.insert(0, "1");
+    _ = try buffer.insert(buffer.byteLen(), "2");
+    _ = try buffer.insert(1, "3");
+    _ = try buffer.insert(buffer.byteLen() - 1, "4");
 
     try std.testing.expectEqualStrings("13abcdefghij42", try buffer.lineSlice(0));
 }
@@ -475,7 +494,7 @@ test "inserting a newline splits a line and shifts the ones after it" {
     var buffer = try Buffer.init(std.testing.allocator, "one\ntwo");
     defer buffer.deinit();
 
-    try buffer.insert(1, "\n");
+    _ = try buffer.insert(1, "\n");
     try std.testing.expectEqualSlices(usize, &.{ 0, 2, 5 }, buffer.starts.items);
     try std.testing.expectEqualStrings("o", try buffer.lineSlice(0));
     try std.testing.expectEqualStrings("ne", try buffer.lineSlice(1));
@@ -486,7 +505,7 @@ test "inserting at a line start belongs to that line, not the one before" {
     var buffer = try Buffer.init(std.testing.allocator, "one\ntwo");
     defer buffer.deinit();
 
-    try buffer.insert(4, "X");
+    _ = try buffer.insert(4, "X");
     try std.testing.expectEqualSlices(usize, &.{ 0, 4 }, buffer.starts.items);
     try std.testing.expectEqualStrings("one", try buffer.lineSlice(0));
     try std.testing.expectEqualStrings("Xtwo", try buffer.lineSlice(1));
@@ -496,7 +515,7 @@ test "pasting several lines indexes all of them at once" {
     var buffer = try Buffer.init(std.testing.allocator, "start\nend");
     defer buffer.deinit();
 
-    try buffer.insert(6, "a\nb\nc\n");
+    _ = try buffer.insert(6, "a\nb\nc\n");
     try std.testing.expectEqualSlices(usize, &.{ 0, 6, 8, 10, 12 }, buffer.starts.items);
     try std.testing.expectEqualStrings("start", try buffer.lineSlice(0));
     try std.testing.expectEqualStrings("a", try buffer.lineSlice(1));
@@ -509,7 +528,7 @@ test "deleting within a line leaves the index alone" {
     var buffer = try Buffer.init(std.testing.allocator, "one\ntwo\nthree");
     defer buffer.deinit();
 
-    buffer.delete(4, 2);
+    _ = buffer.delete(4, 2);
     try std.testing.expectEqualSlices(usize, &.{ 0, 4, 6 }, buffer.starts.items);
     try std.testing.expectEqualStrings("o", try buffer.lineSlice(1));
     try std.testing.expectEqualStrings("three", try buffer.lineSlice(2));
@@ -519,7 +538,7 @@ test "deleting a newline joins the lines it separated" {
     var buffer = try Buffer.init(std.testing.allocator, "one\ntwo\nthree");
     defer buffer.deinit();
 
-    buffer.delete(3, 1);
+    _ = buffer.delete(3, 1);
     try std.testing.expectEqual(2, buffer.lineCount());
     try std.testing.expectEqualSlices(usize, &.{ 0, 7 }, buffer.starts.items);
     try std.testing.expectEqualStrings("onetwo", try buffer.lineSlice(0));
@@ -531,7 +550,7 @@ test "deleting across several lines removes every start inside the range" {
     defer buffer.deinit();
 
     // From the middle of line 0 to the middle of line 3.
-    buffer.delete(2, 14);
+    _ = buffer.delete(2, 14);
     try std.testing.expectEqual(1, buffer.lineCount());
     try std.testing.expectEqualStrings("onur", try buffer.lineSlice(0));
 }
@@ -542,12 +561,12 @@ test "growing past the initial gap keeps both halves" {
 
     // Put the hole in the middle first. A new buffer keeps it at the end,
     // where reallocating has nothing behind it to carry across.
-    try buffer.insert(4, "!");
+    _ = try buffer.insert(4, "!");
 
     // Longer than the hole in one go, so this reallocates rather than filling
     // what it was given.
     const filler = "x" ** (min_gap + 100);
-    try buffer.insert(2, filler);
+    _ = try buffer.insert(2, filler);
 
     try std.testing.expectEqual(10 + filler.len, buffer.byteLen());
     const line = try buffer.lineSlice(0);
@@ -565,10 +584,10 @@ test "moving a nearly exhausted gap a long way does not smear the text" {
     // is longer than the hole is, which is the only time the source and the
     // destination of the move overlap.
     const filler = "-" ** (min_gap - 4);
-    try buffer.insert(head.len, filler);
+    _ = try buffer.insert(head.len, filler);
 
-    try buffer.insert(0, "<");
-    try buffer.insert(buffer.byteLen(), ">");
+    _ = try buffer.insert(0, "<");
+    _ = try buffer.insert(buffer.byteLen(), ">");
 
     const line = try buffer.lineSlice(0);
     try std.testing.expectEqual(head.len + filler.len + 2, line.len);
@@ -583,7 +602,7 @@ test "lines hands back every line at once" {
 
     // Puts the gap inside line 1, the case where one of them is spliced out of
     // scratch while the others point straight into the buffer.
-    try buffer.insert(5, "!");
+    _ = try buffer.insert(5, "!");
 
     const all = try buffer.lines();
     try std.testing.expectEqual(3, all.len);
@@ -609,7 +628,7 @@ test "stepping back reads through the gap" {
     defer buffer.deinit();
 
     // Leaves the gap in the middle of the character it just wrote.
-    try buffer.insert(1, "\u{e9}");
+    _ = try buffer.insert(1, "\u{e9}");
 
     try std.testing.expectEqual(3, buffer.stepBack(4));
     try std.testing.expectEqual(1, buffer.stepBack(3));
@@ -652,12 +671,12 @@ test "random edits agree with a plain array doing the same thing" {
         if (len == 0 or random.boolean()) {
             const at = random.uintAtMost(usize, len);
             const text = words[random.uintLessThan(usize, words.len)];
-            try buffer.insert(at, text);
+            _ = try buffer.insert(at, text);
             try model.insertSlice(gpa, at, text);
         } else {
             const at = random.uintLessThan(usize, len);
             const count = random.uintAtMost(usize, @min(len - at, 8));
-            buffer.delete(at, count);
+            _ = buffer.delete(at, count);
             model.replaceRangeAssumeCapacity(at, count, "");
         }
 
