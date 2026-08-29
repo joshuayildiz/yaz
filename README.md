@@ -244,9 +244,10 @@ against, and there is not one yet.
 
 ```
 src/
-  main.zig      # SDL setup, the window, the event loop, the document
-  renderer.zig  # GPU device, shaping, glyph atlas, drawing
-  config.zig    # font file and size
+  main.zig         # SDL setup, the window, the event loop, the document
+  renderer.zig     # GPU device, pipeline, drawing
+  glyph_atlas.zig  # shaping, layout, rasterizing, atlas uploads
+  config.zig       # font file and size
 assets/
   DejaVuSans.ttf
   shaders/
@@ -256,10 +257,17 @@ assets/
 the font file and its rasterisation size. `build.zig` imports it too, so the
 font path is stated once and the build embeds the file it names.
 
-`renderer.zig` owns the SDL `@cImport` and `main.zig` takes its SDL types from
-there. Two `@cImport` blocks that differ by so much as whitespace generate two
-unrelated sets of types, and a `*SDL_Window` from one will not pass as a
-`*SDL_Window` to the other.
+`glyph_atlas.zig` is one file because it is one pipeline. Shaping decides which
+glyphs exist, so it is the only thing that can say what to rasterize;
+rasterizing decides where they land in the atlas, so it is the only thing that
+can say what to sample. It hands `renderer.zig` a list of quads and their source
+rectangles, and the renderer knows nothing about glyph ids, subpixel offsets or
+FreeType.
+
+`renderer.zig` owns the SDL `@cImport`; `main.zig` and `glyph_atlas.zig` both
+take their SDL types from there. Two `@cImport` blocks that differ by so much as
+whitespace generate two unrelated sets of types, and a `*SDL_Window` from one
+will not pass as a `*SDL_Window` to the other.
 
 ## Shaders
 
