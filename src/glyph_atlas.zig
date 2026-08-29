@@ -88,12 +88,35 @@ pub const Sprite = extern struct {
     size: [2]f32,
 };
 
+/// A place the caret may sit on a line, and how far along the line that place
+/// is. One per cluster boundary shaping reported, plus one past the last glyph,
+/// in the order they appear.
+///
+/// Boundaries rather than characters, because shaping does not leave one per
+/// character. `ffi` is a single glyph covering three bytes and there is nowhere
+/// between them to put a caret; a space is a boundary with no glyph at all.
+/// Neither fact can be recovered from the sprites afterwards, which is why this
+/// is kept rather than derived.
+pub const Caret = struct {
+    /// Bytes from the start of the line.
+    offset: u32,
+
+    /// The pen position at that boundary, unrounded. Whole pixels are for what
+    /// gets drawn; this is a measurement, and rounding it here would make two
+    /// boundaries a third of a pixel apart into the same one.
+    x: f32,
+};
+
 /// One line's shaped sprites, held in coordinates of the line's own: x from
 /// where the line starts, y from its baseline. Nothing in here knows where the
 /// line sits on screen, which is what lets a line that only moved down keep its
 /// layout instead of being shaped again.
 pub const LineLayout = struct {
     sprites: std.ArrayList(Sprite) = .empty,
+
+    /// Where the caret may go on this line, kept because it comes out of the
+    /// same shaping pass the sprites do and costs nothing extra to record.
+    carets: std.ArrayList(Caret) = .empty,
 
     /// The length of the text this was shaped from. A cache that has drifted
     /// out of step with the document would otherwise draw the wrong line
@@ -131,6 +154,13 @@ pub const GlyphAtlas = struct {
     slots: []u16,
     glyphs: []Glyph,
     used: u16 = 0,
+
+    /// A square of the atlas that is opaque everywhere, and how large a
+    /// rectangle is allowed to sample it. It holds no glyph: it is there so a
+    /// filled rectangle can be drawn by the pipeline that draws glyphs, which
+    /// is how the caret gets on screen without a second pipeline, a second
+    /// draw call and a shader that knows what a caret is.
+    solid: struct { x: u16 = 0, y: u16 = 0, extent: u16 = 0 } = .{},
 
     /// A shelf packer: fill a row left to right, start a new row when the next
     /// glyph will not fit. Glyphs at one pixel size are close enough in height
@@ -184,7 +214,7 @@ pub const GlyphAtlas = struct {
         var shaper = try Shaper.init();
         errdefer shaper.deinit();
 
-        return .{
+        var self: GlyphAtlas = .{
             .gpa = gpa,
             .gpu = gpu,
             .library = library,
@@ -195,6 +225,51 @@ pub const GlyphAtlas = struct {
             .glyphs = glyphs,
             .ascent = fromFixed(face.*.size.*.metrics.ascender),
             .line_height = fromFixed(face.*.size.*.metrics.height),
+        };
+
+        // Reserved first, while the atlas is certainly empty. The errdefers
+        // above still cover everything the struct was built from; the only
+        // things this adds to are the two staging lists.
+        errdefer self.staging.deinit(gpa);
+        errdefer self.uploads.deinit(gpa);
+        try self.reserveSolid();
+
+        return self;
+    }
+
+    /// Fills the solid patch. Square at the line height, because the tallest
+    /// thing anyone draws this way is a caret spanning one line.
+    fn reserveSolid(self: *GlyphAtlas) !void {
+        const extent: u16 = @intFromFloat(@ceil(self.line_height));
+        // The atlas is empty and the patch is smaller than one glyph row, so
+        // this only fails if the atlas has been sized absurdly.
+        const placed = self.pack(extent, extent) orelse return error.AtlasFull;
+
+        const offset: u32 = @intCast(self.staging.items.len);
+        try self.staging.appendNTimes(self.gpa, 0xff, @as(usize, extent) * extent);
+        try self.uploads.append(self.gpa, .{
+            .x = placed.x,
+            .y = placed.y,
+            .width = extent,
+            .height = extent,
+            .offset = offset,
+        });
+
+        self.solid = .{ .x = placed.x, .y = placed.y, .extent = extent };
+    }
+
+    /// A filled rectangle as a sprite, so the caret is one more instance in the
+    /// frame's buffer rather than anything the renderer has to be told about.
+    pub fn solidQuad(self: *const GlyphAtlas, dest: [2]f32, extent: [2]f32) Sprite {
+        // One `size` serves both the quad and the region it samples, so a
+        // rectangle larger than the patch would sample the glyphs beside it.
+        const limit: f32 = @floatFromInt(self.solid.extent);
+        std.debug.assert(extent[0] <= limit and extent[1] <= limit);
+
+        return .{
+            .dest = dest,
+            .source = .{ @floatFromInt(self.solid.x), @floatFromInt(self.solid.y) },
+            .size = extent,
         };
     }
 
@@ -214,11 +289,20 @@ pub const GlyphAtlas = struct {
     /// screen, which is what lets the caller keep the answer.
     pub fn shapeLine(self: *GlyphAtlas, text: []const u8, entry: *LineLayout) !void {
         entry.sprites.clearRetainingCapacity();
+        entry.carets.clearRetainingCapacity();
 
         const shaped = self.shaper.shape(text);
         var pen: f32 = 0;
         for (shaped.infos, shaped.positions) |info, offset| {
             try self.request(info.codepoint);
+
+            // Cluster values only ever climb left to right, so the last entry
+            // is the only one this can be a repeat of. Several glyphs sharing a
+            // cluster -- a letter and the mark over it -- are one boundary, at
+            // the pen before the first of them.
+            if (entry.carets.items.len == 0 or entry.carets.getLast().offset != info.cluster) {
+                try entry.carets.append(self.gpa, .{ .offset = info.cluster, .x = pen });
+            }
 
             // The offset moves a glyph off the pen without moving the pen,
             // which is how marks land on the letters they belong to. Latin
@@ -238,6 +322,10 @@ pub const GlyphAtlas = struct {
                 .size = .{ @floatFromInt(g.width), @floatFromInt(g.height) },
             });
         }
+
+        // The end of the line is a place the caret goes and no glyph begins at
+        // it, so it is appended rather than met on the way through.
+        try entry.carets.append(self.gpa, .{ .offset = @intCast(text.len), .x = pen });
 
         entry.bytes = text.len;
         entry.shaped = true;
@@ -546,8 +634,9 @@ const Shaper = struct {
     }
 };
 
-/// How wide a run shapes to. Only the tests measure text so far; hit-testing
-/// (step 13) is what needs it in earnest, and needs it per cluster.
+/// How wide a run shapes to. Only the tests want this: hit-testing needs the
+/// width at each cluster rather than the total, and gets it from `shapeLine`,
+/// which is already walking the shaped run for the glyphs.
 fn shapedWidth(shaper: *Shaper, text: []const u8) f32 {
     var total: f32 = 0;
     for (shaper.shape(text).positions) |position| total += fromFixed(position.x_advance);
@@ -577,6 +666,24 @@ test "shaping returns one glyph per character for unkerned Latin" {
     // Cluster values are byte offsets into the text, which is what cursor
     // positions will eventually be compared against.
     for (shaped.infos, 0..) |info, i| try std.testing.expectEqual(@as(u32, @intCast(i)), info.cluster);
+}
+
+test "a ligature's characters share one cluster" {
+    var shaper = try Shaper.init();
+    defer shaper.deinit();
+
+    // "office" is six characters and four glyphs: f, f and i become one.
+    const shaped = shaper.shape("office");
+    try std.testing.expectEqual(4, shaped.infos.len);
+
+    // What the caret search depends on, and the reason it searches boundaries
+    // rather than characters. Clusters only ever climb, so the last one
+    // recorded is the only one a repeat can match; and the ligature reports the
+    // offset of its first character, leaving the two inside it with none of
+    // their own -- 2 and 3 appear nowhere here.
+    var clusters: [4]u32 = undefined;
+    for (shaped.infos, &clusters) |info, *cluster| cluster.* = info.cluster;
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 4, 5 }, &clusters);
 }
 
 /// FreeType reports most metrics in 26.6 fixed point: pixels times 64. So does
@@ -648,4 +755,3 @@ fn createAtlas(gpa: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUTexture
 
     return texture;
 }
-

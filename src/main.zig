@@ -86,6 +86,19 @@ pub fn main(init: std.process.Init) !void {
                     },
                     else => {},
                 },
+                // Where the caret goes is a question about the layout, so the
+                // view answers it; nothing here knows how wide a character is.
+                c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                    if (event.button.button == c.SDL_BUTTON_LEFT) {
+                        try app.view.moveCaretTo(
+                            &app.renderer.atlas,
+                            text_origin[0],
+                            text_origin[1],
+                            .{ event.button.x, event.button.y },
+                        );
+                        dirty = true;
+                    }
+                },
                 // Exposure belongs to the watcher, which has already drawn by
                 // the time the event arrives here; marking it would draw twice.
                 else => {},

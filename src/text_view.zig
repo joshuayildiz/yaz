@@ -10,9 +10,15 @@
 const std = @import("std");
 
 const glyph_atlas = @import("./glyph_atlas.zig");
+const Caret = glyph_atlas.Caret;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 const Sprite = glyph_atlas.Sprite;
+
+/// How wide the caret is drawn. Two pixels rather than one: a hairline is the
+/// first thing to disappear on a dense display, and the caret is the one mark
+/// on screen that has to be found without looking for it.
+const caret_width = 2;
 
 pub const TextView = struct {
     gpa: std.mem.Allocator,
@@ -23,8 +29,10 @@ pub const TextView = struct {
     /// bytes, so it is done once and kept.
     lines: std.ArrayList(LineLayout) = .empty,
 
-    /// Where the next character lands, as a byte offset into the document.
-    /// Nothing draws it yet; the caret and clicking to move it are step 13.
+    /// Where the next character lands, as a byte offset into the document, and
+    /// where the caret is drawn. One number rather than a line and a column:
+    /// every edit already speaks in offsets, and a pair would be a second thing
+    /// to keep in step for no gain.
     cursor: usize,
 
     /// The frame's glyphs, placed on screen. Cleared rather than freed between
@@ -42,7 +50,10 @@ pub const TextView = struct {
 
     pub fn deinit(self: *TextView) void {
         self.sprites.deinit(self.gpa);
-        for (self.lines.items) |*entry| entry.sprites.deinit(self.gpa);
+        for (self.lines.items) |*entry| {
+            entry.sprites.deinit(self.gpa);
+            entry.carets.deinit(self.gpa);
+        }
         self.lines.deinit(self.gpa);
         self.document.deinit();
     }
@@ -85,6 +96,12 @@ pub const TextView = struct {
         // no longer line up with the lines they describe.
         std.debug.assert(self.lines.items.len == count);
 
+        const caret_line = self.document.lineAt(self.cursor);
+        // Filled in as that line comes round, so the caret is placed from the
+        // same shaped layout as the glyphs it sits between rather than from a
+        // second pass that could disagree with them.
+        var caret: ?Sprite = null;
+
         var baseline = top + atlas.ascent;
         for (self.lines.items, 0..) |*entry, index| {
             if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
@@ -100,10 +117,48 @@ pub const TextView = struct {
                 });
             }
 
+            if (index == caret_line) {
+                const offset = self.cursor - self.document.lineStart(index);
+                caret = atlas.solidQuad(.{
+                    x + @round(caretX(entry.carets.items, offset)),
+                    origin[1] - @round(atlas.ascent),
+                }, .{ caret_width, @round(atlas.line_height) });
+            }
+
             baseline += atlas.line_height;
         }
 
+        // Every offset falls on a line, so the loop met the caret's.
+        std.debug.assert(caret != null);
+        // Last, so it draws over the glyph it sits beside rather than under it.
+        try self.sprites.append(self.gpa, caret.?);
+
         return self.sprites.items;
+    }
+
+    /// Puts the caret where the window was clicked. `x` and `top` are the same
+    /// origin the layout was placed at, and `point` is in the same coordinates.
+    ///
+    /// A click below the last line or right of a line's end is not a miss: it
+    /// lands on the nearest place the caret can go, which is what makes
+    /// dragging past the end of the text behave.
+    pub fn moveCaretTo(self: *TextView, atlas: *GlyphAtlas, x: f32, top: f32, point: [2]f32) !void {
+        // Nothing has been laid out, so there is nothing on screen to click.
+        if (self.lines.items.len == 0) return;
+
+        const row = (point[1] - top) / atlas.line_height;
+        const index = if (row < 0)
+            0
+        else
+            @min(self.document.lineCount() - 1, @as(usize, @intFromFloat(row)));
+
+        // Shaped on demand rather than assumed: a click always lands on a line
+        // that was drawn, but the row arithmetic clamps, and what it clamps to
+        // is a line that need not have been.
+        const entry = &self.lines.items[index];
+        if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
+
+        self.cursor = self.document.lineStart(index) + caretOffset(entry.carets.items, point[0] - x);
     }
 
     fn splice(self: *TextView, edit: Edit) !void {
@@ -136,7 +191,10 @@ fn spliceLines(
     // different length from the document it describes.
     try cache.ensureUnusedCapacity(gpa, added);
 
-    for (cache.items[first..][0..removed]) |*entry| entry.sprites.deinit(gpa);
+    for (cache.items[first..][0..removed]) |*entry| {
+        entry.sprites.deinit(gpa);
+        entry.carets.deinit(gpa);
+    }
     std.mem.copyForwards(LineLayout, cache.items[first..], cache.items[first + removed ..]);
     cache.items.len -= removed;
 
@@ -150,6 +208,201 @@ fn spliceLines(
 
     // The line the edit landed in kept its place and lost its text.
     cache.items[line].shaped = false;
+}
+
+/// Four lines, each holding a sprite and a caret, so that dropping an entry
+/// without freeing it shows up as a leak rather than as nothing at all.
+fn testCache(gpa: std.mem.Allocator) !std.ArrayList(LineLayout) {
+    var cache: std.ArrayList(LineLayout) = .empty;
+    for ([_]usize{ 10, 20, 30, 40 }) |bytes| {
+        var entry: LineLayout = .{ .bytes = bytes, .shaped = true };
+        try entry.sprites.append(gpa, .{ .dest = .{ 0, 0 }, .source = .{ 0, 0 }, .size = .{ 1, 1 } });
+        try entry.carets.append(gpa, .{ .offset = 0, .x = 0 });
+        try cache.append(gpa, entry);
+    }
+    return cache;
+}
+
+fn testFree(gpa: std.mem.Allocator, cache: *std.ArrayList(LineLayout)) void {
+    for (cache.items) |*entry| {
+        entry.sprites.deinit(gpa);
+        entry.carets.deinit(gpa);
+    }
+    cache.deinit(gpa);
+}
+
+test "an edit inside one line leaves every other line's layout alone" {
+    const gpa = std.testing.allocator;
+    var cache = try testCache(gpa);
+    defer testFree(gpa, &cache);
+
+    try spliceLines(gpa, &cache, 1, 0, 0);
+
+    try std.testing.expectEqual(4, cache.items.len);
+    try std.testing.expectEqualSlices(usize, &.{ 10, 20, 30, 40 }, &.{
+        cache.items[0].bytes, cache.items[1].bytes, cache.items[2].bytes, cache.items[3].bytes,
+    });
+    try std.testing.expectEqualSlices(bool, &.{ true, false, true, true }, &.{
+        cache.items[0].shaped, cache.items[1].shaped, cache.items[2].shaped, cache.items[3].shaped,
+    });
+}
+
+test "splitting a line shifts the ones below it without reshaping them" {
+    const gpa = std.testing.allocator;
+    var cache = try testCache(gpa);
+    defer testFree(gpa, &cache);
+
+    // A newline typed into line 1.
+    try spliceLines(gpa, &cache, 1, 0, 1);
+
+    try std.testing.expectEqual(5, cache.items.len);
+    try std.testing.expect(!cache.items[1].shaped);
+    try std.testing.expect(!cache.items[2].shaped);
+    // Lines 2 and 3 are the same shaped lines, one index further down.
+    try std.testing.expectEqual(30, cache.items[3].bytes);
+    try std.testing.expect(cache.items[3].shaped);
+    try std.testing.expectEqual(40, cache.items[4].bytes);
+    try std.testing.expect(cache.items[4].shaped);
+}
+
+test "joining two lines drops one entry and reshapes the survivor" {
+    const gpa = std.testing.allocator;
+    var cache = try testCache(gpa);
+    defer testFree(gpa, &cache);
+
+    // Backspace at the start of line 2, joining it onto line 1.
+    try spliceLines(gpa, &cache, 1, 1, 0);
+
+    try std.testing.expectEqual(3, cache.items.len);
+    try std.testing.expectEqual(10, cache.items[0].bytes);
+    try std.testing.expect(!cache.items[1].shaped);
+    try std.testing.expectEqual(40, cache.items[2].bytes);
+    try std.testing.expect(cache.items[2].shaped);
+}
+
+test "deleting across lines collapses them onto the one the edit started in" {
+    const gpa = std.testing.allocator;
+    var cache = try testCache(gpa);
+    defer testFree(gpa, &cache);
+
+    try spliceLines(gpa, &cache, 0, 3, 0);
+
+    try std.testing.expectEqual(1, cache.items.len);
+    try std.testing.expect(!cache.items[0].shaped);
+}
+
+/// How far along a line the caret sits, given an offset into that line. The
+/// direction the caret is drawn from.
+///
+/// Cluster boundaries are not character boundaries: `ffi` is one glyph covering
+/// three bytes, so the two characters inside it have no boundary of their own.
+/// An offset that lands there is placed by dividing the cluster's width across
+/// its bytes -- an approximation, and one that stops being reachable at all once
+/// the cursor moves by graphemes rather than by characters, which is the same
+/// change that makes backspacing over an accent take one press instead of two.
+fn caretX(carets: []const Caret, offset: usize) f32 {
+    // Shaping always leaves the end of the line, even for an empty one.
+    std.debug.assert(carets.len > 0);
+    std.debug.assert(offset <= carets[carets.len - 1].offset);
+
+    var low: usize = 0;
+    var high: usize = carets.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        if (carets[mid].offset <= offset) low = mid + 1 else high = mid;
+    }
+
+    // The first boundary is at offset 0, so something always matched.
+    const at = carets[low - 1];
+    if (at.offset == offset) return at.x;
+
+    const next = carets[low];
+    const into: f32 = @floatFromInt(offset - at.offset);
+    const across: f32 = @floatFromInt(next.offset - at.offset);
+    return at.x + (next.x - at.x) * into / across;
+}
+
+/// Which offset in a line a click at `target` means. The direction a mouse is
+/// answered in.
+///
+/// Nearest boundary rather than the one before, so clicking the right half of a
+/// character puts the caret after it. Getting this wrong is not subtly wrong:
+/// every click would feel one character behind.
+fn caretOffset(carets: []const Caret, target: f32) usize {
+    std.debug.assert(carets.len > 0);
+
+    // Sorted by x because the pen only moves right, which is true here by
+    // decision: shaping is left to right and there is no bidi pass.
+    var low: usize = 0;
+    var high: usize = carets.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        if (carets[mid].x < target) low = mid + 1 else high = mid;
+    }
+
+    if (low == carets.len) return carets[carets.len - 1].offset;
+    if (low == 0) return carets[0].offset;
+
+    const before = carets[low - 1];
+    const after = carets[low];
+    return if (target - before.x < after.x - target) before.offset else after.offset;
+}
+
+/// What `shapeLine` leaves for "off ice": one boundary per character up to the
+/// ligature, which covers three bytes and has none inside it, then the space and
+/// the two letters after, then the end of the line.
+const test_carets = [_]Caret{
+    .{ .offset = 0, .x = 0 },
+    .{ .offset = 1, .x = 10 },
+    .{ .offset = 2, .x = 25 },
+    .{ .offset = 3, .x = 32 },
+    .{ .offset = 4, .x = 62 },
+    .{ .offset = 7, .x = 92 },
+    .{ .offset = 8, .x = 100 },
+};
+
+test "an offset on a boundary is placed exactly on it" {
+    try std.testing.expectEqual(@as(f32, 0), caretX(&test_carets, 0));
+    try std.testing.expectEqual(@as(f32, 32), caretX(&test_carets, 3));
+    try std.testing.expectEqual(@as(f32, 92), caretX(&test_carets, 7));
+    // The end of the line is a boundary like any other.
+    try std.testing.expectEqual(@as(f32, 100), caretX(&test_carets, 8));
+}
+
+test "an offset inside a ligature is placed across its width" {
+    // Bytes 4, 5 and 6 are one glyph 30 wide. Nothing shaping said puts a
+    // caret between them, so its width is divided instead.
+    try std.testing.expectEqual(@as(f32, 72), caretX(&test_carets, 5));
+    try std.testing.expectEqual(@as(f32, 82), caretX(&test_carets, 6));
+}
+
+test "an empty line puts the caret at its start" {
+    const carets = [_]Caret{.{ .offset = 0, .x = 0 }};
+    try std.testing.expectEqual(@as(f32, 0), caretX(&carets, 0));
+}
+
+test "clicking takes the nearer boundary, not the one before" {
+    // The first character spans 0 to 10. Just past its middle puts the caret
+    // after it, and just short of it leaves the caret in front.
+    try std.testing.expectEqual(1, caretOffset(&test_carets, 5.1));
+    try std.testing.expectEqual(0, caretOffset(&test_carets, 4.9));
+}
+
+test "clicking inside a ligature cannot land in the middle of it" {
+    // Two thirds of the way through, and still one of its two ends.
+    try std.testing.expectEqual(7, caretOffset(&test_carets, 82));
+    try std.testing.expectEqual(4, caretOffset(&test_carets, 70));
+}
+
+test "clicking off the end of a line lands at the end nearest the click" {
+    try std.testing.expectEqual(8, caretOffset(&test_carets, 400));
+    try std.testing.expectEqual(0, caretOffset(&test_carets, -400));
+}
+
+test "the two directions agree at every boundary" {
+    for (test_carets) |caret| {
+        try std.testing.expectEqual(caret.offset, caretOffset(&test_carets, caretX(&test_carets, caret.offset)));
+    }
 }
 
 /// What an edit did to the line index, so that anything else keyed by line can
@@ -276,6 +529,14 @@ const Buffer = struct {
         else
             self.byteLen();
         return self.slice(from, to);
+    }
+
+    /// Where line `index` begins, as an offset into the document. What turns an
+    /// offset within a line -- which is what layout and hit-testing both speak
+    /// in -- back into one the document understands.
+    fn lineStart(self: *const Buffer, index: usize) usize {
+        std.debug.assert(index < self.lineCount());
+        return self.starts.items[index];
     }
 
     /// How long line `index` is, without reading it. A line whose layout is
@@ -682,4 +943,3 @@ test "random edits agree with a plain array doing the same thing" {
         try std.testing.expectEqual(index, buffer.lineCount());
     }
 }
-

@@ -10,8 +10,8 @@ macOS, and Windows.
 Early. Currently: a window, a GPU device, and lines of text shaped by HarfBuzz
 and drawn from a glyph atlas that FreeType fills as glyphs are asked for.
 Proportional and kerned, with a per-line layout cache so a keystroke reshapes
-one line rather than the screen. The text comes out of a gap buffer and you can
-type into it, though there is no caret yet and nowhere to put one but the end.
+one line rather than the screen. The text comes out of a gap buffer, there is a
+caret, and you can type into it or click to put the caret somewhere else.
 
 Built and run on Linux, Windows and macOS. Building happens on a Linux or macOS
 host; Windows and macOS binaries are cross-compiled.
@@ -396,15 +396,73 @@ followed by a combining acute is two characters and takes two presses. Getting
 that right needs Unicode tables this project does not carry yet, and it is not
 worth the dependency until there is cursor movement to be wrong about.
 
-Two things are deliberately missing. There is no caret: the cursor is a byte
-offset that starts at the end of the document and only moves by typing, and
-drawing it, moving it with the arrow keys and putting it somewhere with a click
-are all step 13. And in-progress IME conversion — `SDL_EVENT_TEXT_EDITING`, the
-underlined preedit text a CJK input method shows before you commit it — is not
-drawn, because there is no caret to anchor it to.
+Two things are deliberately missing. The caret moves by typing and by clicking,
+and by nothing else: **there are no arrow keys yet.** And in-progress IME
+conversion — `SDL_EVENT_TEXT_EDITING`, the underlined preedit text a CJK input
+method shows before you commit it — is not drawn.
 
 A keystroke reshapes the one line it landed in. See the layout cache above for
 how the rest are spared.
+
+## The caret
+
+The cursor is **one byte offset into the document**, not a line and a column.
+Every edit already speaks in offsets, and a pair would be a second thing to keep
+in step for nothing gained.
+
+Turning that into a place on screen is the part proportional text makes real
+work. There is no column width to multiply by, so the offset has to be measured
+against the shaped line — and it cannot be measured against the *glyphs* of that
+line, because shaping is not one glyph per character in either direction. A
+space produces no glyph at all. `ffi` produces one glyph for three characters.
+
+So shaping records the answer while it has it. Alongside the sprites, each
+cached line keeps its **caret positions**: one per cluster boundary HarfBuzz
+reported, plus one past the last glyph, in the line's own coordinates. It comes
+out of the loop that was already walking the shaped run, and it is the only
+thing that survives shaping which the sprites cannot reconstruct.
+
+Both directions are then a binary search over that array:
+
+- **Drawing the caret** looks up the offset and takes the position.
+- **A click** looks up the position and takes the **nearest** boundary, not the
+  one before it — clicking the right half of a character puts the caret after
+  it. Getting that backwards is not subtly wrong; every click feels one
+  character behind.
+
+A click below the last line or right of a line's end is not a miss. It lands on
+the nearest place the caret can go, which is what makes clicking into empty
+space behave the way it does everywhere else.
+
+### Inside a ligature
+
+Cluster boundaries are not character boundaries. `ffi` is one glyph covering
+three bytes, so the two characters inside it have no boundary of their own, and
+an offset that lands there has no position to be given.
+
+It is reachable. Type `fai`, put the caret between the `a` and the `i`, and
+delete the `a`: what is left is `fi`, one ligature, with the caret inside it.
+The width of the cluster is divided across its bytes, which puts the caret
+somewhere sensible rather than snapping it to the ligature's start.
+
+That is an approximation, and the honest description of it is that it stops
+mattering rather than gets fixed: once the cursor moves by graphemes instead of
+by characters it will not land there at all. That is the same change that makes
+backspacing over an accent take one press instead of two.
+
+### Drawing it
+
+The caret is a filled rectangle, and the pipeline only knows how to draw quads
+that sample the glyph atlas. So the atlas holds **one patch that is not a
+glyph**: a square of full coverage, sized to the line height, reserved before
+any glyph is rasterised. A quad pointed at it comes out solid.
+
+That makes the caret one more instance in the frame's sprite buffer. No second
+pipeline, no second draw call, no shader that knows what a caret is. It is
+appended last so it draws over the glyph beside it rather than under it.
+
+The caret does not blink. Blinking means waking up twice a second forever to
+change nothing, which is the opposite of what the event loop is for.
 
 ## Layout
 

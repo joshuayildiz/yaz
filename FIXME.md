@@ -25,8 +25,17 @@ is text that looks soft and roughly half the intended physical size.
 **Left alone because** the flag is the small part. Setting it means window
 coordinates and pixels stop being the same number, and every place that treats
 them as interchangeable has to be found: the viewport, the pen origin, the
-baseline step, and later the caret and hit-testing. That is worth doing once,
-after the layout code exists, rather than twice.
+baseline step, the caret, and hit-testing. That is worth doing once, after the
+layout code exists, rather than twice.
+
+Hit-testing has since joined that list and is the clearest instance of it.
+`SDL_EVENT_MOUSE_BUTTON_DOWN` reports window coordinates, and
+`TextView.moveCaretTo` compares them against a layout placed in pixels. On every
+display those two are the same number, and on a Retina one they differ by the
+scale factor, so clicks would land at half the distance from the origin they
+should. Scaling by `SDL_GetWindowPixelDensity` at the call site would paper over
+it and would be one more place to find later; the fix is the audit, not the
+patch.
 
 **To assess:** run on a Retina Mac and compare a nearest-neighbour zoom of a
 stem against the same text on Windows. Hard-edged means the assumption held;
