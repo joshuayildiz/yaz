@@ -74,7 +74,11 @@ const Glyph = struct {
 /// One glyph resolved to what the GPU needs: where the quad goes on screen and
 /// where to sample it from. Both are in whole pixels -- the fraction of the pen
 /// position went into choosing which subpixel variant to point at.
-pub const Sprite = struct {
+///
+/// `extern` because an array of these is copied to the GPU as it stands and
+/// indexed by the vertex shader; the field order here is the struct declared
+/// there. renderer.zig holds the test that says so.
+pub const Sprite = extern struct {
     dest: [2]f32,
     source: [2]f32,
     size: [2]f32,

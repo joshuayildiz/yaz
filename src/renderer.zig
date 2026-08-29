@@ -6,6 +6,7 @@ const c = sdl.c;
 
 const glyph_atlas = @import("./glyph_atlas.zig");
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
+const Sprite = glyph_atlas.Sprite;
 
 /// The build compiles shaders to exactly one bytecode format, chosen from the
 /// target. Declaring it here rather than probing at runtime also pins the
@@ -23,16 +24,18 @@ const shader_target: struct {
 const vertex_shader_code = @embedFile("quad.vert");
 const fragment_shader_code = @embedFile("quad.frag");
 
-/// Matches the uniform block in quad.vert.glsl. Every field is a vec2, which
-/// has the same size and alignment in std140 as it does here.
-const Quad = extern struct {
-    dest_origin: [2]f32,
-    dest_size: [2]f32,
-    source_origin: [2]f32,
-    source_size: [2]f32,
+/// Matches the uniform block in quad.vert.glsl: what every glyph in the frame
+/// shares, as against what the sprite buffer carries per glyph. Both fields are
+/// vec2, which has the same size and alignment in std140 as it does here.
+const Frame = extern struct {
     viewport: [2]f32,
     atlas_size: [2]f32,
 };
+
+/// Sprites the buffer holds before it has to grow. A screenful at this font
+/// size is a couple of thousand glyphs, so this is a startup cost and not a
+/// per-frame one.
+const initial_sprites = 4096;
 
 pub const Renderer = struct {
     gpa: std.mem.Allocator,
@@ -41,6 +44,14 @@ pub const Renderer = struct {
     pipeline: *c.SDL_GPUGraphicsPipeline,
     sampler: *c.SDL_GPUSampler,
     atlas: GlyphAtlas,
+
+    /// The frame's sprites as the vertex shader indexes them, and the staging
+    /// buffer they are written through. Both are kept and grown rather than
+    /// created per frame: a redraw maps and fills them, which is the whole of
+    /// what it costs to draw a screenful.
+    instances: *c.SDL_GPUBuffer,
+    transfer: *c.SDL_GPUTransferBuffer,
+    capacity: u32,
 
     /// Creates the device as well: the shader format the build compiled for
     /// decides which backend SDL is able to pick, so the choice belongs with
@@ -87,6 +98,12 @@ pub const Renderer = struct {
             std.log.err("SDL_CreateGPUSampler: {s}", .{sdl.lastError()});
             return error.SdlCreateSampler;
         };
+        errdefer c.SDL_ReleaseGPUSampler(gpu, sampler);
+
+        const instances = try createInstanceBuffer(gpu, initial_sprites);
+        errdefer c.SDL_ReleaseGPUBuffer(gpu, instances);
+
+        const transfer = try createTransferBuffer(gpu, initial_sprites);
 
         return .{
             .gpa = gpa,
@@ -95,10 +112,15 @@ pub const Renderer = struct {
             .pipeline = pipeline,
             .sampler = sampler,
             .atlas = atlas,
+            .instances = instances,
+            .transfer = transfer,
+            .capacity = initial_sprites,
         };
     }
 
     pub fn deinit(self: *Renderer) void {
+        c.SDL_ReleaseGPUTransferBuffer(self.gpu, self.transfer);
+        c.SDL_ReleaseGPUBuffer(self.gpu, self.instances);
         self.atlas.deinit();
         c.SDL_ReleaseGPUSampler(self.gpu, self.sampler);
         c.SDL_ReleaseGPUGraphicsPipeline(self.gpu, self.pipeline);
@@ -115,9 +137,20 @@ pub const Renderer = struct {
         try self.atlas.layout(lines, 48, 48);
         try self.atlas.upload();
 
+        const count: u32 = @intCast(self.atlas.sprites.items.len);
+        try self.reserve(count);
+
         const cmd = c.SDL_AcquireGPUCommandBuffer(self.gpu) orelse {
             std.log.err("SDL_AcquireGPUCommandBuffer: {s}", .{sdl.lastError()});
             return error.SdlAcquireCommandBuffer;
+        };
+
+        // Before the swapchain rather than after: this is work that does not
+        // need a frame to be handed back first, so doing it here keeps it out
+        // of the wait.
+        if (count > 0) self.stage(cmd) catch |err| {
+            _ = c.SDL_SubmitGPUCommandBuffer(cmd);
+            return err;
         };
 
         var swapchain: ?*c.SDL_GPUTexture = null;
@@ -152,9 +185,20 @@ pub const Renderer = struct {
             .sampler = self.sampler,
         });
         c.SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+        const instances = [_]?*c.SDL_GPUBuffer{self.instances};
+        c.SDL_BindGPUVertexStorageBuffers(pass, 0, &instances, 1);
 
-        const viewport: [2]f32 = .{ @floatFromInt(width), @floatFromInt(height) };
-        self.draw(cmd, pass, viewport);
+        // The whole frame, in one call: where each glyph goes was decided
+        // during layout and is in the buffer the shader reads, so nothing is
+        // left to say per glyph.
+        if (count > 0) {
+            const frame: Frame = .{
+                .viewport = .{ @floatFromInt(width), @floatFromInt(height) },
+                .atlas_size = glyph_atlas.size,
+            };
+            c.SDL_PushGPUVertexUniformData(cmd, 0, &frame, @sizeOf(Frame));
+            c.SDL_DrawGPUPrimitives(pass, 4, count, 0, 0);
+        }
 
         c.SDL_EndGPURenderPass(pass);
 
@@ -164,34 +208,87 @@ pub const Renderer = struct {
         }
     }
 
-    /// One quad per sprite. Everything about where they go was decided during
-    /// layout; this only hands each one to the GPU.
-    fn draw(
-        self: *Renderer,
-        cmd: *c.SDL_GPUCommandBuffer,
-        pass: *c.SDL_GPURenderPass,
-        viewport: [2]f32,
-    ) void {
-        for (self.atlas.sprites.items) |sprite| {
-            const quad: Quad = .{
-                .dest_origin = sprite.dest,
-                .dest_size = sprite.size,
-                .source_origin = sprite.source,
-                .source_size = sprite.size,
-                .viewport = viewport,
-                .atlas_size = glyph_atlas.size,
-            };
-            c.SDL_PushGPUVertexUniformData(cmd, 0, &quad, @sizeOf(Quad));
-            c.SDL_DrawGPUPrimitives(pass, 4, 1, 0, 0);
-        }
+    /// Grows both buffers to hold `count` sprites, doing nothing when they
+    /// already do. Doubling rather than fitting exactly, so a document that
+    /// grows a glyph at a time does not reallocate a glyph at a time.
+    fn reserve(self: *Renderer, count: u32) !void {
+        if (count <= self.capacity) return;
+
+        var capacity = self.capacity;
+        while (capacity < count) capacity *= 2;
+
+        const instances = try createInstanceBuffer(self.gpu, capacity);
+        errdefer c.SDL_ReleaseGPUBuffer(self.gpu, instances);
+        const transfer = try createTransferBuffer(self.gpu, capacity);
+
+        // Releasing does not free anything a frame in flight is still reading;
+        // SDL holds the resource until the GPU is done with it.
+        c.SDL_ReleaseGPUBuffer(self.gpu, self.instances);
+        c.SDL_ReleaseGPUTransferBuffer(self.gpu, self.transfer);
+
+        self.instances = instances;
+        self.transfer = transfer;
+        self.capacity = capacity;
     }
+
+    /// Copies the frame's sprites into the buffer the vertex shader reads.
+    /// Both halves cycle: the previous frame may still be in flight, and
+    /// waiting for it would put a stall in the middle of a redraw.
+    fn stage(self: *Renderer, cmd: *c.SDL_GPUCommandBuffer) !void {
+        const bytes = std.mem.sliceAsBytes(self.atlas.sprites.items);
+
+        const mapped = c.SDL_MapGPUTransferBuffer(self.gpu, self.transfer, true) orelse {
+            std.log.err("SDL_MapGPUTransferBuffer: {s}", .{sdl.lastError()});
+            return error.SdlMapTransferBuffer;
+        };
+        @memcpy(@as([*]u8, @ptrCast(mapped))[0..bytes.len], bytes);
+        c.SDL_UnmapGPUTransferBuffer(self.gpu, self.transfer);
+
+        const source = std.mem.zeroInit(c.SDL_GPUTransferBufferLocation, .{
+            .transfer_buffer = self.transfer,
+        });
+        const destination = std.mem.zeroInit(c.SDL_GPUBufferRegion, .{
+            .buffer = self.instances,
+            .size = @as(u32, @intCast(bytes.len)),
+        });
+
+        const pass = c.SDL_BeginGPUCopyPass(cmd);
+        c.SDL_UploadToGPUBuffer(pass, &source, &destination, true);
+        c.SDL_EndGPUCopyPass(pass);
+    }
+};
+
+fn createInstanceBuffer(gpu: *c.SDL_GPUDevice, capacity: u32) !*c.SDL_GPUBuffer {
+    return c.SDL_CreateGPUBuffer(gpu, &std.mem.zeroInit(c.SDL_GPUBufferCreateInfo, .{
+        .usage = c.SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+        .size = capacity * @sizeOf(Sprite),
+    })) orelse {
+        std.log.err("SDL_CreateGPUBuffer: {s}", .{sdl.lastError()});
+        return error.SdlCreateBuffer;
+    };
+}
+
+fn createTransferBuffer(gpu: *c.SDL_GPUDevice, capacity: u32) !*c.SDL_GPUTransferBuffer {
+    return c.SDL_CreateGPUTransferBuffer(gpu, &std.mem.zeroInit(c.SDL_GPUTransferBufferCreateInfo, .{
+        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size = capacity * @sizeOf(Sprite),
+    })) orelse {
+        std.log.err("SDL_CreateGPUTransferBuffer: {s}", .{sdl.lastError()});
+        return error.SdlCreateTransferBuffer;
+    };
+}
+
+/// What a shader binds, which SDL needs told because bytecode does not say.
+const Resources = struct {
+    samplers: u32 = 0,
+    storage_buffers: u32 = 0,
+    uniform_buffers: u32 = 0,
 };
 
 fn createShader(
     gpu: *c.SDL_GPUDevice,
     stage: c.SDL_GPUShaderStage,
-    num_samplers: u32,
-    num_uniform_buffers: u32,
+    resources: Resources,
     code: []const u8,
 ) !*c.SDL_GPUShader {
     return c.SDL_CreateGPUShader(gpu, &std.mem.zeroInit(c.SDL_GPUShaderCreateInfo, .{
@@ -200,8 +297,9 @@ fn createShader(
         .entrypoint = shader_target.entrypoint,
         .format = shader_target.format,
         .stage = stage,
-        .num_samplers = num_samplers,
-        .num_uniform_buffers = num_uniform_buffers,
+        .num_samplers = resources.samplers,
+        .num_storage_buffers = resources.storage_buffers,
+        .num_uniform_buffers = resources.uniform_buffers,
     })) orelse {
         std.log.err("SDL_CreateGPUShader: {s}", .{sdl.lastError()});
         return error.SdlCreateShader;
@@ -209,10 +307,15 @@ fn createShader(
 }
 
 fn createPipeline(gpu: *c.SDL_GPUDevice, window: *c.SDL_Window) !*c.SDL_GPUGraphicsPipeline {
-    const vertex = try createShader(gpu, c.SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, vertex_shader_code);
+    const vertex = try createShader(gpu, c.SDL_GPU_SHADERSTAGE_VERTEX, .{
+        .storage_buffers = 1,
+        .uniform_buffers = 1,
+    }, vertex_shader_code);
     defer c.SDL_ReleaseGPUShader(gpu, vertex);
 
-    const fragment = try createShader(gpu, c.SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0, fragment_shader_code);
+    const fragment = try createShader(gpu, c.SDL_GPU_SHADERSTAGE_FRAGMENT, .{
+        .samplers = 1,
+    }, fragment_shader_code);
     defer c.SDL_ReleaseGPUShader(gpu, fragment);
 
     const color_target = std.mem.zeroInit(c.SDL_GPUColorTargetDescription, .{
@@ -242,6 +345,17 @@ fn createPipeline(gpu: *c.SDL_GPUDevice, window: *c.SDL_Window) !*c.SDL_GPUGraph
         std.log.err("SDL_CreateGPUGraphicsPipeline: {s}", .{sdl.lastError()});
         return error.SdlCreatePipeline;
     };
+}
+
+// The sprite array is handed to the GPU as it stands, so the Zig struct and the
+// GLSL one have to agree byte for byte. std430 gives a struct of three vec2 an
+// alignment of 8 and a stride of 24, and nothing else here warns if that stops
+// matching.
+test "Sprite is laid out as the vertex shader reads it" {
+    try std.testing.expectEqual(24, @sizeOf(Sprite));
+    try std.testing.expectEqual(0, @offsetOf(Sprite, "dest"));
+    try std.testing.expectEqual(8, @offsetOf(Sprite, "source"));
+    try std.testing.expectEqual(16, @offsetOf(Sprite, "size"));
 }
 
 test {

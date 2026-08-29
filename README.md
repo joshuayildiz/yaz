@@ -240,6 +240,33 @@ Lines are reshaped on every redraw, which is more often than they change. The
 per-line layout cache that fixes it needs an editable buffer to invalidate
 against, and there is not one yet.
 
+### Drawing
+
+A frame is one draw call, whatever is on screen. The vertex shader builds each
+quad's four corners from `gl_VertexIndex` and reads everything that differs
+between glyphs — where it lands, where to sample it, how big it is — out of a
+storage buffer indexed by `gl_InstanceIndex`. There is no vertex buffer, and
+nothing is sent per glyph:
+
+```
+SDL_DrawGPUPrimitives(pass, 4, glyph_count, 0, 0);
+```
+
+What is left in the uniform block is what the whole frame shares: the viewport
+and the atlas size.
+
+The sprite array is copied to the GPU exactly as `glyph_atlas.zig` built it, so
+the Zig struct and the one declared in the shader have to agree byte for byte.
+std430 gives three `vec2` a stride of 24, which is what the Zig `extern struct`
+lays out; a test asserts the size and the field offsets, because nothing else
+would notice the day they stop matching.
+
+The GPU buffer and the staging buffer behind it are created once and grown by
+doubling, never per frame. A redraw maps the staging buffer, writes the frame's
+sprites into it, and copies them across in a copy pass before the swapchain is
+acquired — work that does not need a frame handed back first, so it is done
+before the wait rather than after it.
+
 ## Layout
 
 ```
