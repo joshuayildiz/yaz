@@ -9,8 +9,8 @@ macOS, and Windows.
 
 Early. Currently: a window, a GPU device, and lines of text shaped by HarfBuzz
 and drawn from a glyph atlas that FreeType fills as glyphs are asked for.
-Proportional and kerned. The text on screen comes out of a gap buffer, which
-nothing types into yet.
+Proportional and kerned. The text comes out of a gap buffer and you can type
+into it, though there is no caret yet and nowhere to put one but the end.
 
 Built and run on Linux, Windows and macOS. Building happens on a Linux or macOS
 host; Windows and macOS binaries are cross-compiled.
@@ -325,6 +325,36 @@ Nothing types into any of this yet. Correctness rests on unit tests plus a
 randomized one that replays several thousand edits against a plain array holding
 the same document the obvious way, comparing the text and every line after each
 one.
+
+## Typing
+
+Text arrives as **finished characters, not keys**. `SDL_StartTextInput` puts the
+window into text-input mode, and what comes back through
+`SDL_EVENT_TEXT_INPUT` is UTF-8 that the platform's input method has already
+resolved: a dead key and the letter after it arrive as the one accented
+character they compose to, and a CJK conversion arrives as the characters it was
+converted into. None of that is our code, which is most of the reason SDL is
+here.
+
+Return and backspace are not text and do not arrive as any, so they come from
+`SDL_EVENT_KEY_DOWN` instead.
+
+Backspace removes **a whole UTF-8 sequence rather than a byte** — one press
+takes off `é` or `漢` entire. It is not yet a whole grapheme cluster: `e`
+followed by a combining acute is two characters and takes two presses. Getting
+that right needs Unicode tables this project does not carry yet, and it is not
+worth the dependency until there is cursor movement to be wrong about.
+
+Two things are deliberately missing. There is no caret: the cursor is a byte
+offset that starts at the end of the document and only moves by typing, and
+drawing it, moving it with the arrow keys and putting it somewhere with a click
+are all step 13. And in-progress IME conversion — `SDL_EVENT_TEXT_EDITING`, the
+underlined preedit text a CJK input method shows before you commit it — is not
+drawn, because there is no caret to anchor it to.
+
+Every keystroke currently reshapes every line on screen. That is the cost step
+12's per-line layout cache exists to remove, and it needed an edit to invalidate
+against before it could be written.
 
 ## Layout
 

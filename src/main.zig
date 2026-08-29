@@ -19,9 +19,20 @@ pub fn main(init: std.process.Init) !void {
 
     std.log.info("video driver: {s}", .{std.mem.span(c.SDL_GetCurrentVideoDriver())});
 
+    // Text arrives as finished characters rather than keys. The platform's
+    // input method gets the keystrokes first, so a dead key, a compose
+    // sequence or a CJK conversion has already become the character it means
+    // by the time it reaches us.
+    if (!c.SDL_StartTextInput(window)) {
+        std.log.err("SDL_StartTextInput: {s}", .{sdl.lastError()});
+        return error.SdlStartTextInput;
+    }
+    defer _ = c.SDL_StopTextInput(window);
+
     var app: App = .{
         .renderer = try Renderer.init(init.gpa, window),
         .document = try Buffer.init(init.gpa, sample_text),
+        .cursor = sample_text.len,
     };
     defer app.renderer.deinit();
     defer app.document.deinit();
@@ -55,8 +66,22 @@ pub fn main(init: std.process.Init) !void {
         while (true) {
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
-                // Nothing else changes the picture yet. Typing will.
                 c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => dirty = true,
+                c.SDL_EVENT_TEXT_INPUT => {
+                    try app.insert(std.mem.span(event.text.text));
+                    dirty = true;
+                },
+                // Return and backspace are not text and do not arrive as any.
+                c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
+                    c.SDLK_RETURN => {
+                        try app.insert("\n");
+                        dirty = true;
+                    },
+                    c.SDLK_BACKSPACE => {
+                        if (app.backspace()) dirty = true;
+                    },
+                    else => {},
+                },
                 // Exposure belongs to the watcher, which has already drawn by
                 // the time the event arrives here; marking it would draw twice.
                 else => {},
@@ -66,14 +91,34 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-/// The document and the thing that draws it, together because the event watch
-/// needs both from behind one `void *`.
+/// The document, where typing goes into it, and the thing that draws it --
+/// together because the event watch needs them from behind one `void *`.
 const App = struct {
     renderer: Renderer,
     document: Buffer,
 
+    /// Where the next character lands, as a byte offset into the document.
+    /// Nothing draws it yet; the caret and clicking to move it are step 13.
+    cursor: usize,
+
     fn redraw(self: *App) !void {
         try self.renderer.present(try self.document.lines());
+    }
+
+    fn insert(self: *App, text: []const u8) !void {
+        try self.document.insert(self.cursor, text);
+        self.cursor += text.len;
+    }
+
+    /// Deletes the character before the cursor, answering whether there was
+    /// one.
+    fn backspace(self: *App) bool {
+        const from = self.document.stepBack(self.cursor);
+        if (from == self.cursor) return false;
+
+        self.document.delete(from, self.cursor - from);
+        self.cursor = from;
+        return true;
     }
 };
 
@@ -239,6 +284,32 @@ const Buffer = struct {
             self.views.appendAssumeCapacity(try self.lineSlice(index));
         }
         return self.views.items;
+    }
+
+    /// The offset one character before `offset`, or `offset` itself at the
+    /// start of the document.
+    ///
+    /// A whole UTF-8 sequence, because half a character is not something the
+    /// document can hold. Not yet a whole grapheme cluster: `e` followed by a
+    /// combining acute is two of these, and backspacing over it takes two
+    /// presses. Getting that right needs the Unicode tables `zg` carries, and
+    /// it is not worth the dependency until cursor movement exists to be wrong
+    /// about.
+    fn stepBack(self: *const Buffer, offset: usize) usize {
+        var at = offset;
+        while (at > 0) {
+            at -= 1;
+            // Continuation bytes are 10xxxxxx; anything else begins a
+            // character.
+            if (self.byteAt(at) & 0xc0 != 0x80) break;
+        }
+        return at;
+    }
+
+    fn byteAt(self: *const Buffer, offset: usize) u8 {
+        std.debug.assert(offset < self.byteLen());
+        const gap = self.gap_end - self.gap_start;
+        return if (offset < self.gap_start) self.bytes[offset] else self.bytes[offset + gap];
     }
 
     /// The line `offset` falls on: the last one starting at or before it.
@@ -519,6 +590,30 @@ test "lines hands back every line at once" {
     try std.testing.expectEqualStrings("one", all[0]);
     try std.testing.expectEqualStrings("t!wo", all[1]);
     try std.testing.expectEqualStrings("three", all[2]);
+}
+
+test "stepping back moves over a character, not a byte" {
+    var buffer = try Buffer.init(std.testing.allocator, "a\u{e9}\u{6f22}");
+    defer buffer.deinit();
+
+    // One byte, then two, then three.
+    try std.testing.expectEqual(6, buffer.byteLen());
+    try std.testing.expectEqual(3, buffer.stepBack(6));
+    try std.testing.expectEqual(1, buffer.stepBack(3));
+    try std.testing.expectEqual(0, buffer.stepBack(1));
+    try std.testing.expectEqual(0, buffer.stepBack(0));
+}
+
+test "stepping back reads through the gap" {
+    var buffer = try Buffer.init(std.testing.allocator, "ab");
+    defer buffer.deinit();
+
+    // Leaves the gap in the middle of the character it just wrote.
+    try buffer.insert(1, "\u{e9}");
+
+    try std.testing.expectEqual(3, buffer.stepBack(4));
+    try std.testing.expectEqual(1, buffer.stepBack(3));
+    try std.testing.expectEqual(0, buffer.stepBack(1));
 }
 
 test "lineAt finds the line an offset falls on" {
