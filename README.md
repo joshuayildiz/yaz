@@ -213,10 +213,28 @@ a quarter of a pixel the difference stops being visible.
 
 The texture is 1024×1024 single-channel — a megabyte. The sample text's 46
 distinct glyphs occupy 82 of those rows, so the ceiling is somewhere near 500
-glyphs. Nothing is ever evicted; past that point a glyph is dropped, with a
-warning naming it, and the text draws with a gap of the right width rather than
-with everything after it shifted. A CJK document would want a second page or
-eviction rather than a larger number here.
+glyphs, and a CJK document reaches it long before a Latin one does.
+
+Nothing is ever evicted, and **running out is fatal**: it panics, naming the
+glyph, its size, and how many glyphs were already in.
+
+```
+panic: glyph atlas is full: no room for glyph 28 at 17x23 in 256x256, 41 glyphs in
+```
+
+Crashing beats carrying on without the glyph, which would read as a renderer
+bug rather than a full atlas. `renderer.zig` carries a TODO at that point with
+the two ways out: a larger texture, or growing one at runtime.
+
+### Glyphs that are not there
+
+A character the font has no glyph for draws as **`.notdef`** — glyph zero, which
+every TrueType font defines for exactly this. No code produces it: shaping hands
+back glyph zero, and the atlas rasterizes it like any other glyph.
+
+Both ways a glyph can fail to *reach* the atlas — no room, and FreeType refusing
+to rasterize it — panic instead. The font is compiled into the binary, so a
+glyph it will not rasterize is a broken build rather than bad input.
 
 Lines are reshaped on every redraw, which is more often than they change. The
 per-line layout cache that fixes it needs an editable buffer to invalidate

@@ -92,6 +92,8 @@ const sample_text = [_][]const u8{
     // The second of these is an e followed by a combining acute, which shaping
     // composes into the same single glyph as the first.
     "caf\u{e9} and cafe\u{301} \u{2014} composed and precomposed",
+    // Neither script is in DejaVu Sans, so these come back as .notdef.
+    "\u{6f22}\u{5b57} \u{e17}\u{e35} \u{2014} not in this font",
     "iiiii mmmmm WWWWW ..... proportional, not monospace",
 };
 

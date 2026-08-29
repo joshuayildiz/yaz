@@ -70,9 +70,6 @@ const max_slots = 1024;
 /// `Font.slots` holds one of these per glyph the font defines, so most entries
 /// stay `no_slot` forever.
 const no_slot = std.math.maxInt(u16);
-/// Asked for, and it cannot be atlased: no room left, or FreeType refused it.
-/// Distinct from `no_slot` so the failure is not retried on every redraw.
-const slot_unavailable = no_slot - 1;
 
 /// SDL reports failures out of band; this is only meaningful right after one.
 pub fn sdlError() []const u8 {
@@ -191,10 +188,10 @@ const Font = struct {
         // Not a glyph this face defines, or already decided one way or another.
         if (id >= self.slots.len or self.slots[id] != no_slot) return;
 
+        // `max_slots` is set past what the texture can hold, so the atlas
+        // should always run out first.
         if (self.used == max_slots) {
-            std.log.warn("atlas is out of slots; glyph {d} will not draw", .{id});
-            self.slots[id] = slot_unavailable;
-            return;
+            std.debug.panic("glyph atlas is out of slots at {d}, asked for glyph {d}", .{ max_slots, id });
         }
 
         const slot = self.used;
@@ -209,9 +206,9 @@ const Font = struct {
             ft.FT_Set_Transform(self.face, null, &delta);
 
             if (ft.FT_Load_Glyph(self.face, id, ft.FT_LOAD_RENDER) != 0) {
-                std.log.warn("FreeType cannot render glyph {d}", .{id});
-                self.slots[id] = slot_unavailable;
-                return;
+                // The font is compiled in, so a glyph it will not rasterise
+                // is a broken build rather than bad input.
+                std.debug.panic("FreeType cannot render glyph {d}", .{id});
             }
             const rendered = self.face.*.glyph;
             const bitmap = rendered.*.bitmap;
@@ -225,11 +222,17 @@ const Font = struct {
 
             const width: u16 = @intCast(bitmap.width);
             const height: u16 = @intCast(bitmap.rows);
-            const placed = self.pack(width, height) orelse {
-                std.log.warn("atlas is full; glyph {d} will not draw", .{id});
-                self.slots[id] = slot_unavailable;
-                return;
-            };
+            // TODO: fixed size, no eviction, so a document with more distinct
+            // glyphs than fit lands here -- CJK long before Latin. Either raise
+            // `atlas_width` and `atlas_height`, which moves the wall, or grow
+            // at runtime: allocate a larger texture, re-run the shelf packer
+            // over the ids already in `slots`, and re-rasterise each into it.
+            // FreeType stays open for the life of the font, so growing needs no
+            // CPU copy of the atlas kept around for it.
+            const placed = self.pack(width, height) orelse std.debug.panic(
+                "glyph atlas is full: no room for glyph {d} at {d}x{d} in {d}x{d}, {d} glyphs in",
+                .{ id, width, height, atlas_width, atlas_height, self.used },
+            );
 
             // Rows sit `pitch` bytes apart, which is not `width`: FreeType pads
             // them, and copying the buffer whole would shear the glyph. What
@@ -339,9 +342,12 @@ const Font = struct {
     }
 
     fn glyph(self: *const Font, id: u32, subpixel: usize) ?Glyph {
-        if (id >= self.slots.len) return null;
+        // Laying a glyph out requests it, and a request that could not be met
+        // panicked there.
+        std.debug.assert(id < self.slots.len);
         const slot = self.slots[id];
-        if (slot == no_slot or slot == slot_unavailable) return null;
+        std.debug.assert(slot != no_slot);
+
         const found = self.glyphs[glyphIndex(slot, subpixel)];
         // A space rasterises to nothing; there is no quad to draw for it.
         return if (found.width == 0) null else found;
