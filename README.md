@@ -8,8 +8,9 @@ macOS, and Windows.
 ## Status
 
 Early. Currently: a window, a GPU device, and lines of text shaped by HarfBuzz
-and drawn from a glyph atlas that FreeType rasterizes at startup. Proportional
-and kerned, but there is no buffer yet and nothing to type into.
+and drawn from a glyph atlas that FreeType fills as glyphs are asked for.
+Proportional and kerned. The text on screen comes out of a gap buffer, which
+nothing types into yet.
 
 Built and run on Linux, Windows and macOS. Building happens on a Linux or macOS
 host; Windows and macOS binaries are cross-compiled.
@@ -266,6 +267,64 @@ doubling, never per frame. A redraw maps the staging buffer, writes the frame's
 sprites into it, and copies them across in a copy pass before the swapchain is
 acquired — work that does not need a frame handed back first, so it is done
 before the wait rather than after it.
+
+## The document
+
+Text lives in a **gap buffer**: one contiguous allocation with a hole in it,
+kept wherever the last edit happened.
+
+```
+The quick[                    ]brown fox
+^ text    ^ gap               ^ text
+```
+
+Inserting writes into the hole and shrinks it. Deleting grows the hole over the
+bytes next to it — they stay where they are and stop being part of the document.
+Both are a write and a bounds change: constant time, no allocation, nothing
+shifted.
+
+Editing somewhere else moves the hole there first, which is one `memmove` of the
+text in between and is the only operation here that is not constant time. That
+is the bet the structure makes, and it is a good one for an editor: editing is
+local, so the distance is usually a few characters. A jump across the whole file
+is a single pass at memory bandwidth, not a data structure to maintain.
+
+A rope or a piece table wins past roughly 100MB, where that `memmove` starts to
+dominate. Below it they lose on every operation that matters, paying with
+pointer chasing, per-node headers and cache misses to walk a tree. Huge files
+are out of scope, so the gap buffer is the faster structure here and a fraction
+of the code. The interface it is used through — `insert`, `delete`, `lineSlice`,
+`byteLen` — says nothing about how it stores anything, so that judgement can be
+revisited without the renderer noticing.
+
+### The line index
+
+Alongside it is a flat array of byte offsets: where each line starts.
+
+```
+starts = [0, 41, 78, 112, ...]
+```
+
+This has to exist because nothing else can find a line. A monospace editor
+computes `y = line * cell_height` and never asks where a line begins; with
+proportional text there is no cell width and lines are variable-length byte
+strings, so locating line 300 without an index means counting newlines from the
+start of the file, on every redraw, for every line.
+
+It is patched on each edit rather than rebuilt. Inserting shifts the starts
+after the insertion along by the length inserted and adds one for each newline
+in it; deleting drops the starts whose newline was inside the range and shifts
+what is left back. The offsets ignore the gap, so they stay correct as it moves,
+and a lookup translates by one comparison and an add.
+
+A line that happens to contain the gap is not contiguous and cannot be handed
+back as a slice, so it is copied out first. Only one line can contain the gap,
+which is why one scratch buffer serves all of them.
+
+Nothing types into any of this yet. Correctness rests on unit tests plus a
+randomized one that replays several thousand edits against a plain array holding
+the same document the obvious way, comparing the text and every line after each
+one.
 
 ## Layout
 
