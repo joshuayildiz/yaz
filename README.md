@@ -247,6 +247,7 @@ src/
   main.zig         # SDL setup, the window, the event loop, the document
   renderer.zig     # GPU device, pipeline, drawing
   glyph_atlas.zig  # shaping, layout, rasterizing, atlas uploads
+  sdl.zig          # the one @cImport of SDL
   config.zig       # font file and size
 assets/
   DejaVuSans.ttf
@@ -264,10 +265,11 @@ can say what to sample. It hands `renderer.zig` a list of quads and their source
 rectangles, and the renderer knows nothing about glyph ids, subpixel offsets or
 FreeType.
 
-`renderer.zig` owns the SDL `@cImport`; `main.zig` and `glyph_atlas.zig` both
-take their SDL types from there. Two `@cImport` blocks that differ by so much as
-whitespace generate two unrelated sets of types, and a `*SDL_Window` from one
-will not pass as a `*SDL_Window` to the other.
+`sdl.zig` exists so there is exactly one `@cImport` of SDL. Two blocks that
+differ by so much as whitespace generate two unrelated sets of types, and a
+`*SDL_Window` from one will not pass as a `*SDL_Window` to the other. Keeping it
+in a file of its own also keeps the imports acyclic: everything points at
+`sdl.zig` and it points at nothing.
 
 ## Shaders
 

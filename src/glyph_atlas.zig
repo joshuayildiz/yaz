@@ -10,12 +10,9 @@
 
 const std = @import("std");
 
-/// SDL types come from renderer.zig rather than from a second `@cImport` here.
-/// Two blocks that differ by so much as whitespace generate two unrelated sets
-/// of types, and a `*SDL_GPUDevice` from one will not pass as a
-/// `*SDL_GPUDevice` to the other.
-const c = @import("./renderer.zig").c;
-const sdlError = @import("./renderer.zig").sdlError;
+const sdl = @import("./sdl.zig");
+const c = sdl.c;
+
 const config = @import("./config.zig");
 
 const ft = @cImport({
@@ -356,20 +353,20 @@ pub const GlyphAtlas = struct {
             .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
             .size = @as(u32, @intCast(self.staging.items.len)),
         })) orelse {
-            std.log.err("SDL_CreateGPUTransferBuffer: {s}", .{sdlError()});
+            std.log.err("SDL_CreateGPUTransferBuffer: {s}", .{sdl.lastError()});
             return error.SdlCreateTransferBuffer;
         };
         defer c.SDL_ReleaseGPUTransferBuffer(gpu, transfer);
 
         const mapped = c.SDL_MapGPUTransferBuffer(gpu, transfer, false) orelse {
-            std.log.err("SDL_MapGPUTransferBuffer: {s}", .{sdlError()});
+            std.log.err("SDL_MapGPUTransferBuffer: {s}", .{sdl.lastError()});
             return error.SdlMapTransferBuffer;
         };
         @memcpy(@as([*]u8, @ptrCast(mapped))[0..self.staging.items.len], self.staging.items);
         c.SDL_UnmapGPUTransferBuffer(gpu, transfer);
 
         const cmd = c.SDL_AcquireGPUCommandBuffer(gpu) orelse {
-            std.log.err("SDL_AcquireGPUCommandBuffer: {s}", .{sdlError()});
+            std.log.err("SDL_AcquireGPUCommandBuffer: {s}", .{sdl.lastError()});
             return error.SdlAcquireCommandBuffer;
         };
         const pass = c.SDL_BeginGPUCopyPass(cmd);
@@ -396,7 +393,7 @@ pub const GlyphAtlas = struct {
         c.SDL_EndGPUCopyPass(pass);
 
         if (!c.SDL_SubmitGPUCommandBuffer(cmd)) {
-            std.log.err("SDL_SubmitGPUCommandBuffer: {s}", .{sdlError()});
+            std.log.err("SDL_SubmitGPUCommandBuffer: {s}", .{sdl.lastError()});
             return error.SdlSubmit;
         }
     }
@@ -595,7 +592,7 @@ fn createAtlas(gpa: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUTexture
         .layer_count_or_depth = 1,
         .num_levels = 1,
     })) orelse {
-        std.log.err("SDL_CreateGPUTexture: {s}", .{sdlError()});
+        std.log.err("SDL_CreateGPUTexture: {s}", .{sdl.lastError()});
         return error.SdlCreateTexture;
     };
     errdefer c.SDL_ReleaseGPUTexture(gpu, texture);
@@ -608,20 +605,20 @@ fn createAtlas(gpa: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUTexture
         .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
         .size = @as(u32, @intCast(blank.len)),
     })) orelse {
-        std.log.err("SDL_CreateGPUTransferBuffer: {s}", .{sdlError()});
+        std.log.err("SDL_CreateGPUTransferBuffer: {s}", .{sdl.lastError()});
         return error.SdlCreateTransferBuffer;
     };
     defer c.SDL_ReleaseGPUTransferBuffer(gpu, transfer);
 
     const mapped = c.SDL_MapGPUTransferBuffer(gpu, transfer, false) orelse {
-        std.log.err("SDL_MapGPUTransferBuffer: {s}", .{sdlError()});
+        std.log.err("SDL_MapGPUTransferBuffer: {s}", .{sdl.lastError()});
         return error.SdlMapTransferBuffer;
     };
     @memcpy(@as([*]u8, @ptrCast(mapped))[0..blank.len], blank);
     c.SDL_UnmapGPUTransferBuffer(gpu, transfer);
 
     const cmd = c.SDL_AcquireGPUCommandBuffer(gpu) orelse {
-        std.log.err("SDL_AcquireGPUCommandBuffer: {s}", .{sdlError()});
+        std.log.err("SDL_AcquireGPUCommandBuffer: {s}", .{sdl.lastError()});
         return error.SdlAcquireCommandBuffer;
     };
     const pass = c.SDL_BeginGPUCopyPass(cmd);
@@ -639,7 +636,7 @@ fn createAtlas(gpa: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUTexture
     c.SDL_UploadToGPUTexture(pass, &source, &destination, false);
     c.SDL_EndGPUCopyPass(pass);
     if (!c.SDL_SubmitGPUCommandBuffer(cmd)) {
-        std.log.err("SDL_SubmitGPUCommandBuffer: {s}", .{sdlError()});
+        std.log.err("SDL_SubmitGPUCommandBuffer: {s}", .{sdl.lastError()});
         return error.SdlSubmit;
     }
 

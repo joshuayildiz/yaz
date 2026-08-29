@@ -1,14 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// main.zig takes its SDL types from here rather than running its own
-/// `@cImport`: two blocks that differ by so much as whitespace generate two
-/// unrelated sets of types, and a `*SDL_Window` from one will not pass as a
-/// `*SDL_Window` to the other.
-pub const c = @cImport({
-    @cInclude("SDL3/SDL.h");
-});
-
+const sdl = @import("./sdl.zig");
+const c = sdl.c;
 
 const glyph_atlas = @import("./glyph_atlas.zig");
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
@@ -28,11 +22,6 @@ const shader_target: struct {
 
 const vertex_shader_code = @embedFile("quad.vert");
 const fragment_shader_code = @embedFile("quad.frag");
-
-/// SDL reports failures out of band; this is only meaningful right after one.
-pub fn sdlError() []const u8 {
-    return std.mem.span(c.SDL_GetError());
-}
 
 /// Matches the uniform block in quad.vert.glsl. Every field is a vec2, which
 /// has the same size and alignment in std140 as it does here.
@@ -58,13 +47,13 @@ pub const Renderer = struct {
     /// the shaders rather than with the caller.
     pub fn init(gpa: std.mem.Allocator, window: *c.SDL_Window) !Renderer {
         const gpu = c.SDL_CreateGPUDevice(shader_target.format, false, null) orelse {
-            std.log.err("SDL_CreateGPUDevice: {s}", .{sdlError()});
+            std.log.err("SDL_CreateGPUDevice: {s}", .{sdl.lastError()});
             return error.SdlCreateGpuDevice;
         };
         errdefer c.SDL_DestroyGPUDevice(gpu);
 
         if (!c.SDL_ClaimWindowForGPUDevice(gpu, window)) {
-            std.log.err("SDL_ClaimWindowForGPUDevice: {s}", .{sdlError()});
+            std.log.err("SDL_ClaimWindowForGPUDevice: {s}", .{sdl.lastError()});
             return error.SdlClaimWindow;
         }
         errdefer c.SDL_ReleaseWindowFromGPUDevice(gpu, window);
@@ -95,7 +84,7 @@ pub const Renderer = struct {
             .address_mode_v = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
             .address_mode_w = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
         })) orelse {
-            std.log.err("SDL_CreateGPUSampler: {s}", .{sdlError()});
+            std.log.err("SDL_CreateGPUSampler: {s}", .{sdl.lastError()});
             return error.SdlCreateSampler;
         };
 
@@ -127,7 +116,7 @@ pub const Renderer = struct {
         try self.atlas.upload();
 
         const cmd = c.SDL_AcquireGPUCommandBuffer(self.gpu) orelse {
-            std.log.err("SDL_AcquireGPUCommandBuffer: {s}", .{sdlError()});
+            std.log.err("SDL_AcquireGPUCommandBuffer: {s}", .{sdl.lastError()});
             return error.SdlAcquireCommandBuffer;
         };
 
@@ -136,7 +125,7 @@ pub const Renderer = struct {
         var height: u32 = 0;
         if (!c.SDL_WaitAndAcquireGPUSwapchainTexture(cmd, self.window, &swapchain, &width, &height)) {
             _ = c.SDL_SubmitGPUCommandBuffer(cmd);
-            std.log.err("SDL_WaitAndAcquireGPUSwapchainTexture: {s}", .{sdlError()});
+            std.log.err("SDL_WaitAndAcquireGPUSwapchainTexture: {s}", .{sdl.lastError()});
             return error.SdlAcquireSwapchain;
         }
 
@@ -154,7 +143,7 @@ pub const Renderer = struct {
         });
 
         const pass = c.SDL_BeginGPURenderPass(cmd, &target, 1, null) orelse {
-            std.log.err("SDL_BeginGPURenderPass: {s}", .{sdlError()});
+            std.log.err("SDL_BeginGPURenderPass: {s}", .{sdl.lastError()});
             return error.SdlBeginRenderPass;
         };
         c.SDL_BindGPUGraphicsPipeline(pass, self.pipeline);
@@ -170,7 +159,7 @@ pub const Renderer = struct {
         c.SDL_EndGPURenderPass(pass);
 
         if (!c.SDL_SubmitGPUCommandBuffer(cmd)) {
-            std.log.err("SDL_SubmitGPUCommandBuffer: {s}", .{sdlError()});
+            std.log.err("SDL_SubmitGPUCommandBuffer: {s}", .{sdl.lastError()});
             return error.SdlSubmit;
         }
     }
@@ -214,7 +203,7 @@ fn createShader(
         .num_samplers = num_samplers,
         .num_uniform_buffers = num_uniform_buffers,
     })) orelse {
-        std.log.err("SDL_CreateGPUShader: {s}", .{sdlError()});
+        std.log.err("SDL_CreateGPUShader: {s}", .{sdl.lastError()});
         return error.SdlCreateShader;
     };
 }
@@ -250,7 +239,7 @@ fn createPipeline(gpu: *c.SDL_GPUDevice, window: *c.SDL_Window) !*c.SDL_GPUGraph
             .num_color_targets = 1,
         }),
     })) orelse {
-        std.log.err("SDL_CreateGPUGraphicsPipeline: {s}", .{sdlError()});
+        std.log.err("SDL_CreateGPUGraphicsPipeline: {s}", .{sdl.lastError()});
         return error.SdlCreatePipeline;
     };
 }

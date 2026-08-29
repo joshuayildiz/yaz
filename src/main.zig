@@ -1,18 +1,18 @@
 const std = @import("std");
 
 const Renderer = @import("./renderer.zig").Renderer;
-const c = @import("./renderer.zig").c;
-const sdlError = @import("./renderer.zig").sdlError;
+const sdl = @import("./sdl.zig");
+const c = sdl.c;
 
 pub fn main(init: std.process.Init) !void {
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
-        std.log.err("SDL_Init: {s}", .{sdlError()});
+        std.log.err("SDL_Init: {s}", .{sdl.lastError()});
         return error.SdlInit;
     }
     defer c.SDL_Quit();
 
     const window = c.SDL_CreateWindow("yaz", 1024, 768, c.SDL_WINDOW_RESIZABLE) orelse {
-        std.log.err("SDL_CreateWindow: {s}", .{sdlError()});
+        std.log.err("SDL_CreateWindow: {s}", .{sdl.lastError()});
         return error.SdlCreateWindow;
     };
     defer c.SDL_DestroyWindow(window);
@@ -23,7 +23,7 @@ pub fn main(init: std.process.Init) !void {
     defer renderer.deinit();
 
     if (!c.SDL_AddEventWatch(redrawWhileResizing, &renderer)) {
-        std.log.err("SDL_AddEventWatch: {s}", .{sdlError()});
+        std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
         return error.SdlAddEventWatch;
     }
     defer c.SDL_RemoveEventWatch(redrawWhileResizing, &renderer);
@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (!c.SDL_WaitEvent(&event)) {
-            std.log.err("SDL_WaitEvent: {s}", .{sdlError()});
+            std.log.err("SDL_WaitEvent: {s}", .{sdl.lastError()});
             return error.SdlWaitEvent;
         }
 
