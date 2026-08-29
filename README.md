@@ -137,6 +137,22 @@ so interpolation has nothing left to do but soften what it touches.
 Four offsets rather than more: the atlas grows linearly in that number, and past
 a quarter of a pixel the difference stops being visible.
 
+## Layout
+
+```
+src/
+  main.zig      # SDL setup, the window, the event loop, the document
+  renderer.zig  # GPU device, glyph atlas, drawing
+assets/
+  DejaVuSans.ttf
+  shaders/
+```
+
+`renderer.zig` owns the SDL `@cImport` and `main.zig` takes its SDL types from
+there. Two `@cImport` blocks that differ by so much as whitespace generate two
+unrelated sets of types, and a `*SDL_Window` from one will not pass as a
+`*SDL_Window` to the other.
+
 ## Shaders
 
 Shaders are authored in GLSL under `assets/shaders/` and compiled to the one
