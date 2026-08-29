@@ -1,12 +1,16 @@
 //! Everything between a line of text and the pixels the GPU samples for it:
 //! shaping the bytes into positioned glyph ids, rasterising the ones the atlas
-//! does not hold yet, uploading those, and resolving the result into quads.
+//! does not hold yet, uploading those, and saying where to sample each from.
 //!
-//! It is one file because it is one pipeline. Shaping decides which glyphs
-//! exist, so it is the only thing that can say what to rasterise; rasterising
-//! decides where they land in the atlas, so it is the only thing that can say
-//! what to sample. Splitting those apart would mean each half telling the other
-//! what it just learned.
+//! Shaping and rasterising stay together because neither can be asked without
+//! the other. Shaping decides which glyphs exist, so it is the only thing that
+//! can say what to rasterise; rasterising decides where they land in the atlas,
+//! so it is the only thing that can say what to sample.
+//!
+//! What is not here is which lines a document has and which of them have
+//! changed. That belongs to a view of a document rather than to a font: one
+//! atlas serves every document, and each view of one caches its own lines. See
+//! text_view.zig.
 
 const std = @import("std");
 
@@ -88,7 +92,7 @@ pub const Sprite = extern struct {
 /// where the line starts, y from its baseline. Nothing in here knows where the
 /// line sits on screen, which is what lets a line that only moved down keep its
 /// layout instead of being shaped again.
-const LineLayout = struct {
+pub const LineLayout = struct {
     sprites: std.ArrayList(Sprite) = .empty,
 
     /// The length of the text this was shaped from. A cache that has drifted
@@ -120,16 +124,6 @@ pub const GlyphAtlas = struct {
     face: ft.FT_Face,
     texture: *c.SDL_GPUTexture,
     shaper: Shaper,
-
-    /// Where every glyph of the current frame goes. Cleared rather than freed
-    /// between frames: it settles at the size of a screenful and stops
-    /// allocating, which is what keeps a redraw free of the allocator.
-    sprites: std.ArrayList(Sprite) = .empty,
-
-    /// One entry per line of the document, in the document's order. Shaping is
-    /// the expensive half of laying out a line and it only depends on the
-    /// line's bytes, so it is done once and kept.
-    cache: std.ArrayList(LineLayout) = .empty,
 
     /// Glyph id to a slot in `glyphs`, or one of the two sentinels. One entry
     /// per glyph in the font, which is kilobytes, so the lookup is an index
@@ -207,9 +201,6 @@ pub const GlyphAtlas = struct {
     pub fn deinit(self: *GlyphAtlas) void {
         c.SDL_ReleaseGPUTexture(self.gpu, self.texture);
         self.shaper.deinit();
-        for (self.cache.items) |*entry| entry.sprites.deinit(self.gpa);
-        self.cache.deinit(self.gpa);
-        self.sprites.deinit(self.gpa);
         self.uploads.deinit(self.gpa);
         self.staging.deinit(self.gpa);
         self.gpa.free(self.glyphs);
@@ -218,60 +209,10 @@ pub const GlyphAtlas = struct {
         _ = ft.FT_Done_FreeType(self.library);
     }
 
-    /// Resolves every line into sprites, shaping the ones whose text has
-    /// changed since they were last seen and rasterising whatever glyphs that
-    /// turns up. `top` is the top of the first line, not its baseline.
-    ///
-    /// A redraw that changed nothing shapes nothing; a keystroke shapes the one
-    /// line it landed in. What is left per frame is placing the cached sprites,
-    /// which has to happen anyway to fill the buffer the GPU reads.
-    pub fn layout(self: *GlyphAtlas, lines: []const []const u8, x: f32, top: f32) !void {
-        // Cached sprites are placed by adding whole pixels. A fractional
-        // origin would change which subpixel variant each glyph points at, and
-        // the cache would be answering the wrong question.
-        std.debug.assert(x == @round(x));
-
-        self.sprites.clearRetainingCapacity();
-        if (self.cache.items.len == 0) try self.cache.appendNTimes(self.gpa, .{}, lines.len);
-        // Anything else means an edit went unreported and the entries no longer
-        // line up with the lines they describe.
-        std.debug.assert(self.cache.items.len == lines.len);
-
-        var baseline = top + self.ascent;
-        for (lines, self.cache.items) |line, *entry| {
-            if (!entry.shaped) try self.shapeLine(line, entry);
-            std.debug.assert(entry.bytes == line.len);
-
-            const origin: [2]f32 = .{ x, @round(baseline) };
-            try self.sprites.ensureUnusedCapacity(self.gpa, entry.sprites.items.len);
-            for (entry.sprites.items) |sprite| {
-                self.sprites.appendAssumeCapacity(.{
-                    .dest = .{ sprite.dest[0] + origin[0], sprite.dest[1] + origin[1] },
-                    .source = sprite.source,
-                    .size = sprite.size,
-                });
-            }
-
-            baseline += self.line_height;
-        }
-    }
-
-    /// Brings the cache back into step with the document after an edit, told
-    /// what that edit did to the line index: which line it landed in, how many
-    /// lines after it stopped existing, and how many came into being.
-    ///
-    /// Every other entry survives untouched. A line that moved down the screen
-    /// is the same shaped line at a different baseline, which is the whole
-    /// reason the sprites are kept in coordinates of their own.
-    pub fn splice(self: *GlyphAtlas, line: usize, removed: usize, added: usize) !void {
-        // Nothing has been laid out yet, so there is nothing to keep in step.
-        if (self.cache.items.len == 0) return;
-        try spliceLines(self.gpa, &self.cache, line, removed, added);
-    }
-
     /// Shapes one line into coordinates of its own: x from where the line
-    /// starts, y from its baseline.
-    fn shapeLine(self: *GlyphAtlas, text: []const u8, entry: *LineLayout) !void {
+    /// starts, y from its baseline. Nothing here knows where the line is on
+    /// screen, which is what lets the caller keep the answer.
+    pub fn shapeLine(self: *GlyphAtlas, text: []const u8, entry: *LineLayout) !void {
         entry.sprites.clearRetainingCapacity();
 
         const shaped = self.shaper.shape(text);
@@ -475,115 +416,6 @@ pub const GlyphAtlas = struct {
         return if (found.width == 0) null else found;
     }
 };
-
-/// The splice itself, apart from the atlas so that it can be tested without a
-/// GPU to build one on.
-fn spliceLines(
-    gpa: std.mem.Allocator,
-    cache: *std.ArrayList(LineLayout),
-    line: usize,
-    removed: usize,
-    added: usize,
-) !void {
-    const first = line + 1;
-    std.debug.assert(first + removed <= cache.items.len);
-
-    // Reserved before anything moves, so a failure cannot leave the cache a
-    // different length from the document it describes.
-    try cache.ensureUnusedCapacity(gpa, added);
-
-    for (cache.items[first..][0..removed]) |*entry| entry.sprites.deinit(gpa);
-    std.mem.copyForwards(LineLayout, cache.items[first..], cache.items[first + removed ..]);
-    cache.items.len -= removed;
-
-    cache.items.len += added;
-    std.mem.copyBackwards(
-        LineLayout,
-        cache.items[first + added ..],
-        cache.items[first .. cache.items.len - added],
-    );
-    for (cache.items[first..][0..added]) |*entry| entry.* = .{};
-
-    // The line the edit landed in kept its place and lost its text.
-    cache.items[line].shaped = false;
-}
-
-/// Four lines, each holding one sprite so that dropping an entry without
-/// freeing it shows up as a leak.
-fn testCache(gpa: std.mem.Allocator) !std.ArrayList(LineLayout) {
-    var cache: std.ArrayList(LineLayout) = .empty;
-    for ([_]usize{ 10, 20, 30, 40 }) |bytes| {
-        var entry: LineLayout = .{ .bytes = bytes, .shaped = true };
-        try entry.sprites.append(gpa, .{ .dest = .{ 0, 0 }, .source = .{ 0, 0 }, .size = .{ 1, 1 } });
-        try cache.append(gpa, entry);
-    }
-    return cache;
-}
-
-fn testFree(gpa: std.mem.Allocator, cache: *std.ArrayList(LineLayout)) void {
-    for (cache.items) |*entry| entry.sprites.deinit(gpa);
-    cache.deinit(gpa);
-}
-
-test "an edit inside one line leaves every other line's layout alone" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
-
-    try spliceLines(gpa, &cache, 1, 0, 0);
-
-    try std.testing.expectEqual(4, cache.items.len);
-    try std.testing.expectEqualSlices(usize, &.{ 10, 20, 30, 40 }, &.{
-        cache.items[0].bytes, cache.items[1].bytes, cache.items[2].bytes, cache.items[3].bytes,
-    });
-    try std.testing.expectEqualSlices(bool, &.{ true, false, true, true }, &.{
-        cache.items[0].shaped, cache.items[1].shaped, cache.items[2].shaped, cache.items[3].shaped,
-    });
-}
-
-test "splitting a line shifts the ones below it without reshaping them" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
-
-    // A newline typed into line 1.
-    try spliceLines(gpa, &cache, 1, 0, 1);
-
-    try std.testing.expectEqual(5, cache.items.len);
-    try std.testing.expect(!cache.items[1].shaped);
-    try std.testing.expect(!cache.items[2].shaped);
-    // Lines 2 and 3 are the same shaped lines, one index further down.
-    try std.testing.expectEqual(30, cache.items[3].bytes);
-    try std.testing.expect(cache.items[3].shaped);
-    try std.testing.expectEqual(40, cache.items[4].bytes);
-    try std.testing.expect(cache.items[4].shaped);
-}
-
-test "joining two lines drops one entry and reshapes the survivor" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
-
-    // Backspace at the start of line 2, joining it onto line 1.
-    try spliceLines(gpa, &cache, 1, 1, 0);
-
-    try std.testing.expectEqual(3, cache.items.len);
-    try std.testing.expectEqual(10, cache.items[0].bytes);
-    try std.testing.expect(!cache.items[1].shaped);
-    try std.testing.expectEqual(40, cache.items[2].bytes);
-    try std.testing.expect(cache.items[2].shaped);
-}
-
-test "deleting across lines collapses them onto the one the edit started in" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
-
-    try spliceLines(gpa, &cache, 0, 3, 0);
-
-    try std.testing.expectEqual(1, cache.items.len);
-    try std.testing.expect(!cache.items[0].shaped);
-}
 
 /// Where `(slot, subpixel)` lives in `GlyphAtlas.glyphs`.
 fn glyphIndex(slot: u16, subpixel: usize) usize {

@@ -128,16 +128,17 @@ pub const Renderer = struct {
         c.SDL_DestroyGPUDevice(self.gpu);
     }
 
-    pub fn present(self: *Renderer, lines: []const []const u8) !void {
-        // Laying out first is not tidiness. Uploading what the atlas was
-        // missing is a copy pass, and a copy pass cannot be opened inside a
-        // render pass. Doing it before the swapchain is acquired also keeps the
+    /// Draws the sprites it is handed, and knows nothing else about them. What
+    /// they spell, which line each came from and what had to be shaped to
+    /// produce them all belong to whoever laid them out.
+    pub fn present(self: *Renderer, sprites: []const Sprite) !void {
+        // Glyphs the atlas was missing arrive as a copy pass, and a copy pass
+        // cannot be opened inside a render pass. Doing it here also keeps the
         // work out of the window between waiting for a frame and handing one
         // back.
-        try self.atlas.layout(lines, 48, 48);
         try self.atlas.upload();
 
-        const count: u32 = @intCast(self.atlas.sprites.items.len);
+        const count: u32 = @intCast(sprites.len);
         try self.reserve(count);
 
         const cmd = c.SDL_AcquireGPUCommandBuffer(self.gpu) orelse {
@@ -148,7 +149,7 @@ pub const Renderer = struct {
         // Before the swapchain rather than after: this is work that does not
         // need a frame to be handed back first, so doing it here keeps it out
         // of the wait.
-        if (count > 0) self.stage(cmd) catch |err| {
+        if (count > 0) self.stage(cmd, sprites) catch |err| {
             _ = c.SDL_SubmitGPUCommandBuffer(cmd);
             return err;
         };
@@ -234,8 +235,8 @@ pub const Renderer = struct {
     /// Copies the frame's sprites into the buffer the vertex shader reads.
     /// Both halves cycle: the previous frame may still be in flight, and
     /// waiting for it would put a stall in the middle of a redraw.
-    fn stage(self: *Renderer, cmd: *c.SDL_GPUCommandBuffer) !void {
-        const bytes = std.mem.sliceAsBytes(self.atlas.sprites.items);
+    fn stage(self: *Renderer, cmd: *c.SDL_GPUCommandBuffer, sprites: []const Sprite) !void {
+        const bytes = std.mem.sliceAsBytes(sprites);
 
         const mapped = c.SDL_MapGPUTransferBuffer(self.gpu, self.transfer, true) orelse {
             std.log.err("SDL_MapGPUTransferBuffer: {s}", .{sdl.lastError()});

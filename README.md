@@ -263,6 +263,10 @@ they have to, to patch the line index — so they return it as an `Edit` and the
 cache gets the same splice the index got. Every other entry survives. The buffer
 never learns that shaping exists; the atlas never learns that a document does.
 
+Both live inside `TextView`, so an edit and its splice are one call. Nothing
+can perform one without the other, which is the only real way to keep two
+structures indexed the same way from drifting apart.
+
 Measured on a synthetic Latin document, ReleaseFast, native x86-64. This is all
 CPU work — HarfBuzz and FreeType — so no GPU enters into it:
 
@@ -317,7 +321,8 @@ before the wait rather than after it.
 ## The document
 
 Text lives in a **gap buffer**: one contiguous allocation with a hole in it,
-kept wherever the last edit happened.
+kept wherever the last edit happened. It sits in `text_view.zig`, underneath the
+view that owns it.
 
 ```
 The quick[                    ]brown fox
@@ -405,9 +410,10 @@ how the rest are spared.
 
 ```
 src/
-  main.zig         # SDL setup, the window, the event loop, the document
+  main.zig         # SDL setup, the window, the event loop
+  text_view.zig    # the document, the caret, the per-line layout cache
   renderer.zig     # GPU device, pipeline, drawing
-  glyph_atlas.zig  # shaping, layout, the line cache, rasterizing, atlas uploads
+  glyph_atlas.zig  # shaping, rasterizing, atlas uploads
   sdl.zig          # the one @cImport of SDL
   config.zig       # font file and size
 assets/
@@ -419,12 +425,23 @@ assets/
 the font file and its rasterisation size. `build.zig` imports it too, so the
 font path is stated once and the build embeds the file it names.
 
-`glyph_atlas.zig` is one file because it is one pipeline. Shaping decides which
-glyphs exist, so it is the only thing that can say what to rasterize;
-rasterizing decides where they land in the atlas, so it is the only thing that
-can say what to sample. It hands `renderer.zig` a list of quads and their source
-rectangles, and the renderer knows nothing about glyph ids, subpixel offsets or
-FreeType.
+`glyph_atlas.zig` keeps shaping and rasterizing together because neither can be
+asked without the other. Shaping decides which glyphs exist, so it is the only
+thing that can say what to rasterize; rasterizing decides where they land in the
+atlas, so it is the only thing that can say what to sample. It shapes one line
+at a time, into coordinates of that line's own, and knows nothing about
+documents.
+
+`text_view.zig` holds a document beside the layout of its lines. The cache is
+there rather than with the atlas because it belongs to a view rather than to a
+font: one atlas serves every document, and each view of one caches its own
+lines. Keeping the two in a single struct is also what makes them impossible to
+get out of step — an edit and the splice that answers it are one call, not two
+that a caller has to remember to pair.
+
+`renderer.zig` is handed a finished array of glyph positions and knows nothing
+else about them: not what they spell, not which line each came from, not that
+shaping happened at all.
 
 `sdl.zig` exists so there is exactly one `@cImport` of SDL. Two blocks that
 differ by so much as whitespace generate two unrelated sets of types, and a
