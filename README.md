@@ -154,10 +154,15 @@ a quarter of a pixel the difference stops being visible.
 src/
   main.zig      # SDL setup, the window, the event loop, the document
   renderer.zig  # GPU device, glyph atlas, drawing
+  config.zig    # font file and size
 assets/
   DejaVuSans.ttf
   shaders/
 ```
+
+`config.zig` holds the settings that get changed while working on the editor —
+the font file and its rasterisation size. `build.zig` imports it too, so the
+font path is stated once and the build embeds the file it names.
 
 `renderer.zig` owns the SDL `@cImport` and `main.zig` takes its SDL types from
 there. Two `@cImport` blocks that differ by so much as whitespace generate two

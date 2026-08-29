@@ -9,6 +9,8 @@ pub const c = @cImport({
     @cInclude("SDL3/SDL.h");
 });
 
+const config = @import("./config.zig");
+
 const ft = @cImport({
     @cInclude("ft2build.h");
     @cInclude("freetype/freetype.h");
@@ -31,10 +33,9 @@ const vertex_shader_code = @embedFile("quad.vert");
 const fragment_shader_code = @embedFile("quad.frag");
 
 /// Embedded rather than discovered on the system, so every platform renders
-/// the same pixels and there is no font-matching code to get wrong.
-const font_data = @embedFile("DejaVuSans.ttf");
-
-const font_pixel_size = 32;
+/// the same pixels and there is no font-matching code to get wrong. Which file
+/// this is comes from config.zig, by way of the build.
+const font_data = @embedFile("font");
 
 /// Proportional advances put glyph origins on fractional pixels. Rasterising
 /// each glyph at four horizontal offsets lets a quad stay pixel-aligned while
@@ -402,7 +403,7 @@ fn buildFont(gpa: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !Font {
     }
     defer _ = ft.FT_Done_Face(face);
 
-    if (ft.FT_Set_Pixel_Sizes(face, 0, font_pixel_size) != 0) {
+    if (ft.FT_Set_Pixel_Sizes(face, 0, config.font_pixel_size) != 0) {
         return error.FreetypeSetPixelSizes;
     }
     font.ascent = fromFixed(face.*.size.*.metrics.ascender);

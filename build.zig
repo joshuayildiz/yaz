@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const config = @import("src/config.zig");
+
 const shaders = [_]Shader{
     .{ .name = "quad.vert", .glslang_stage = "vert", .shadercross_stage = "vertex" },
     .{ .name = "quad.frag", .glslang_stage = "frag", .shadercross_stage = "fragment" },
@@ -43,8 +45,9 @@ pub fn build(b: *std.Build) void {
     exe_mod.linkLibrary(freetype.artifact("freetype"));
 
     // Assets live outside the source tree, so `@embedFile` cannot name them by
-    // path; an import gives it a name it can reach.
-    exe_mod.addAnonymousImport("DejaVuSans.ttf", .{ .root_source_file = b.path("assets/DejaVuSans.ttf") });
+    // path; an import gives it a name it can reach. The path comes from
+    // src/config.zig so that it is stated once, for the build and the code both.
+    exe_mod.addAnonymousImport("font", .{ .root_source_file = b.path(config.font_path) });
 
     addShaders(b, exe_mod, shaderFormat(target.result.os.tag));
 
