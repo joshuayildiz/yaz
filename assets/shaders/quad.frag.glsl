@@ -9,7 +9,8 @@ layout(location = 0) out vec4 out_color;
 
 void main()
 {
-    // Single-channel coverage, as the glyph atlas will be.
-    float coverage = texture(atlas, in_uv).r;
-    out_color = vec4(coverage, coverage, coverage, 1.0);
+    // The atlas stores coverage, not colour. It drives alpha, and the pipeline
+    // blends the glyph over what is already there; a quad covers a glyph's
+    // bounding box, so writing its empty corners opaquely would box the text in.
+    out_color = vec4(1.0, 1.0, 1.0, texture(atlas, in_uv).r);
 }

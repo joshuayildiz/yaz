@@ -7,9 +7,9 @@ macOS, and Windows.
 
 ## Status
 
-Early. Currently: a window, a GPU device, and one glyph rasterized by FreeType
-from the embedded font and drawn from a single-channel coverage texture — the
-plumbing the glyph renderer will use.
+Early. Currently: a window, a GPU device, and lines of text drawn from a glyph
+atlas that FreeType rasterizes at startup. Advances come straight from the font
+face, so the text is proportional but unkerned; shaping is the next step.
 
 Built and run on Linux, Windows and macOS. Building happens on a Linux or macOS
 host; Windows and macOS binaries are cross-compiled.
@@ -119,6 +119,23 @@ see `assets/DejaVuSans.LICENSE`.
 Proportional, not monospace — that choice is what makes shaping and a per-line
 layout cache necessary rather than optional, and it is the constraint the text
 pipeline is designed around.
+
+### The atlas
+
+Every glyph is rasterized once at startup into a single-channel coverage
+texture and packed onto shelves. Rasterizing is the expensive part of drawing a
+glyph, and none of it happens per frame.
+
+Entries are keyed by **`(character, subpixel offset)`**, not by character alone.
+Proportional advances put glyph origins on fractional pixels, so each glyph is
+rasterized at four horizontal offsets — quarter, half, three-quarter, whole — and
+the pen's fractional part chooses between them. The quad itself always lands on
+whole pixels; only the coverage inside it shifts. Sampling is `NEAREST`, because
+a quad is sized to its source rectangle and every sample lands on a texel centre,
+so interpolation has nothing left to do but soften what it touches.
+
+Four offsets rather than more: the atlas grows linearly in that number, and past
+a quarter of a pixel the difference stops being visible.
 
 ## Shaders
 
