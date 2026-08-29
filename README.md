@@ -63,7 +63,8 @@ event watch, because the platform's own modal loop will not hand control back
 until the drag ends.
 
 The reasoning, the measurements, and what to re-check when porting are in
-[OPTIMIZATIONS.md](OPTIMIZATIONS.md).
+[OPTIMIZATIONS.md](OPTIMIZATIONS.md). Known problems not yet acted on are in
+[FIXME.md](FIXME.md).
 
 ### Developing under WSL
 

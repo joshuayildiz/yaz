@@ -4,7 +4,8 @@ What has been done for latency and resource usage, why, and — since each one
 leans on some assumption about the platform — how to check it still holds.
 
 Numbers come from Windows on an RTX 3090 unless stated otherwise. Nothing here
-has been measured on macOS.
+has been measured on macOS. Two of these are expected to need work when it is;
+they are in [FIXME.md](FIXME.md).
 
 ## Where each one stands
 
@@ -91,11 +92,8 @@ and background should fill it as it grows. If it goes black or white until the
 mouse is released, the watch is not firing on macOS and this needs a different
 mechanism.
 
-**Also check:** the watch runs on whichever thread pushes the event. SDL's own
-header warns it "may run in a different thread". On Windows it is the main
-thread. If macOS pushes window events from elsewhere, GPU work would be
-happening off the main thread, which is a correctness problem rather than a
-performance one — a crash or a validation error during resize is the symptom.
+**Also check:** the watch may run on a thread other than the one that owns the
+GPU work. See [FIXME.md](FIXME.md).
 
 ## 5. Rasterise once, not per frame
 
@@ -127,14 +125,9 @@ comes out upside down.
 neighbour magnification, and compare it against the same text on Windows. Stems
 should be hard-edged, one or two columns wide, not a three-column gradient.
 
-**Also check — this one is expected to fail.** The window is created without
-`SDL_WINDOW_HIGH_PIXEL_DENSITY`, so on a Retina display the backing store is 1x
-and the compositor scales it up. Every pixel of the alignment work above is then
-resampled by the OS, which is precisely what it exists to avoid. Text will look
-soft and roughly half the intended physical size. Fixing it means setting that
-flag, and SDL's docs add that macOS also needs `NSHighResolutionCapable` in the
-Info.plist. Left alone deliberately: it changes what a "pixel" means throughout
-the layout code, and that is worth doing once rather than twice.
+**Also check:** the window is created without `SDL_WINDOW_HIGH_PIXEL_DENSITY`,
+so a Retina display is expected to scale a 1x backing store and undo all of the
+above. See [FIXME.md](FIXME.md).
 
 ## 7. Shader format fixed at build time
 
