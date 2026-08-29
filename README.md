@@ -7,9 +7,9 @@ macOS, and Windows.
 
 ## Status
 
-Early. Currently: a window, a GPU device, and lines of text drawn from a glyph
-atlas that FreeType rasterizes at startup. Advances come straight from the font
-face, so the text is proportional but unkerned; shaping is the next step.
+Early. Currently: a window, a GPU device, and lines of text shaped by HarfBuzz
+and drawn from a glyph atlas that FreeType rasterizes at startup. Proportional
+and kerned, but there is no buffer yet and nothing to type into.
 
 Built and run on Linux, Windows and macOS. Building happens on a Linux or macOS
 host; Windows and macOS binaries are cross-compiled.
@@ -23,8 +23,8 @@ host; Windows and macOS binaries are cross-compiled.
 - Targeting macOS additionally needs `git` and a C++ compiler. See
   [macOS](#macos).
 
-SDL and FreeType are built from source by the Zig build system and linked
-statically, so no system `-dev` packages are needed.
+SDL, FreeType and HarfBuzz are built from source by the Zig build system and
+linked statically, so no system `-dev` packages are needed.
 
 ## Build and run
 
@@ -132,13 +132,75 @@ Proportional, not monospace — that choice is what makes shaping and a per-line
 layout cache necessary rather than optional, and it is the constraint the text
 pipeline is designed around.
 
+### Shaping
+
+Text becomes glyphs through HarfBuzz, not through a loop over characters. With a
+proportional font that is not an optimization, it is the only correct way to get
+a pen position: advances differ per character, and kerning depends on which
+characters are adjacent. `AV` at 32px is 41.73px wide; `A` and `V` measured
+alone sum to 43.78px, and nothing but kerning accounts for the 2.05px.
+
+That pair comes from **GPOS**: DejaVu Sans has a `kern` feature there for the
+`latn` script, and HarfBuzz prefers it over the legacy `kern` table. The font
+happens to carry both, with the same -131 font units in each, so this particular
+pair would also have come out right from the legacy table that FreeType reads.
+The general case will not — GPOS kerning is contextual, so it cannot be reduced
+to a table of pairs, which is why shaping is a library and not a lookup.
+
+HarfBuzz reads the font tables directly here rather than going through FreeType
+(`hb-ft`), and that choice matters more than it looks. FreeType reports advances
+rounded to whole pixels once hinting is on. Whole-pixel advances put every pen
+position on a whole pixel, which means the subpixel atlas below would only ever
+be asked for one of its four variants. Reading the tables keeps advances
+fractional — `A` advances 21.890625px, not 22 — and all four variants get used.
+
+Shaping is also what makes contextual glyphs appear at all. `fi` is a single
+glyph in DejaVu Sans, `ffi` is another, and `e` followed by a combining acute
+composes into the same glyph as a precomposed `é`. None of those is what any
+character maps to; they exist only because `liga` and `ccmp` substituted them
+in.
+
+### Direction
+
+**yaz is left-to-right, strictly.** Not left-to-right until someone reports it —
+left-to-right by decision, the same way there is no plugin system. The shaper
+says so outright rather than working it out per line:
+
+```zig
+hb_buffer_set_direction(buffer, HB_DIRECTION_LTR);
+hb_buffer_set_script(buffer, HB_SCRIPT_LATIN);
+hb_buffer_set_language(buffer, hb_language_from_string("en", -1));
+```
+
+Right-to-left text is therefore not merely unsupported, it comes out wrong and
+says nothing about it. Hebrew and Arabic glyphs are in the font, and HarfBuzz
+will even produce correct Arabic joining forms — those come from `init`, `medi`
+and `fina`, which are substitutions and have nothing to do with direction. It
+will then set them down left to right, which is backwards. There is no UAX #9
+bidi pass here and there is not meant to be one.
+
+The language is stated rather than guessed for a separate reason:
+`hb_buffer_guess_segment_properties` takes it from the system locale, and the
+point of embedding the font is that every machine draws the same pixels.
+
+The script tag alongside them is a shortcut rather than a decision — but with
+this font, a measured one. `ГА` and `ΑΤ` shape to identical advances under
+`latn` and under their own tags, and the scripts where the tag would change the
+outcome are not in DejaVu Sans to begin with: Devanagari and Thai both come back
+as `.notdef`. It becomes a real question if the embedded font changes, and not
+before.
+
 ### The atlas
 
-Every glyph is rasterized once at startup into a single-channel coverage
-texture and packed onto shelves. Rasterizing is the expensive part of drawing a
-glyph, and none of it happens per frame.
+The atlas starts empty and fills as glyphs are asked for, which is the only
+arrangement that works once text is shaped. A glyph like `fi` is reachable from
+no character, so no walk over characters would ever rasterize it; only laying
+out real text can say what exists. A miss rasterizes all four subpixel variants
+and queues them, and the queue is uploaded in one copy pass before the frame's
+render pass opens. Steady-state redraws upload nothing.
 
-Entries are keyed by **`(character, subpixel offset)`**, not by character alone.
+Entries are keyed by **`(glyph id, subpixel offset)`** — glyph ids, because that
+is what shaping answers in, and characters are not the same numbering.
 Proportional advances put glyph origins on fractional pixels, so each glyph is
 rasterized at four horizontal offsets — quarter, half, three-quarter, whole — and
 the pen's fractional part chooses between them. The quad itself always lands on
@@ -149,12 +211,23 @@ so interpolation has nothing left to do but soften what it touches.
 Four offsets rather than more: the atlas grows linearly in that number, and past
 a quarter of a pixel the difference stops being visible.
 
+The texture is 1024×1024 single-channel — a megabyte. The sample text's 46
+distinct glyphs occupy 82 of those rows, so the ceiling is somewhere near 500
+glyphs. Nothing is ever evicted; past that point a glyph is dropped, with a
+warning naming it, and the text draws with a gap of the right width rather than
+with everything after it shifted. A CJK document would want a second page or
+eviction rather than a larger number here.
+
+Lines are reshaped on every redraw, which is more often than they change. The
+per-line layout cache that fixes it needs an editable buffer to invalidate
+against, and there is not one yet.
+
 ## Layout
 
 ```
 src/
   main.zig      # SDL setup, the window, the event loop, the document
-  renderer.zig  # GPU device, glyph atlas, drawing
+  renderer.zig  # GPU device, shaping, glyph atlas, drawing
   config.zig    # font file and size
 assets/
   DejaVuSans.ttf

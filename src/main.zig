@@ -80,11 +80,18 @@ fn redrawWhileResizing(userdata: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.
     return true;
 }
 
-/// Enough text to show that advances differ per character and that the pen
-/// lands off the pixel grid as a result. Replaced by a real buffer at step 10.
+/// Enough text to show that advances differ per character, that the pen lands
+/// off the pixel grid as a result, and that shaping produces glyphs no character
+/// maps to. Replaced by a real buffer at step 10.
 const sample_text = [_][]const u8{
     "The quick brown fox jumps over the lazy dog.",
     "Waltz, bad nymph, for quick jigs vex. 0123456789",
+    // fi, ffi and fl are each one glyph here, and no character maps to any of
+    // them: they exist only because shaping substituted them in.
+    "office difficult flag fluffy affix",
+    // The second of these is an e followed by a combining acute, which shaping
+    // composes into the same single glyph as the first.
+    "caf\u{e9} and cafe\u{301} \u{2014} composed and precomposed",
     "iiiii mmmmm WWWWW ..... proportional, not monospace",
 };
 

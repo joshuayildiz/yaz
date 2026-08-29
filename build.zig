@@ -41,8 +41,22 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.linkLibrary(sdl.artifact("SDL3"));
 
-    const freetype = b.dependency("freetype", .{ .target = target, .optimize = optimize });
+    // HarfBuzz builds FreeType itself, with libpng on, and asks for it by
+    // option. Matching that here is what makes both resolve to one artifact;
+    // differing by a single option would link two copies of FreeType instead.
+    // libpng is dead weight -- it is for colour bitmap glyphs, which we do not
+    // draw -- and costs 212KB of the executable. Getting rid of it means
+    // building HarfBuzz from the upstream sources here rather than through a
+    // wrapper package, which is a trade for another day.
+    const freetype = b.dependency("freetype", .{
+        .target = target,
+        .optimize = optimize,
+        .@"enable-libpng" = true,
+    });
     exe_mod.linkLibrary(freetype.artifact("freetype"));
+
+    const harfbuzz = b.dependency("harfbuzz", .{ .target = target, .optimize = optimize });
+    exe_mod.linkLibrary(harfbuzz.artifact("harfbuzz"));
 
     // Assets live outside the source tree, so `@embedFile` cannot name them by
     // path; an import gives it a name it can reach. The path comes from
