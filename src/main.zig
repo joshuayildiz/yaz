@@ -28,15 +28,37 @@ pub fn main(init: std.process.Init) !void {
     }
     defer c.SDL_RemoveEventWatch(redrawWhileResizing, &renderer);
 
-    // Blocking wait, not a poll loop: idle costs nothing.
+    // Blocking wait, not a poll loop: idle costs nothing. Waking up is not a
+    // reason to draw, though; only a change to what is on screen is.
+    var dirty = true;
+    var running = true;
     var event: c.SDL_Event = undefined;
-    while (true) {
-        try renderer.present(&sample_text);
+    while (running) {
+        if (dirty) {
+            try renderer.present(&sample_text);
+            dirty = false;
+        }
+
         if (!c.SDL_WaitEvent(&event)) {
             std.log.err("SDL_WaitEvent: {s}", .{sdlError()});
             return error.SdlWaitEvent;
         }
-        if (event.type == c.SDL_EVENT_QUIT) break;
+
+        // Everything already queued belongs to the frame this wakeup produces.
+        // Folding a burst into one redraw is what stops a keystroke queueing up
+        // behind presents of unchanged content: presenting blocks on the
+        // swapchain, so each redundant one costs real latency, not just work.
+        while (true) {
+            switch (event.type) {
+                c.SDL_EVENT_QUIT => running = false,
+                // Nothing else changes the picture yet. Typing will.
+                c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => dirty = true,
+                // Exposure belongs to the watcher, which has already drawn by
+                // the time the event arrives here; marking it would draw twice.
+                else => {},
+            }
+            if (!c.SDL_PollEvent(&event)) break;
+        }
     }
 }
 
