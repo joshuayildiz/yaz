@@ -54,6 +54,15 @@ a 500MB dependency, with no macOS build. Choosing GLSL and glslang instead keeps
 the toolchain at 28MB and portable on every host, at the cost of depending on the
 GPU vendor's Vulkan driver rather than on an API guaranteed present on Windows.
 
+### Resizing
+
+Windows and macOS run a modal loop of their own while a window is being dragged
+or resized, and it does not return until the drag ends. A main loop blocked in
+`SDL_WaitEvent` never gets control back to redraw, so the window keeps whatever
+was last drawn and the area it grew into stays blank. yaz redraws from an
+`SDL_AddEventWatch` callback, which SDL runs as events are pushed — from inside
+that modal loop.
+
 ### Developing under WSL
 
 WSL has no Vulkan ICD for the GPU — Ubuntu does not ship Mesa's `dzn`

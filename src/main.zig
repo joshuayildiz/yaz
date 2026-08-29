@@ -22,6 +22,12 @@ pub fn main(init: std.process.Init) !void {
     var renderer = try Renderer.init(init.gpa, window);
     defer renderer.deinit();
 
+    if (!c.SDL_AddEventWatch(redrawWhileResizing, &renderer)) {
+        std.log.err("SDL_AddEventWatch: {s}", .{sdlError()});
+        return error.SdlAddEventWatch;
+    }
+    defer c.SDL_RemoveEventWatch(redrawWhileResizing, &renderer);
+
     // Blocking wait, not a poll loop: idle costs nothing.
     var event: c.SDL_Event = undefined;
     while (true) {
@@ -32,6 +38,24 @@ pub fn main(init: std.process.Init) !void {
         }
         if (event.type == c.SDL_EVENT_QUIT) break;
     }
+}
+
+/// Windows and macOS run a modal loop of their own while a window is being
+/// dragged or resized, and it does not hand control back until the drag ends.
+/// `SDL_WaitEvent` is stuck inside it, so nothing redraws, and the area the
+/// window has just grown into keeps whatever the new swapchain came with.
+///
+/// A watch callback is the way out: SDL runs it as events are pushed, which
+/// happens from inside that modal loop.
+fn redrawWhileResizing(userdata: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.c) bool {
+    if (event.*.type == c.SDL_EVENT_WINDOW_EXPOSED) {
+        const renderer: *Renderer = @ptrCast(@alignCast(userdata.?));
+        // Swallowed rather than reported: the main loop draws again the moment
+        // it gets control back, and surfaces the failure there.
+        renderer.present(&sample_text) catch {};
+    }
+    // Watch callbacks cannot filter; the return value is ignored.
+    return true;
 }
 
 /// Enough text to show that advances differ per character and that the pen
