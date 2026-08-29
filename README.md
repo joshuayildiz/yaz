@@ -57,31 +57,13 @@ GPU vendor's Vulkan driver rather than on an API guaranteed present on Windows.
 ### Redrawing
 
 The render loop blocks in `SDL_WaitEvent` and draws only when something has
-changed what is on screen. Waking up is not a reason to draw: moving the mouse
-across the window produces a stream of events and none of them alter a pixel.
+changed what is on screen. Waking up is not a reason to draw. Events already
+queued when the loop wakes are folded into one frame, and a resize draws from an
+event watch, because the platform's own modal loop will not hand control back
+until the drag ends.
 
-Events already queued when the loop wakes are folded into the same frame. That
-is not only about saving work — presenting blocks on the swapchain, so a
-redundant redraw costs a vsync, and a burst of them would put a keystroke behind
-several frames of drawing unchanged content.
-
-Measured on Windows, four seconds of continuous mouse movement over the window:
-
-| | redraws | CPU |
-| --- | --- | --- |
-| redraw on every event | 271 | 31–62 ms |
-| redraw when something changed | 3 | 0–16 ms |
-
-Idle is 0% either way, which is what the blocking wait buys.
-
-### Resizing
-
-Windows and macOS run a modal loop of their own while a window is being dragged
-or resized, and it does not return until the drag ends. A main loop blocked in
-`SDL_WaitEvent` never gets control back to redraw, so the window keeps whatever
-was last drawn and the area it grew into stays blank. yaz redraws from an
-`SDL_AddEventWatch` callback, which SDL runs as events are pushed — from inside
-that modal loop.
+The reasoning, the measurements, and what to re-check when porting are in
+[OPTIMIZATIONS.md](OPTIMIZATIONS.md).
 
 ### Developing under WSL
 
