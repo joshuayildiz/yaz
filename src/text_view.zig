@@ -16,8 +16,7 @@ const Key = painter_mod.Key;
 const Painter = painter_mod.Painter;
 pub const Rect = painter_mod.Rect;
 
-const Buffer = @import("./document.zig").Buffer;
-const Edit = @import("./document.zig").Edit;
+const Document = @import("./document.zig").Document;
 
 const glyph_atlas = @import("./glyph_atlas.zig");
 const Caret = glyph_atlas.Caret;
@@ -55,12 +54,7 @@ const bar_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.scrollb
 
 pub const TextView = struct {
     gpa: std.mem.Allocator,
-    document: Buffer,
-
-    /// One entry per line of the document, in the document's order. Shaping is
-    /// the expensive half of laying a line out and depends only on the line's
-    /// bytes, so it is done once and kept.
-    lines: std.ArrayList(LineLayout) = .empty,
+    document: Document,
 
     /// Where the next character lands, as a byte offset into the document, and
     /// where the caret is drawn. One number rather than a line and a column:
@@ -100,34 +94,27 @@ pub const TextView = struct {
     pub fn init(gpa: std.mem.Allocator, text: []const u8) !TextView {
         return .{
             .gpa = gpa,
-            .document = try Buffer.init(gpa, text),
+            .document = try Document.init(gpa, text),
             .cursor = 0,
         };
     }
 
     pub fn deinit(self: *TextView) void {
-        for (self.lines.items) |*entry| {
-            entry.sprites.deinit(self.gpa);
-            entry.carets.deinit(self.gpa);
-        }
-        self.lines.deinit(self.gpa);
         self.document.deinit();
     }
 
     pub fn insert(self: *TextView, text: []const u8) !void {
-        const edit = try self.document.insert(self.cursor, text);
-        try self.splice(edit);
+        _ = try self.document.insert(self.cursor, text);
         self.cursor += text.len;
         self.follow_caret = true;
     }
 
     /// Deletes the character before the caret, answering whether there was one.
     pub fn backspace(self: *TextView) !bool {
-        const from = self.document.stepBack(self.cursor);
+        const from = self.document.buffer.stepBack(self.cursor);
         if (from == self.cursor) return false;
 
-        const edit = self.document.delete(from, self.cursor - from);
-        try self.splice(edit);
+        _ = try self.document.delete(from, self.cursor - from);
         self.cursor = from;
         self.follow_caret = true;
         return true;
@@ -211,7 +198,7 @@ pub const TextView = struct {
 
     /// Where the scrollbar's thumb sits in a window `height` tall.
     fn scrollbar(self: *const TextView, atlas: *const GlyphAtlas) Thumb {
-        const count: f32 = @floatFromInt(self.document.lineCount());
+        const count: f32 = @floatFromInt(self.document.buffer.lineCount());
         const content = self.origin(atlas)[1] - self.rect.y + count * atlas.line_height;
         return thumb(self.scroll, content, self.rect.height, @round(bar_minimum * atlas.scale));
     }
@@ -236,7 +223,7 @@ pub const TextView = struct {
     /// Drags the thumb so that the point `grab` down it sits at `y`.
     pub fn dragTo(self: *TextView, atlas: *const GlyphAtlas, y: f32, grab: f32) void {
         if (self.rect.height <= 0) return;
-        const count: f32 = @floatFromInt(self.document.lineCount());
+        const count: f32 = @floatFromInt(self.document.buffer.lineCount());
         // The inverse of the thumb, whose top is `scroll * height / content`.
         const content = self.origin(atlas)[1] - self.rect.y + count * atlas.line_height;
         self.pending = 0;
@@ -246,7 +233,7 @@ pub const TextView = struct {
     /// Brings the caret's line into view, and clears the flag that asked for it.
     pub fn scrollToCaret(self: *TextView, atlas: *const GlyphAtlas) void {
         self.follow_caret = false;
-        const index = self.document.lineAt(self.cursor);
+        const index = self.document.buffer.lineAt(self.cursor);
         // A jump is not a gesture, so anything a gesture had part-way through
         // it goes rather than being applied on top of the answer.
         self.pending = 0;
@@ -263,7 +250,7 @@ pub const TextView = struct {
     /// the view cannot follow you to. A document shorter than the window scrolls
     /// by the same rule.
     fn furthest(self: *const TextView, atlas: *const GlyphAtlas) f32 {
-        const last = self.document.lineCount() -| 1;
+        const last = self.document.buffer.lineCount() -| 1;
         const top = self.origin(atlas)[1] - self.rect.y;
         return @max(0, @ceil(top + @as(f32, @floatFromInt(last)) * atlas.line_height));
     }
@@ -289,21 +276,21 @@ pub const TextView = struct {
         const height = self.rect.height;
         std.debug.assert(self.scroll == @round(self.scroll));
 
-        const count = self.document.lineCount();
-        if (self.lines.items.len == 0) try self.lines.appendNTimes(self.gpa, .{}, count);
+        const count = self.document.buffer.lineCount();
+        if (self.document.lines.items.len == 0) try self.document.lines.appendNTimes(self.gpa, .{}, count);
         // Anything else means an edit did not reach the cache and the entries
         // no longer line up with the lines they describe.
-        std.debug.assert(self.lines.items.len == count);
+        std.debug.assert(self.document.lines.items.len == count);
 
-        const caret_line = self.document.lineAt(self.cursor);
+        const caret_line = self.document.buffer.lineAt(self.cursor);
         // Filled in as that line comes round, so the caret is placed from the
         // same shaped layout as the glyphs it sits between.
         var caret: ?Sprite = null;
 
         const range = visibleLines(top, self.scroll, height, atlas.line_height, count);
-        for (self.lines.items[range.first..range.last], range.first..) |*entry, index| {
-            if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
-            std.debug.assert(entry.bytes == self.document.lineLength(index));
+        for (self.document.lines.items[range.first..range.last], range.first..) |*entry, index| {
+            if (!entry.shaped) try atlas.shapeLine(try self.document.buffer.lineSlice(index), entry);
+            std.debug.assert(entry.bytes == self.document.buffer.lineLength(index));
 
             const baseline = @round(self.rect.y + lineTop(index, top, self.scroll, atlas.line_height) + atlas.ascent);
             try painter.reserve(entry.sprites.items.len);
@@ -323,9 +310,9 @@ pub const TextView = struct {
         // is never has to be a special case. Nothing partly on screen reaches
         // here, so where exactly it lands does not matter.
         if (caret == null) {
-            const entry = &self.lines.items[caret_line];
-            if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(caret_line), entry);
-            std.debug.assert(entry.bytes == self.document.lineLength(caret_line));
+            const entry = &self.document.lines.items[caret_line];
+            if (!entry.shaped) try atlas.shapeLine(try self.document.buffer.lineSlice(caret_line), entry);
+            std.debug.assert(entry.bytes == self.document.buffer.lineLength(caret_line));
 
             const off = self.rect.y + lineTop(caret_line, top, self.scroll, atlas.line_height) + atlas.ascent;
             caret = self.caretOn(atlas, entry, caret_line, x, @round(off));
@@ -348,7 +335,7 @@ pub const TextView = struct {
         x: f32,
         baseline: f32,
     ) Sprite {
-        const offset = self.cursor - self.document.lineStart(index);
+        const offset = self.cursor - self.document.buffer.lineStart(index);
         return .solid(.{
             x + @round(caretX(entry.carets.items, offset)),
             baseline - @round(atlas.ascent),
@@ -362,162 +349,28 @@ pub const TextView = struct {
     /// place the caret can go, which is what makes dragging past the end behave.
     pub fn moveCaretTo(self: *TextView, atlas: *GlyphAtlas, point: [2]f32) !void {
         // Nothing has been laid out, so there is nothing on screen to click.
-        if (self.lines.items.len == 0) return;
+        if (self.document.lines.items.len == 0) return;
 
         const at = self.origin(atlas);
         const row = (point[1] - at[1] + self.scroll) / atlas.line_height;
         const index = if (row < 0)
             0
         else
-            @min(self.document.lineCount() - 1, @as(usize, @intFromFloat(row)));
+            @min(self.document.buffer.lineCount() - 1, @as(usize, @intFromFloat(row)));
 
         // A click lands on a line that was drawn, but the row arithmetic
         // clamps, and what it clamps to need not have been.
-        const entry = &self.lines.items[index];
-        if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
+        const entry = &self.document.lines.items[index];
+        if (!entry.shaped) try atlas.shapeLine(try self.document.buffer.lineSlice(index), entry);
 
-        self.cursor = self.document.lineStart(index) + caretOffset(entry.carets.items, point[0] - at[0]);
+        self.cursor = self.document.buffer.lineStart(index) + caretOffset(entry.carets.items, point[0] - at[0]);
     }
 
-    /// Drops every shaped line, for after the atlas is rebuilt at a different
-    /// scale. Nothing cached survives that: the positions are in pixels of the
-    /// old size, and scaling them is not the same answer, because hinting and
-    /// rounding do not distribute over a scale.
-    ///
-    /// The entries stay, so the cache is still one per line and in step with the
-    /// document.
     pub fn invalidate(self: *TextView) void {
-        for (self.lines.items) |*entry| entry.shaped = false;
-    }
-
-    fn splice(self: *TextView, edit: Edit) !void {
-        // Nothing has been laid out yet, so there is nothing to keep in step.
-        if (self.lines.items.len == 0) return;
-        try spliceLines(self.gpa, &self.lines, edit.line, edit.removed, edit.added);
+        self.document.invalidate();
     }
 };
 
-/// Brings the cache back into step after an edit, told which line it landed in,
-/// how many after it stopped existing, and how many came into being.
-///
-/// Every other entry survives untouched: a line that moved down the screen is
-/// the same shaped line at a different baseline, which is why its glyphs are
-/// kept in coordinates of their own.
-///
-/// Apart from `TextView` so it can be tested without a document to splice.
-fn spliceLines(
-    gpa: std.mem.Allocator,
-    cache: *std.ArrayList(LineLayout),
-    line: usize,
-    removed: usize,
-    added: usize,
-) !void {
-    const first = line + 1;
-    std.debug.assert(first + removed <= cache.items.len);
-
-    // Reserved before anything moves, so a failure cannot leave the cache a
-    // different length from the document it describes.
-    try cache.ensureUnusedCapacity(gpa, added);
-
-    for (cache.items[first..][0..removed]) |*entry| {
-        entry.sprites.deinit(gpa);
-        entry.carets.deinit(gpa);
-    }
-    std.mem.copyForwards(LineLayout, cache.items[first..], cache.items[first + removed ..]);
-    cache.items.len -= removed;
-
-    cache.items.len += added;
-    std.mem.copyBackwards(
-        LineLayout,
-        cache.items[first + added ..],
-        cache.items[first .. cache.items.len - added],
-    );
-    for (cache.items[first..][0..added]) |*entry| entry.* = .{};
-
-    // The line the edit landed in kept its place and lost its text.
-    cache.items[line].shaped = false;
-}
-
-/// Four lines, each holding a sprite and a caret, so that dropping an entry
-/// without freeing it shows up as a leak rather than as nothing at all.
-fn testCache(gpa: std.mem.Allocator) !std.ArrayList(LineLayout) {
-    var cache: std.ArrayList(LineLayout) = .empty;
-    for ([_]usize{ 10, 20, 30, 40 }) |bytes| {
-        var entry: LineLayout = .{ .bytes = bytes, .shaped = true };
-        try entry.sprites.append(gpa, .{ .dest = .{ 0, 0 }, .source = .{ 0, 0 }, .size = .{ 1, 1 } });
-        try entry.carets.append(gpa, .{ .offset = 0, .x = 0 });
-        try cache.append(gpa, entry);
-    }
-    return cache;
-}
-
-fn testFree(gpa: std.mem.Allocator, cache: *std.ArrayList(LineLayout)) void {
-    for (cache.items) |*entry| {
-        entry.sprites.deinit(gpa);
-        entry.carets.deinit(gpa);
-    }
-    cache.deinit(gpa);
-}
-
-test "an edit inside one line leaves every other line's layout alone" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
-
-    try spliceLines(gpa, &cache, 1, 0, 0);
-
-    try std.testing.expectEqual(4, cache.items.len);
-    try std.testing.expectEqualSlices(usize, &.{ 10, 20, 30, 40 }, &.{
-        cache.items[0].bytes, cache.items[1].bytes, cache.items[2].bytes, cache.items[3].bytes,
-    });
-    try std.testing.expectEqualSlices(bool, &.{ true, false, true, true }, &.{
-        cache.items[0].shaped, cache.items[1].shaped, cache.items[2].shaped, cache.items[3].shaped,
-    });
-}
-
-test "splitting a line shifts the ones below it without reshaping them" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
-
-    // A newline typed into line 1.
-    try spliceLines(gpa, &cache, 1, 0, 1);
-
-    try std.testing.expectEqual(5, cache.items.len);
-    try std.testing.expect(!cache.items[1].shaped);
-    try std.testing.expect(!cache.items[2].shaped);
-    // Lines 2 and 3 are the same shaped lines, one index further down.
-    try std.testing.expectEqual(30, cache.items[3].bytes);
-    try std.testing.expect(cache.items[3].shaped);
-    try std.testing.expectEqual(40, cache.items[4].bytes);
-    try std.testing.expect(cache.items[4].shaped);
-}
-
-test "joining two lines drops one entry and reshapes the survivor" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
-
-    // Backspace at the start of line 2, joining it onto line 1.
-    try spliceLines(gpa, &cache, 1, 1, 0);
-
-    try std.testing.expectEqual(3, cache.items.len);
-    try std.testing.expectEqual(10, cache.items[0].bytes);
-    try std.testing.expect(!cache.items[1].shaped);
-    try std.testing.expectEqual(40, cache.items[2].bytes);
-    try std.testing.expect(cache.items[2].shaped);
-}
-
-test "deleting across lines collapses them onto the one the edit started in" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
-
-    try spliceLines(gpa, &cache, 0, 3, 0);
-
-    try std.testing.expectEqual(1, cache.items.len);
-    try std.testing.expect(!cache.items[0].shaped);
-}
 
 /// Where line `index` sits, before rounding.
 ///

@@ -407,8 +407,9 @@ rasterize is a broken build rather than bad input.
 
 Shaping is the expensive half of turning a line into pixels, and it depends on
 **the line's bytes and nothing else** — not on where the line sits. So each
-line's sprites are shaped once and kept, in coordinates of the line's own: x
-from where the line starts, y from its baseline. Placing them is then an add.
+line's sprites are shaped once and kept **on the document**, in coordinates of
+the line's own: x from where the line starts, y from its baseline. Placing them
+is then an add.
 
 That is what makes the cache survive an ordinary edit. A newline at the top of
 the file moves every line below it down a row without moving anything within
@@ -673,9 +674,9 @@ change nothing, which is the opposite of what the event loop is for.
 ```
 src/
   main.zig         # SDL setup, the window, the event loop, opening a file
-  text_view.zig    # scrolling, the caret, the per-line layout cache
+  text_view.zig    # scrolling, the caret, hit-testing
   event.zig        # what happened, in our words rather than SDL's
-  document.zig     # the gap buffer and the line index
+  document.zig     # the gap buffer, the line index, the layout cache
   renderer.zig     # GPU device, the two pipelines, drawing
   glyph_atlas.zig  # shaping, rasterizing, atlas uploads
   sdl.zig          # the one @cImport of SDL
@@ -690,9 +691,10 @@ the order to read it in:
 
 | | imports |
 | --- | --- |
-| `config.zig`, `sdl.zig`, `document.zig` | nothing of ours |
+| `config.zig`, `sdl.zig` | nothing of ours |
 | `event.zig` | sdl |
 | `glyph_atlas.zig` | config, sdl |
+| `document.zig` | glyph_atlas |
 | `renderer.zig` | config, sdl, glyph_atlas |
 | `text_view.zig` | document, event, glyph_atlas |
 | `main.zig` | event, renderer, text_view, sdl |
@@ -728,9 +730,13 @@ The view therefore names no SDL type and makes no SDL call. It does reach
 `sdl.zig` through `event.zig`, so the separation is one of vocabulary rather than
 of linkage.
 
-`document.zig` is the text and where its lines begin, and nothing above that. It
-does not know that text gets shaped, drawn or scrolled, which is why it can be
-read and tested on its own.
+`document.zig` is the text, where its lines begin, and what each line shaped to
+— everything derived from the bytes and nothing else. It does not know that text
+gets drawn or scrolled, and holds no coordinates but its own, which is why it can
+be read and tested on its own.
+
+The layout cache is there rather than in the view because it depends on a line's
+bytes and the atlas scale and on nothing a view has.
 
 `glyph_atlas.zig` keeps shaping and rasterizing together because neither can be
 asked without the other — shaping decides which glyphs exist, rasterizing decides

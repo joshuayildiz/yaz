@@ -1,10 +1,13 @@
-//! The document: the text itself and where its lines begin.
+//! The document: the text itself, where its lines begin, and what each line
+//! shaped to.
 //!
-//! Bytes and offsets, and nothing above them. Nothing here knows that text gets
-//! shaped, drawn, or scrolled -- a view of a document owns one of these and
-//! keeps its own layout beside it. See text_view.zig.
+//! Everything here is derived from the bytes and from nothing a view has, which
+//! is why several views can share one of these. What a view keeps of its own is
+//! where its caret is and how far down it is looking. See text_view.zig.
 
 const std = @import("std");
+
+const LineLayout = @import("./glyph_atlas.zig").LineLayout;
 
 /// What an edit did to the line index, so anything else keyed by line can be
 /// spliced rather than rebuilt. Both counts are of lines after `line`.
@@ -527,4 +530,183 @@ test "random edits agree with a plain array doing the same thing" {
         }
         try std.testing.expectEqual(index, buffer.lineCount());
     }
+}
+
+/// A document and every view's shared view of it.
+///
+/// The layout cache is here rather than in a view because shaping depends on a
+/// line's bytes and on the atlas scale, and on nothing else. Two views of one
+/// file would otherwise shape and store every line twice, and splice the same
+/// edit into each copy.
+pub const Document = struct {
+    gpa: std.mem.Allocator,
+    buffer: Buffer,
+
+    /// One entry per line, in the document's order. Empty until the first frame,
+    /// which is where it learns how many lines there are.
+    lines: std.ArrayList(LineLayout) = .empty,
+
+    pub fn init(gpa: std.mem.Allocator, text: []const u8) !Document {
+        return .{ .gpa = gpa, .buffer = try Buffer.init(gpa, text) };
+    }
+
+    pub fn deinit(self: *Document) void {
+        for (self.lines.items) |*entry| {
+            entry.sprites.deinit(self.gpa);
+            entry.carets.deinit(self.gpa);
+        }
+        self.lines.deinit(self.gpa);
+        self.buffer.deinit();
+    }
+
+    pub fn insert(self: *Document, at: usize, text: []const u8) !Edit {
+        const edit = try self.buffer.insert(at, text);
+        try self.splice(edit);
+        return edit;
+    }
+
+    pub fn delete(self: *Document, at: usize, count: usize) !Edit {
+        const edit = self.buffer.delete(at, count);
+        try self.splice(edit);
+        return edit;
+    }
+
+    /// Drops every shaped line, for after the atlas is rebuilt at a different
+    /// scale. Nothing cached survives that: the positions are in pixels of the
+    /// old size, and scaling them is not the same answer, because hinting and
+    /// rounding do not distribute over a scale.
+    ///
+    /// The entries stay, so the cache is still one per line and in step with the
+    /// document.
+    pub fn invalidate(self: *Document) void {
+        for (self.lines.items) |*entry| entry.shaped = false;
+    }
+
+    fn splice(self: *Document, edit: Edit) !void {
+        // Nothing has been laid out yet, so there is nothing to keep in step.
+        if (self.lines.items.len == 0) return;
+        try spliceLines(self.gpa, &self.lines, edit.line, edit.removed, edit.added);
+    }
+};
+
+/// Brings the cache back into step after an edit, told which line it landed in,
+/// how many after it stopped existing, and how many came into being.
+///
+/// Every other entry survives untouched: a line that moved down the screen is
+/// the same shaped line at a different baseline, which is why its glyphs are
+/// kept in coordinates of their own.
+///
+/// Apart from `Document` so it can be tested without one to splice.
+fn spliceLines(
+    gpa: std.mem.Allocator,
+    cache: *std.ArrayList(LineLayout),
+    line: usize,
+    removed: usize,
+    added: usize,
+) !void {
+    const first = line + 1;
+    std.debug.assert(first + removed <= cache.items.len);
+
+    // Reserved before anything moves, so a failure cannot leave the cache a
+    // different length from the document it describes.
+    try cache.ensureUnusedCapacity(gpa, added);
+
+    for (cache.items[first..][0..removed]) |*entry| {
+        entry.sprites.deinit(gpa);
+        entry.carets.deinit(gpa);
+    }
+    std.mem.copyForwards(LineLayout, cache.items[first..], cache.items[first + removed ..]);
+    cache.items.len -= removed;
+
+    cache.items.len += added;
+    std.mem.copyBackwards(
+        LineLayout,
+        cache.items[first + added ..],
+        cache.items[first .. cache.items.len - added],
+    );
+    for (cache.items[first..][0..added]) |*entry| entry.* = .{};
+
+    // The line the edit landed in kept its place and lost its text.
+    cache.items[line].shaped = false;
+}
+
+/// Four lines, each holding a sprite and a caret, so that dropping an entry
+/// without freeing it shows up as a leak rather than as nothing at all.
+fn testCache(gpa: std.mem.Allocator) !std.ArrayList(LineLayout) {
+    var cache: std.ArrayList(LineLayout) = .empty;
+    for ([_]usize{ 10, 20, 30, 40 }) |bytes| {
+        var entry: LineLayout = .{ .bytes = bytes, .shaped = true };
+        try entry.sprites.append(gpa, .{ .dest = .{ 0, 0 }, .source = .{ 0, 0 }, .size = .{ 1, 1 } });
+        try entry.carets.append(gpa, .{ .offset = 0, .x = 0 });
+        try cache.append(gpa, entry);
+    }
+    return cache;
+}
+
+fn testFree(gpa: std.mem.Allocator, cache: *std.ArrayList(LineLayout)) void {
+    for (cache.items) |*entry| {
+        entry.sprites.deinit(gpa);
+        entry.carets.deinit(gpa);
+    }
+    cache.deinit(gpa);
+}
+
+test "an edit inside one line leaves every other line's layout alone" {
+    const gpa = std.testing.allocator;
+    var cache = try testCache(gpa);
+    defer testFree(gpa, &cache);
+
+    try spliceLines(gpa, &cache, 1, 0, 0);
+
+    try std.testing.expectEqual(4, cache.items.len);
+    try std.testing.expectEqualSlices(usize, &.{ 10, 20, 30, 40 }, &.{
+        cache.items[0].bytes, cache.items[1].bytes, cache.items[2].bytes, cache.items[3].bytes,
+    });
+    try std.testing.expectEqualSlices(bool, &.{ true, false, true, true }, &.{
+        cache.items[0].shaped, cache.items[1].shaped, cache.items[2].shaped, cache.items[3].shaped,
+    });
+}
+
+test "splitting a line shifts the ones below it without reshaping them" {
+    const gpa = std.testing.allocator;
+    var cache = try testCache(gpa);
+    defer testFree(gpa, &cache);
+
+    // A newline typed into line 1.
+    try spliceLines(gpa, &cache, 1, 0, 1);
+
+    try std.testing.expectEqual(5, cache.items.len);
+    try std.testing.expect(!cache.items[1].shaped);
+    try std.testing.expect(!cache.items[2].shaped);
+    // Lines 2 and 3 are the same shaped lines, one index further down.
+    try std.testing.expectEqual(30, cache.items[3].bytes);
+    try std.testing.expect(cache.items[3].shaped);
+    try std.testing.expectEqual(40, cache.items[4].bytes);
+    try std.testing.expect(cache.items[4].shaped);
+}
+
+test "joining two lines drops one entry and reshapes the survivor" {
+    const gpa = std.testing.allocator;
+    var cache = try testCache(gpa);
+    defer testFree(gpa, &cache);
+
+    // Backspace at the start of line 2, joining it onto line 1.
+    try spliceLines(gpa, &cache, 1, 1, 0);
+
+    try std.testing.expectEqual(3, cache.items.len);
+    try std.testing.expectEqual(10, cache.items[0].bytes);
+    try std.testing.expect(!cache.items[1].shaped);
+    try std.testing.expectEqual(40, cache.items[2].bytes);
+    try std.testing.expect(cache.items[2].shaped);
+}
+
+test "deleting across lines collapses them onto the one the edit started in" {
+    const gpa = std.testing.allocator;
+    var cache = try testCache(gpa);
+    defer testFree(gpa, &cache);
+
+    try spliceLines(gpa, &cache, 0, 3, 0);
+
+    try std.testing.expectEqual(1, cache.items.len);
+    try std.testing.expect(!cache.items[0].shaped);
 }
