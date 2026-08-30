@@ -20,13 +20,27 @@ const Sprite = glyph_atlas.Sprite;
 /// to be found without looking for it.
 const caret_width = 2;
 
+/// How wide the scrollbar is and how far it sits from the left edge, at a
+/// display scale of one.
+const bar_width = 8;
+const bar_inset = 3;
+
+/// The room the scrollbar takes down the left, which the text starts after.
+pub const bar_gutter = bar_inset + bar_width;
+
+/// The shortest the thumb is allowed to get. A long document would otherwise
+/// scale it down to something there is no catching with a pointer.
+const bar_minimum = 24;
+
 /// One array rather than two: the quads reach the GPU as a single buffer and are
 /// drawn by index into it, so the split is where the colour changes rather than
 /// where the memory does.
 pub const Frame = struct {
     quads: []const Sprite,
-    /// Always the last quad, so it draws over the glyph it sits beside.
+    /// After every glyph, so it draws over the one it sits beside.
     caret: u32,
+    /// After the caret. Both are drawn by the pipeline that samples nothing.
+    bar: u32,
 };
 
 pub const TextView = struct {
@@ -111,6 +125,12 @@ pub const TextView = struct {
         self.scrollTo(self.scroll + whole, atlas, top);
     }
 
+    /// Where the scrollbar's thumb sits in a window `height` tall.
+    pub fn scrollbar(self: *const TextView, atlas: *const GlyphAtlas, top: f32, height: f32) Thumb {
+        const count: f32 = @floatFromInt(self.document.lineCount());
+        return thumb(self.scroll, top + count * atlas.line_height, height, @round(bar_minimum * atlas.scale));
+    }
+
     /// Brings the caret's line into view, and clears the flag that asked for it.
     pub fn scrollToCaret(self: *TextView, atlas: *const GlyphAtlas, top: f32, height: f32) void {
         self.follow_caret = false;
@@ -121,14 +141,17 @@ pub const TextView = struct {
         self.scrollTo(scrollToCentre(self.scroll, index, top, height, atlas.line_height), atlas, top);
     }
 
-    /// The far end is where the last line reaches the top of the window rather
-    /// than the bottom: the end of a file stops being somewhere the view cannot
-    /// follow you to, and what you are reading sits where you are looking. A
-    /// document shorter than the window scrolls by the same rule.
     fn scrollTo(self: *TextView, to: f32, atlas: *const GlyphAtlas, top: f32) void {
+        self.scroll = @min(self.furthest(atlas, top), @max(0, to));
+    }
+
+    /// The far end of the scroll: where the last line reaches the top of the
+    /// window rather than the bottom, so the end of a file stops being somewhere
+    /// the view cannot follow you to. A document shorter than the window scrolls
+    /// by the same rule.
+    fn furthest(self: *const TextView, atlas: *const GlyphAtlas, top: f32) f32 {
         const last = self.document.lineCount() -| 1;
-        const furthest = @max(0, @ceil(top + @as(f32, @floatFromInt(last)) * atlas.line_height));
-        self.scroll = @min(furthest, @max(0, to));
+        return @max(0, @ceil(top + @as(f32, @floatFromInt(last)) * atlas.line_height));
     }
 
     /// Places every line's glyphs on screen, shaping the ones whose text has
@@ -139,7 +162,9 @@ pub const TextView = struct {
     /// read the document; a keystroke shapes the one line it landed in. What
     /// remains per frame is placing the cached glyphs, which has to happen
     /// anyway to fill the buffer the GPU reads.
-    pub fn layout(self: *TextView, atlas: *GlyphAtlas, x: f32, top: f32, height: f32) !Frame {
+    pub fn layout(self: *TextView, atlas: *GlyphAtlas, origin: [2]f32, height: f32) !Frame {
+        const x = origin[0];
+        const top = origin[1];
         // Cached glyphs are placed by adding whole pixels. A fractional origin
         // would change which subpixel variant each one points at, and the cache
         // would be answering the wrong question.
@@ -163,17 +188,17 @@ pub const TextView = struct {
             if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
             std.debug.assert(entry.bytes == self.document.lineLength(index));
 
-            const origin: [2]f32 = .{ x, @round(lineTop(index, top, self.scroll, atlas.line_height) + atlas.ascent) };
+            const baseline = @round(lineTop(index, top, self.scroll, atlas.line_height) + atlas.ascent);
             try self.sprites.ensureUnusedCapacity(self.gpa, entry.sprites.items.len);
             for (entry.sprites.items) |sprite| {
                 self.sprites.appendAssumeCapacity(.{
-                    .dest = .{ sprite.dest[0] + origin[0], sprite.dest[1] + origin[1] },
+                    .dest = .{ sprite.dest[0] + x, sprite.dest[1] + baseline },
                     .source = sprite.source,
                     .size = sprite.size,
                 });
             }
 
-            if (index == caret_line) caret = self.caretOn(atlas, entry, index, x, origin[1]);
+            if (index == caret_line) caret = self.caretOn(atlas, entry, index, x, baseline);
         }
 
         // The caret can be outside the range drawn, above it or below it. Its
@@ -191,10 +216,18 @@ pub const TextView = struct {
         // Last, so it draws over the glyph it sits beside, and so its own
         // colour is a second draw over the tail rather than a per-glyph field.
         try self.sprites.append(self.gpa, caret.?);
+        const caret_at: u32 = @intCast(self.sprites.items.len - 1);
+
+        const t = self.scrollbar(atlas, top, height);
+        try self.sprites.append(self.gpa, .solid(
+            .{ @round(bar_inset * atlas.scale), t.y },
+            .{ @round(bar_width * atlas.scale), t.height },
+        ));
 
         return .{
             .quads = self.sprites.items,
-            .caret = @intCast(self.sprites.items.len - 1),
+            .caret = caret_at,
+            .bar = @intCast(self.sprites.items.len - 1),
         };
     }
 
@@ -208,7 +241,7 @@ pub const TextView = struct {
         baseline: f32,
     ) Sprite {
         const offset = self.cursor - self.document.lineStart(index);
-        return atlas.solidQuad(.{
+        return .solid(.{
             x + @round(caretX(entry.carets.items, offset)),
             baseline - @round(atlas.ascent),
         }, .{ @round(caret_width * atlas.scale), @round(atlas.line_height) });
@@ -405,6 +438,60 @@ fn visibleLines(
     const first = clampIndex(@floor(above / line_height), count);
     const last = clampIndex(@ceil((above + height) / line_height), count);
     return .{ .first = first, .last = @max(first, last) };
+}
+
+/// Where the scrollbar's thumb goes, in pixels down the window.
+pub const Thumb = struct { y: f32, height: f32 };
+
+/// The thumb for a scroll of `scroll` through a document `content` tall, in a
+/// track `height` tall.
+///
+/// The track stands for the document and nothing else, so the thumb is the
+/// window's share of it and sits where the window sits. Scrolling past the last
+/// line therefore carries the thumb below the track, where it is clipped -- which
+/// is what being past the end looks like, and truer than counting empty space as
+/// something there is to scroll through.
+fn thumb(scroll: f32, content: f32, height: f32, minimum: f32) Thumb {
+    // An empty document is not a thing to be a share of.
+    if (content <= 0) return .{ .y = 0, .height = height };
+    const share = height / content;
+    return .{
+        .y = @round(scroll * share),
+        // Short of the minimum there is nothing to catch hold of, and a long
+        // document would take it there.
+        .height = @min(height, @max(minimum, @round(height * share))),
+    };
+}
+
+test "the thumb is the window's share of the document" {
+    // A document twice the window: half the track, at the top.
+    const t = thumb(0, 200, 100, 10);
+    try std.testing.expectEqual(@as(f32, 0), t.y);
+    try std.testing.expectEqual(@as(f32, 50), t.height);
+}
+
+test "the thumb reaches the bottom when the last line does" {
+    // Scrolled so the document's end meets the window's, the thumb's end meets
+    // the track's: 100 of 200 scrolled, half a track tall, half way down.
+    const t = thumb(100, 200, 100, 10);
+    try std.testing.expectEqual(@as(f32, 50), t.y);
+    try std.testing.expectEqual(@as(f32, 50), t.height);
+}
+
+test "scrolling past the last line carries the thumb below the track" {
+    // The overscroll is not part of the document, so the thumb keeps going and
+    // is clipped rather than being squeezed to make room for empty space.
+    const t = thumb(160, 200, 100, 10);
+    try std.testing.expectEqual(@as(f32, 80), t.y);
+    try std.testing.expect(t.y + t.height > 100);
+}
+
+test "a document shorter than the window fills the track" {
+    try std.testing.expectEqual(@as(f32, 100), thumb(0, 40, 100, 10).height);
+}
+
+test "a long document stops shrinking the thumb at the minimum" {
+    try std.testing.expectEqual(@as(f32, 24), thumb(0, 1_000_000, 100, 24).height);
 }
 
 /// Where the scroll has to move to put line `index` down the middle of the

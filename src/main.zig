@@ -3,6 +3,7 @@ const std = @import("std");
 const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const TextView = @import("./text_view.zig").TextView;
+const bar_gutter = @import("./text_view.zig").bar_gutter;
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 
@@ -16,8 +17,14 @@ const text_margin: [2]f32 = .{ 5, 5 };
 
 /// Whole pixels, which the layout cache depends on: a fractional origin would
 /// change which subpixel variant every cached glyph points at.
+///
+/// The margin is measured from the scrollbar rather than from the window, since
+/// the bar is down the left and the text starts after it.
 fn textOrigin(scale: f32) [2]f32 {
-    return .{ @round(text_margin[0] * scale), @round(text_margin[1] * scale) };
+    return .{
+        @round((bar_gutter + text_margin[0]) * scale),
+        @round(text_margin[1] * scale),
+    };
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -187,8 +194,8 @@ const App = struct {
         if (self.view.follow_caret) {
             self.view.scrollToCaret(&self.renderer.atlas, origin[1], @floatFromInt(height));
         }
-        const frame = try self.view.layout(&self.renderer.atlas, origin[0], origin[1], @floatFromInt(height));
-        try self.renderer.present(frame.quads, frame.caret);
+        const frame = try self.view.layout(&self.renderer.atlas, origin, @floatFromInt(height));
+        try self.renderer.present(frame.quads, frame.caret, frame.bar);
     }
 };
 

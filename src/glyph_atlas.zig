@@ -90,6 +90,12 @@ pub const Sprite = extern struct {
     dest: [2]f32,
     source: [2]f32,
     size: [2]f32,
+
+    /// A quad for the pipeline that samples nothing, so `source` means nothing
+    /// either. Any size: this is what the caret and the scrollbar are.
+    pub fn solid(dest: [2]f32, extent: [2]f32) Sprite {
+        return .{ .dest = dest, .source = .{ 0, 0 }, .size = extent };
+    }
 };
 
 /// One per cluster boundary shaping reported, plus one past the last glyph.
@@ -149,11 +155,6 @@ pub const GlyphAtlas = struct {
     glyphs: []Glyph,
     used: u16 = 0,
 
-    /// A square that is opaque everywhere, and how large a rectangle may sample
-    /// it. It holds no glyph: it lets the caret be drawn by the pipeline that
-    /// draws glyphs, without a shader that knows what a caret is.
-    solid: struct { x: u16 = 0, y: u16 = 0, extent: u16 = 0 } = .{},
-
     /// A shelf packer: fill a row left to right, start a new row when the next
     /// glyph will not fit. Glyphs at one pixel size are close enough in height
     /// that the wasted strip above the short ones is not worth a better fit.
@@ -210,7 +211,7 @@ pub const GlyphAtlas = struct {
         var shaper = try Shaper.init(scale);
         errdefer shaper.deinit();
 
-        var self: GlyphAtlas = .{
+        const self: GlyphAtlas = .{
             .gpa = gpa,
             .gpu = gpu,
             .library = library,
@@ -223,12 +224,6 @@ pub const GlyphAtlas = struct {
             .line_height = fromFixed(face.*.size.*.metrics.height),
             .scale = scale,
         };
-
-        // Reserved while the atlas is certainly empty. The errdefers above
-        // still cover everything but the two staging lists.
-        errdefer self.staging.deinit(gpa);
-        errdefer self.uploads.deinit(gpa);
-        try self.reserveSolid();
 
         return self;
     }
@@ -263,42 +258,7 @@ pub const GlyphAtlas = struct {
         self.staging.clearRetainingCapacity();
         self.uploads.clearRetainingCapacity();
 
-        try self.reserveSolid();
         return true;
-    }
-
-    /// Square at the line height: the tallest thing drawn this way is a caret.
-    fn reserveSolid(self: *GlyphAtlas) !void {
-        const extent: u16 = @intFromFloat(@ceil(self.line_height));
-        // The atlas is empty and this is smaller than one glyph row.
-        const placed = self.pack(extent, extent) orelse return error.AtlasFull;
-
-        const offset: u32 = @intCast(self.staging.items.len);
-        try self.staging.appendNTimes(self.gpa, 0xff, @as(usize, extent) * extent);
-        try self.uploads.append(self.gpa, .{
-            .x = placed.x,
-            .y = placed.y,
-            .width = extent,
-            .height = extent,
-            .offset = offset,
-        });
-
-        self.solid = .{ .x = placed.x, .y = placed.y, .extent = extent };
-    }
-
-    /// A filled rectangle as a sprite, so the caret is one more instance in the
-    /// frame's buffer.
-    pub fn solidQuad(self: *const GlyphAtlas, dest: [2]f32, extent: [2]f32) Sprite {
-        // One `size` serves both the quad and the region it samples, so a
-        // rectangle larger than the patch would sample the glyphs beside it.
-        const limit: f32 = @floatFromInt(self.solid.extent);
-        std.debug.assert(extent[0] <= limit and extent[1] <= limit);
-
-        return .{
-            .dest = dest,
-            .source = .{ @floatFromInt(self.solid.x), @floatFromInt(self.solid.y) },
-            .size = extent,
-        };
     }
 
     pub fn deinit(self: *GlyphAtlas) void {

@@ -164,6 +164,21 @@ nothing when nothing is moving: momentum is more wheel events, and they stop
 arriving when it stops, so the loop goes back to blocking. There is no animation
 timer here and there does not need to be one.
 
+### The scrollbar
+
+A thumb down the left edge, always drawn, with the text starting after it — the
+margin in `main.zig` is measured from the bar rather than from the window.
+
+The track stands for **the document and nothing else**, so the thumb is the
+window's share of it and sits where the window sits. Scrolling past the last line
+therefore carries the thumb below the track, where it is clipped: counting that
+empty space as something to scroll through would shrink the thumb to pay for
+space that holds nothing. It stops shrinking at a minimum, or a long document
+would take it below anything there is to catch hold of.
+
+It is drawn by the pipeline that samples nothing; see [Drawing](#drawing) for why
+it cannot come from the atlas.
+
 ### Redrawing
 
 The render loop blocks in `SDL_WaitEvent` and draws only when something has
@@ -424,7 +439,7 @@ from the atlas — and the same day will fix both.
 
 ### Drawing
 
-A frame is two draw calls, whatever is on screen, and the second one draws a
+A frame is three draw calls, whatever is on screen, and two of them draw a
 single quad. The vertex shader builds each quad's four corners from
 `gl_VertexIndex` and reads everything that differs between glyphs — where it
 lands, where to sample it, how big it is — out of a storage buffer indexed by
@@ -433,13 +448,22 @@ lands, where to sample it, how big it is — out of a storage buffer indexed by
 ```
 SDL_DrawGPUPrimitives(pass, 4, glyph_count, 0, 0);          // the text
 SDL_DrawGPUPrimitives(pass, 4, 1, 0, glyph_count);          // the caret
+SDL_DrawGPUPrimitives(pass, 4, 1, 0, glyph_count + 1);      // the scrollbar
 ```
 
-The caret is a second call only so it can be a different colour: it is the last
-quad in the same buffer, drawn by the same pipeline with the same bindings, and
-the fragment uniform is all that changes between them. The alternative is a
-colour on every sprite — four more floats uploaded per glyph per frame to repeat
-one value.
+**There are two pipelines**, and they differ by their fragment shader alone —
+same vertex shader, same storage buffer, same blend, same target. One samples the
+atlas; the other samples nothing and writes a flat colour.
+
+That second one exists because a `Sprite` carries **one size for both the quad
+and the region it samples**, so a quad drawn from the atlas can be no larger than
+what it points at. That is fine for a caret, which is a line tall by
+construction, and impossible for a scrollbar, which is as tall as the window. A
+pipeline that samples nothing has no source rectangle to outgrow.
+
+The caret and the scrollbar share that pipeline and take a call each only because
+they are two colours. The alternative is a colour on every sprite — four more
+floats uploaded per glyph per frame to repeat one value.
 
 The vertex uniform holds what the whole frame shares, the viewport and the atlas
 size. The fragment stage has one of its own for the colour, because the atlas
@@ -447,8 +471,8 @@ stores coverage rather than colour: a glyph's bitmap says how much of each pixel
 is ink, and nothing about what ink is. That colour, the caret's and the
 background are the theme, and all three live in `config.zig`.
 
-The caret goes through this shader too, sampling a patch of the atlas that is
-opaque everywhere, so nothing here knows what a caret is.
+Neither shader knows what a caret or a scrollbar is; they are quads with a
+colour, and the colour is the only thing the second pipeline is told.
 
 The sprite array is copied to the GPU exactly as `glyph_atlas.zig` built it, so
 the Zig struct and the one declared in the shader have to agree byte for byte.
@@ -587,14 +611,16 @@ makes backspacing over an accent take one press.
 
 ### Drawing it
 
-The pipeline only knows how to draw quads that sample the glyph atlas, so the
-atlas holds **one patch that is not a glyph**: a square of full coverage at the
-line height, reserved before anything else. A quad pointed at it comes out solid.
+The caret is one more instance in the frame's sprite buffer, appended after every
+glyph so it draws over the one it sits beside. It goes through the pipeline that
+samples nothing rather than the one that samples the atlas, so it is a rectangle
+and a colour and no more than that.
 
-That makes the caret one more instance in the frame's sprite buffer — no second
-pipeline and no shader that knows what a caret is. It is appended last, so it
-draws over the glyph beside it, and drawn by a second call so it can have its own
-colour.
+It used to be drawn from a patch of full coverage reserved in the atlas, which
+worked because a caret is a line tall. The scrollbar is as tall as the window and
+a sprite's one size serves both its quad and the region it samples, so that patch
+could not stretch to it — and once a second pipeline existed for the scrollbar,
+the caret had no reason not to use it either. The patch is gone.
 
 The caret does not blink. Blinking means waking up twice a second forever to
 change nothing, which is the opposite of what the event loop is for.

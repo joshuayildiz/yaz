@@ -19,3 +19,4 @@ pub const font_size = 13;
 pub const background: [4]f32 = .{ 1, 1, 1, 1 };
 pub const text_colour: [4]f32 = .{ 0, 0, 0, 1 };
 pub const caret_colour: [4]f32 = .{ 0, 0, 0, 1 };
+pub const scrollbar_colour: [4]f32 = .{ 0, 0, 0, 0.28 };

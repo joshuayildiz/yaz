@@ -171,8 +171,9 @@ suggests something is scanning fonts, which would mean SDL is doing it, not us.
 Every glyph is one instance of a four-vertex triangle strip, and the screenful is
 a single `SDL_DrawGPUPrimitives`. Nothing is sent per glyph: where each lands,
 what to sample and how big it is come out of a storage buffer the vertex shader
-indexes by `gl_InstanceIndex`. The caret is a second call over the last quad of
-that buffer, so it can be a different colour.
+indexes by `gl_InstanceIndex`. The caret and the scrollbar are a call each after
+it, over the last two quads of the same buffer, on a second pipeline that samples
+nothing -- what changes between the three is the fragment uniform.
 
 **Rests on:** `first_instance` reaching the shader through `gl_InstanceIndex` on
 Metal as it does on Vulkan. Metal's `[[instance_id]]` counts from zero whatever

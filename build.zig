@@ -6,6 +6,7 @@ const config = @import("src/config.zig");
 const shaders = [_]Shader{
     .{ .name = "quad.vert", .glslang_stage = "vert", .shadercross_stage = "vertex" },
     .{ .name = "quad.frag", .glslang_stage = "frag", .shadercross_stage = "fragment" },
+    .{ .name = "solid.frag", .glslang_stage = "frag", .shadercross_stage = "fragment" },
 };
 
 const Shader = struct {

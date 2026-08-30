@@ -25,6 +25,7 @@ const shader_target: struct {
 
 const vertex_shader_code = @embedFile("quad.vert");
 const fragment_shader_code = @embedFile("quad.frag");
+const solid_shader_code = @embedFile("solid.frag");
 
 /// Matches the uniform block in quad.vert.glsl. Both fields are vec2, which has
 /// the same size and alignment in std140 as here.
@@ -49,6 +50,11 @@ pub const Renderer = struct {
     gpu: *c.SDL_GPUDevice,
     window: *c.SDL_Window,
     pipeline: *c.SDL_GPUGraphicsPipeline,
+
+    /// Quads that are a flat colour: the caret and the scrollbar. Same vertex
+    /// shader and same buffer as the glyphs, and a fragment shader that samples
+    /// nothing -- which is what lets a quad be larger than anything in the atlas.
+    solid: *c.SDL_GPUGraphicsPipeline,
     sampler: *c.SDL_GPUSampler,
     atlas: GlyphAtlas,
 
@@ -91,8 +97,14 @@ pub const Renderer = struct {
             std.mem.span(device_name),
         });
 
-        const pipeline = try createPipeline(gpu, window);
+        const pipeline = try createPipeline(gpu, window, fragment_shader_code, .{
+            .samplers = 1,
+            .uniform_buffers = 1,
+        });
         errdefer c.SDL_ReleaseGPUGraphicsPipeline(gpu, pipeline);
+
+        const solid = try createPipeline(gpu, window, solid_shader_code, .{ .uniform_buffers = 1 });
+        errdefer c.SDL_ReleaseGPUGraphicsPipeline(gpu, solid);
 
         var atlas = try GlyphAtlas.init(gpa, gpu, displayScale(window));
         errdefer atlas.deinit();
@@ -122,6 +134,7 @@ pub const Renderer = struct {
             .gpu = gpu,
             .window = window,
             .pipeline = pipeline,
+            .solid = solid,
             .sampler = sampler,
             .atlas = atlas,
             .instances = instances,
@@ -133,6 +146,7 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         c.SDL_ReleaseGPUTransferBuffer(self.gpu, self.transfer);
         c.SDL_ReleaseGPUBuffer(self.gpu, self.instances);
+        c.SDL_ReleaseGPUGraphicsPipeline(self.gpu, self.solid);
         self.atlas.deinit();
         c.SDL_ReleaseGPUSampler(self.gpu, self.sampler);
         c.SDL_ReleaseGPUGraphicsPipeline(self.gpu, self.pipeline);
@@ -145,8 +159,9 @@ pub const Renderer = struct {
     /// `caret` says which one is the caret, drawn by a second call so it can be
     /// a different colour. The alternative is four more floats on every sprite,
     /// uploaded per glyph per frame to repeat one value.
-    pub fn present(self: *Renderer, sprites: []const Sprite, caret: u32) !void {
+    pub fn present(self: *Renderer, sprites: []const Sprite, caret: u32, bar: u32) !void {
         std.debug.assert(sprites.len == 0 or caret < sprites.len);
+        std.debug.assert(sprites.len == 0 or bar < sprites.len);
         // A copy pass cannot be opened inside a render pass, and doing it here
         // keeps it out of the wait for a frame.
         try self.atlas.upload();
@@ -197,17 +212,6 @@ pub const Renderer = struct {
             std.log.err("SDL_BeginGPURenderPass: {s}", .{sdl.lastError()});
             return error.SdlBeginRenderPass;
         };
-        c.SDL_BindGPUGraphicsPipeline(pass, self.pipeline);
-        const binding = std.mem.zeroInit(c.SDL_GPUTextureSamplerBinding, .{
-            .texture = self.atlas.texture,
-            .sampler = self.sampler,
-        });
-        c.SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
-        const instances = [_]?*c.SDL_GPUBuffer{self.instances};
-        c.SDL_BindGPUVertexStorageBuffers(pass, 0, &instances, 1);
-
-        // Two calls, the second drawing one quad. The split is the colour and
-        // nothing else: same pipeline, same bindings, same buffer.
         if (count > 0) {
             const frame: Frame = .{
                 .viewport = .{ @floatFromInt(width), @floatFromInt(height) },
@@ -215,17 +219,38 @@ pub const Renderer = struct {
             };
             c.SDL_PushGPUVertexUniformData(cmd, 0, &frame, @sizeOf(Frame));
 
-            // The caret is last, so the glyphs are everything before it, and
-            // an empty document is a frame with only a caret in it.
+            const instances = [_]?*c.SDL_GPUBuffer{self.instances};
+
+            // Every glyph on screen, in one call. The caret is the first quad
+            // that is not one, so an empty document draws no glyphs at all.
             if (caret > 0) {
+                c.SDL_BindGPUGraphicsPipeline(pass, self.pipeline);
+                const binding = std.mem.zeroInit(c.SDL_GPUTextureSamplerBinding, .{
+                    .texture = self.atlas.texture,
+                    .sampler = self.sampler,
+                });
+                c.SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+                c.SDL_BindGPUVertexStorageBuffers(pass, 0, &instances, 1);
+
                 const ink: Ink = .{ .colour = config.text_colour };
                 c.SDL_PushGPUFragmentUniformData(cmd, 0, &ink, @sizeOf(Ink));
                 c.SDL_DrawGPUPrimitives(pass, 4, caret, 0, 0);
             }
 
+            // The caret and the scrollbar sample nothing, so they go through a
+            // pipeline that does not, and a quad stops being limited to the size
+            // of something in the atlas. One call each because they are two
+            // colours; the pipeline is bound once for both.
+            c.SDL_BindGPUGraphicsPipeline(pass, self.solid);
+            c.SDL_BindGPUVertexStorageBuffers(pass, 0, &instances, 1);
+
             const caret_ink: Ink = .{ .colour = config.caret_colour };
             c.SDL_PushGPUFragmentUniformData(cmd, 0, &caret_ink, @sizeOf(Ink));
             c.SDL_DrawGPUPrimitives(pass, 4, 1, 0, caret);
+
+            const bar_ink: Ink = .{ .colour = config.scrollbar_colour };
+            c.SDL_PushGPUFragmentUniformData(cmd, 0, &bar_ink, @sizeOf(Ink));
+            c.SDL_DrawGPUPrimitives(pass, 4, 1, 0, bar);
         }
 
         c.SDL_EndGPURenderPass(pass);
@@ -343,17 +368,21 @@ fn createShader(
     };
 }
 
-fn createPipeline(gpu: *c.SDL_GPUDevice, window: *c.SDL_Window) !*c.SDL_GPUGraphicsPipeline {
+/// The two pipelines differ by their fragment shader and nothing else: same
+/// vertex shader, same storage buffer, same blend, same target.
+fn createPipeline(
+    gpu: *c.SDL_GPUDevice,
+    window: *c.SDL_Window,
+    fragment_code: []const u8,
+    fragment_resources: Resources,
+) !*c.SDL_GPUGraphicsPipeline {
     const vertex = try createShader(gpu, c.SDL_GPU_SHADERSTAGE_VERTEX, .{
         .storage_buffers = 1,
         .uniform_buffers = 1,
     }, vertex_shader_code);
     defer c.SDL_ReleaseGPUShader(gpu, vertex);
 
-    const fragment = try createShader(gpu, c.SDL_GPU_SHADERSTAGE_FRAGMENT, .{
-        .samplers = 1,
-        .uniform_buffers = 1,
-    }, fragment_shader_code);
+    const fragment = try createShader(gpu, c.SDL_GPU_SHADERSTAGE_FRAGMENT, fragment_resources, fragment_code);
     defer c.SDL_ReleaseGPUShader(gpu, fragment);
 
     const color_target = std.mem.zeroInit(c.SDL_GPUColorTargetDescription, .{
