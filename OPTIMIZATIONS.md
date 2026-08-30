@@ -21,6 +21,7 @@ still unmeasured on it. What is left to settle is in [FIXME.md](FIXME.md).
 | 8 | [No font discovery](#8-no-font-discovery) | runs | runs | runs |
 | 9 | [One call for the text](#9-one-draw-call-for-the-text) | runs | runs | measured |
 | 10 | [Per-line layout cache](#10-per-line-layout-cache) | runs | runs | runs |
+| 11 | [Only the lines on screen](#11-only-the-lines-on-screen) | runs | runs | measured |
 
 "runs" means the build starts and draws, not that anything was measured.
 "measured" means the numbers below were taken on that platform.
@@ -192,6 +193,33 @@ one would change which subpixel variant each cached glyph points at.
 
 **Check:** `TextView.layout` asserts its `x` is rounded, and the cache asserts
 its length against the document's line count every frame. Run a Debug build.
+
+## 11. Only the lines on screen
+
+`layout` places the lines that intersect the window and stops. A line below it is
+not placed and, more to the point, is not shaped: `visibleCount` bounds the loop
+and the existing `if (!entry.shaped)` does the rest.
+
+Opening a 5000-line file, measured on an M2 by disabling the bound in an
+otherwise identical binary:
+
+| | lines shaped | sprites | first frame |
+| --- | --- | --- | --- |
+| every line | 5001 | 211,142 | 2076, 2202, 2052 ms |
+| on screen only | 51 | 2,281 | 127, 151, 115 ms |
+
+**Rests on:** the window's pixel height, read each redraw from
+`SDL_GetWindowSizeInPixels` rather than the swapchain, which is not acquired
+until `present`. The two can disagree for one frame during a live resize, which
+is one line too many or too few for that frame.
+
+The caret is the exception the bound has to make: its line is shaped and its quad
+built even when it is below the window, since `present` draws one unconditionally.
+
+**Check:** shrink the window and count what is drawn -- 1536 pixels of height
+gives 51 lines and 600 gives 20, at the current size. Then hold Return past the
+bottom of the window in a Debug build: the caret leaves the drawn range, and
+nothing asserts.
 
 ## Not optimizations yet
 

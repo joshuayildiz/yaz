@@ -69,10 +69,11 @@ error: latin1.txt is not UTF-8: the byte at offset 4102 does not begin or
        continue a character
 ```
 
-The size limit is not about reading. `TextView.layout` places every glyph of
-every line on every frame, so a large file is slow for reasons unrelated to the
-file, and the atlas fills long before memory does. It comes out when layout
-draws only what is on screen.
+The size limit is not about reading, and no longer about drawing either — see
+[the layout cache](#the-layout-cache). What is left is that the cache holds a
+64-byte entry per line of the document however little is on screen, and that
+nothing scrolls yet, so the rest of a large file would be paid for and
+unreachable.
 
 UTF-8 is refused rather than drawn because only one layer would complain.
 HarfBuzz substitutes a replacement character and carries on, so bad bytes would
@@ -349,6 +350,14 @@ translation would change which subpixel variant each glyph points at, which
 `layout` asserts. And each line's baseline is rounded once for the line rather
 than per glyph, which is the same answer for anything without a fractional
 vertical offset — everything in this font.
+
+Only the lines that intersect the window are placed, and a line below it is not
+shaped either — which is where the cost of opening a long file went. `layout`
+takes the window's pixel height and `visibleCount` turns it into a line count;
+the existing `if (!entry.shaped)` does the rest. The caret is the exception: its
+line is shaped and its quad built even when it is off the bottom, because the
+renderer draws one unconditionally. The numbers are in
+[OPTIMIZATIONS.md](OPTIMIZATIONS.md).
 
 Invalidation is not a search. `Buffer.insert` and `Buffer.delete` already work
 out which line an edit landed in and how many it created or destroyed, because

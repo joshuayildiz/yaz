@@ -94,7 +94,7 @@ pub const TextView = struct {
     /// read the document; a keystroke shapes the one line it landed in. What
     /// remains per frame is placing the cached glyphs, which has to happen
     /// anyway to fill the buffer the GPU reads.
-    pub fn layout(self: *TextView, atlas: *GlyphAtlas, x: f32, top: f32) !Frame {
+    pub fn layout(self: *TextView, atlas: *GlyphAtlas, x: f32, top: f32, height: f32) !Frame {
         // Cached glyphs are placed by adding whole pixels. A fractional origin
         // would change which subpixel variant each one points at, and the cache
         // would be answering the wrong question.
@@ -112,8 +112,9 @@ pub const TextView = struct {
         // same shaped layout as the glyphs it sits between.
         var caret: ?Sprite = null;
 
+        const visible = visibleCount(top, height, atlas.line_height, count);
         var baseline = top + atlas.ascent;
-        for (self.lines.items, 0..) |*entry, index| {
+        for (self.lines.items[0..visible], 0..) |*entry, index| {
             if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
             std.debug.assert(entry.bytes == self.document.lineLength(index));
 
@@ -127,19 +128,24 @@ pub const TextView = struct {
                 });
             }
 
-            if (index == caret_line) {
-                const offset = self.cursor - self.document.lineStart(index);
-                caret = atlas.solidQuad(.{
-                    x + @round(caretX(entry.carets.items, offset)),
-                    origin[1] - @round(atlas.ascent),
-                }, .{ @round(caret_width * atlas.scale), @round(atlas.line_height) });
-            }
+            if (index == caret_line) caret = self.caretOn(atlas, entry, index, x, origin[1]);
 
             baseline += atlas.line_height;
         }
 
-        // Every offset falls on a line, so the loop met the caret's.
-        std.debug.assert(caret != null);
+        // The caret can be below the last line drawn -- enough newlines push it
+        // past the bottom of the window. Its quad is built anyway, out where the
+        // GPU discards it, because `present` draws one unconditionally. Nothing
+        // partly on screen reaches here, so where exactly it lands does not
+        // matter.
+        if (caret == null) {
+            const entry = &self.lines.items[caret_line];
+            if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(caret_line), entry);
+            std.debug.assert(entry.bytes == self.document.lineLength(caret_line));
+
+            const below = top + atlas.ascent + @as(f32, @floatFromInt(caret_line)) * atlas.line_height;
+            caret = self.caretOn(atlas, entry, caret_line, x, @round(below));
+        }
         // Last, so it draws over the glyph it sits beside, and so its own
         // colour is a second draw over the tail rather than a per-glyph field.
         try self.sprites.append(self.gpa, caret.?);
@@ -148,6 +154,22 @@ pub const TextView = struct {
             .quads = self.sprites.items,
             .caret = @intCast(self.sprites.items.len - 1),
         };
+    }
+
+    /// The caret's quad on `index`, whose layout must already be shaped.
+    fn caretOn(
+        self: *const TextView,
+        atlas: *const GlyphAtlas,
+        entry: *const LineLayout,
+        index: usize,
+        x: f32,
+        baseline: f32,
+    ) Sprite {
+        const offset = self.cursor - self.document.lineStart(index);
+        return atlas.solidQuad(.{
+            x + @round(caretX(entry.carets.items, offset)),
+            baseline - @round(atlas.ascent),
+        }, .{ @round(caret_width * atlas.scale), @round(atlas.line_height) });
     }
 
     /// `x` and `top` are the origin the layout was placed at, and `point` is in
@@ -311,6 +333,75 @@ test "deleting across lines collapses them onto the one the edit started in" {
 
     try std.testing.expectEqual(1, cache.items.len);
     try std.testing.expect(!cache.items[0].shaped);
+}
+
+/// How many lines from the top of the document intersect a viewport `height`
+/// tall. `top` is where the first line begins, so a larger margin leaves room
+/// for fewer of them.
+fn visibleCount(top: f32, height: f32, line_height: f32, count: usize) usize {
+    // Line `i` begins at `top + i * line_height` and shows while that is above
+    // the bottom of the window. Ceil rather than `@floor(..) + 1`, which is one
+    // too many whenever the division comes out even -- for a window of no
+    // height, a line drawn out of nothing.
+    return clampIndex(@ceil((height - top) / line_height), count);
+}
+
+/// A line number that arithmetic produced, brought into `[0, count]` before it
+/// becomes an integer. `@intFromFloat` is undefined outside the range of what it
+/// converts to, and nothing bounds this but the size of the window.
+fn clampIndex(value: f32, count: usize) usize {
+    // Negated so that a NaN, which compares false whichever way it is asked,
+    // lands here rather than on a conversion that has no answer for it.
+    if (!(value > 0)) return 0;
+    const limit: f32 = @floatFromInt(count);
+    if (value >= limit) return count;
+    return @intFromFloat(value);
+}
+
+test "a viewport taller than the document shows all of it" {
+    try std.testing.expectEqual(@as(usize, 4), visibleCount(10, 1000, 15, 4));
+}
+
+test "a viewport shorter than the document stops short of its end" {
+    // Lines of 15 starting 10 down, so the sixth begins at 85 and the seventh
+    // at 100, which is already the bottom edge.
+    try std.testing.expectEqual(@as(usize, 6), visibleCount(10, 100, 15, 10));
+}
+
+test "a line beginning exactly at the bottom edge is not drawn" {
+    // Lines of 15 from 0: the fourth begins at 45, which is the edge itself.
+    // The `@floor(..) + 1` spelling answers 4 here.
+    try std.testing.expectEqual(@as(usize, 3), visibleCount(0, 45, 15, 10));
+}
+
+test "a window with no height draws nothing" {
+    try std.testing.expectEqual(@as(usize, 0), visibleCount(0, 0, 15, 10));
+}
+
+test "a margin taller than the window leaves room for nothing" {
+    try std.testing.expectEqual(@as(usize, 0), visibleCount(60, 40, 15, 10));
+}
+
+test "the last line drawn is on screen and the next one is not" {
+    // The property the arithmetic exists for, rather than worked answers: at
+    // every height, everything counted begins above the edge and the first line
+    // left out does not.
+    const top = 5;
+    const line_height = 15.2;
+    const count = 400;
+
+    var height: f32 = 0;
+    while (height <= 2000) : (height += 7) {
+        const visible = visibleCount(top, height, line_height, count);
+        if (visible > 0) {
+            const last = top + @as(f32, @floatFromInt(visible - 1)) * line_height;
+            try std.testing.expect(last < height);
+        }
+        if (visible < count) {
+            const next = top + @as(f32, @floatFromInt(visible)) * line_height;
+            try std.testing.expect(next >= height);
+        }
+    }
 }
 
 /// How far along a line the caret sits, given an offset into it.

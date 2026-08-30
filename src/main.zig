@@ -6,9 +6,9 @@ const TextView = @import("./text_view.zig").TextView;
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 
-/// The largest file yaz will open. Not about reading: `TextView.layout` places
-/// every glyph of every line on every frame, so this comes out when layout draws
-/// only what is on screen.
+/// The largest file yaz will open. The layout cache holds a 64-byte entry per
+/// line of the document whatever is on screen, and nothing scrolls yet, so the
+/// rest of a large file would be paid for and unreachable.
 const file_limit = 1 << 20;
 
 /// Where the first line's top-left corner sits, at a display scale of one.
@@ -149,8 +149,14 @@ const App = struct {
         const scale = displayScale(self.renderer.window);
         if (try self.renderer.atlas.setScale(scale)) self.view.invalidate();
 
+        // The window rather than the swapchain, which is not acquired until
+        // `present`. The two can disagree for a frame mid-resize, which is one
+        // line too many or too few.
+        var height: c_int = 0;
+        _ = c.SDL_GetWindowSizeInPixels(self.renderer.window, null, &height);
+
         const origin = textOrigin(scale);
-        const frame = try self.view.layout(&self.renderer.atlas, origin[0], origin[1]);
+        const frame = try self.view.layout(&self.renderer.atlas, origin[0], origin[1], @floatFromInt(height));
         try self.renderer.present(frame.quads, frame.caret);
     }
 };
@@ -198,7 +204,7 @@ fn open(init: std.process.Init) !Opened {
         error.FileNotFound => return .{ .text = try init.gpa.alloc(u8, 0), .path = path },
         error.StreamTooLong => {
             std.log.err(
-                "{s} is larger than the {d}MB yaz will open, because layout draws every line rather than the ones on screen",
+                "{s} is larger than the {d}MB yaz will open, and nothing scrolls to the rest of it yet",
                 .{ path, file_limit >> 20 },
             );
             return error.FileTooLarge;
