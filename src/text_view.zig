@@ -55,11 +55,14 @@ pub const TextView = struct {
     /// which is what keeps a redraw free of the allocator.
     sprites: std.ArrayList(Sprite) = .empty,
 
+    /// The caret starts at the top of the document rather than the end of it.
+    /// Nothing scrolls yet, so a caret at the end of a file taller than the
+    /// window is a caret nobody can see, typing into a place nobody is looking.
     pub fn init(gpa: std.mem.Allocator, text: []const u8) !TextView {
         return .{
             .gpa = gpa,
             .document = try Buffer.init(gpa, text),
-            .cursor = text.len,
+            .cursor = 0,
         };
     }
 

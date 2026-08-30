@@ -11,7 +11,11 @@ Early. Currently: a window, a GPU device, and lines of text shaped by HarfBuzz
 and drawn from a glyph atlas that FreeType fills as glyphs are asked for.
 Proportional and kerned, with a per-line layout cache so a keystroke reshapes
 one line rather than the screen. The text comes out of a gap buffer, there is a
-caret, and you can type into it or click to put the caret somewhere else.
+caret, and you can type into it or click to put the caret somewhere else. It
+opens a file named on the command line.
+
+**There is no way to save.** Anything typed is lost when the window closes, and
+that includes edits to a file that was opened. Nothing is written to disk.
 
 Built and run on Linux, Windows and macOS. Building happens on a Linux or macOS
 host; Windows and macOS binaries are cross-compiled.
@@ -38,6 +42,60 @@ zig build test
 The first build downloads the shader compiler: an 8MB archive, 28MB unpacked.
 Later builds skip it. Targeting macOS costs more the first time; see
 [macOS](#macos).
+
+## Opening a file
+
+```sh
+yaz               # an empty document
+yaz notes.md      # notes.md, with the caret at the top
+yaz new.md        # new.md does not exist: an empty document under that name
+```
+
+One optional argument, and the window takes its title from the path as typed.
+`assets/sample.txt` is there to be opened: it is the text the editor was
+developed against, and it exercises ligatures, a combining mark, `.notdef` and
+proportional advances in six lines.
+
+Naming a file that does not exist is not an error — that is how a new file
+begins. Anything else is: a directory, a file that cannot be read, or one past
+the size limit. Each says which and stops, because the alternative is an empty
+window that looks exactly like an empty file.
+
+```
+$ yaz war-and-peace.txt
+error: war-and-peace.txt is larger than the 1MB yaz will open, because layout
+       draws every line rather than the ones on screen
+```
+
+That limit is not about reading. `TextView.layout` places every glyph of every
+line on every frame, so a large file is slow for reasons that have nothing to do
+with the file, and the atlas runs out of room long before memory does. Refusing
+with a number beats opening something that appears to hang. It comes out when
+layout draws only what is on screen.
+
+**A file that is not valid UTF-8 is refused**, with the offset of the byte that
+made it so:
+
+```
+$ yaz notes.txt
+error: notes.txt is not UTF-8: the byte at offset 4102 does not begin or
+       continue a character
+```
+
+Refused rather than drawn, because everything above the bytes assumes UTF-8 and
+only one layer would complain. HarfBuzz substitutes a replacement character and
+carries on, so the text would merely look wrong — but stepping the caret back
+over a character walks continuation bytes until it finds one that is not, and
+over stray bytes it steps back over as many as happen to be adjacent and deletes
+all of them. An editor that quietly makes a file worse than it found it is worse
+than one that will not open it. A Latin-1 file lands here, as does anything
+binary.
+
+**CRLF is converted to LF as the file is read**, so a file written on Windows
+does not show a `.notdef` box at the end of every line, and everything
+downstream has one kind of line ending to assume. The bytes in memory therefore
+stop matching the bytes on disk — a trade worth revisiting when there is a way
+to save, and not before.
 
 ## Platform notes
 
@@ -281,8 +339,8 @@ size is chosen from the target rather than at runtime because it is a texture, n
 a knob, and the one platform where density is not a question is the one where it
 matters.
 
-At the density each is sized for, the sample text's 46 distinct glyphs occupy 82
-rows, so the ceiling is somewhere near 500 glyphs, and a CJK document reaches it
+At the density each is sized for, the 46 distinct glyphs of `assets/sample.txt`
+occupy 82 rows, so the ceiling is somewhere near 500 glyphs, and a CJK document reaches it
 long before a Latin one does. The ceiling is driven by density rather than by
 platform, though, so Windows on a 4K panel at 200% is as dense as a Mac and gets
 the smaller texture; see [FIXME.md](FIXME.md).
