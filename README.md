@@ -472,6 +472,16 @@ A call covers a contiguous span of instances, so the runs are staged in sorted
 order — one `memcpy` per run into the transfer buffer, each left saying where it
 landed — instead of the whole array in one go.
 
+A component may not draw outside the rect it was given: `Painter.clipTo` trims
+each quad to that rect and drops what falls entirely outside, so a long line
+stops at the edge of the room its view was given, whatever is beside it. That is
+done on
+the CPU rather than with `SDL_SetGPUScissor` because a scissor is per-call state,
+and calls here deliberately merge quads from several components — scissoring
+would put the rect in the key and split those calls back apart. It is exact: a
+`Sprite` carries one size for both the quad and the region it samples, so moving
+an edge moves both together.
+
 The vertex shader builds each quad's four corners from `gl_VertexIndex` and reads
 everything that differs between glyphs — where it lands, where to sample it, how
 big it is — out of a storage buffer indexed by `gl_InstanceIndex`. There is no

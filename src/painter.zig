@@ -16,6 +16,28 @@ pub const Rect = struct {
     width: f32,
     height: f32,
 
+    /// `quad` cut down to what falls inside, or null when none of it does.
+    ///
+    /// A `Sprite` uses one size for both the quad and the region it samples, so
+    /// moving an edge moves both together and what survives samples the part of
+    /// the glyph it should. The rect and the quad are both on whole pixels, so
+    /// the trimmed source stays on a texel and `NEAREST` still lands dead centre.
+    pub fn clip(self: Rect, quad: Sprite) ?Sprite {
+        const left = @max(self.x, quad.dest[0]);
+        const top = @max(self.y, quad.dest[1]);
+        const right = @min(self.x + self.width, quad.dest[0] + quad.size[0]);
+        const bottom = @min(self.y + self.height, quad.dest[1] + quad.size[1]);
+        if (right <= left or bottom <= top) return null;
+
+        return .{
+            .dest = .{ left, top },
+            .source = .{
+                quad.source[0] + (left - quad.dest[0]),
+                quad.source[1] + (top - quad.dest[1]),
+            },
+            .size = .{ right - left, bottom - top },
+        };
+    }
 };
 
 pub const Pipeline = enum { glyphs, solid };
@@ -68,6 +90,14 @@ pub const Painter = struct {
     quads: std.ArrayList(Sprite) = .empty,
     runs: std.ArrayList(Run) = .empty,
 
+    /// What everything added is cut down to. A component sets this to the room
+    /// it was given, so nothing it draws can reach into anything else's.
+    ///
+    /// Clipped here rather than with a GPU scissor: a scissor is per draw call,
+    /// and calls deliberately hold quads from several components, so scissoring
+    /// would put the rect in the key and split every one of them apart again.
+    clip_to: ?Rect = null,
+
     pub fn init(gpa: std.mem.Allocator) Painter {
         return .{ .gpa = gpa };
     }
@@ -80,6 +110,11 @@ pub const Painter = struct {
     pub fn clear(self: *Painter) void {
         self.quads.clearRetainingCapacity();
         self.runs.clearRetainingCapacity();
+        self.clip_to = null;
+    }
+
+    pub fn clipTo(self: *Painter, rect: ?Rect) void {
+        self.clip_to = rect;
     }
 
     /// Room for `extra` more quads, so a component drawing a screenful of them
@@ -91,7 +126,8 @@ pub const Painter = struct {
     /// Extends the run in progress when the key matches, and starts a new one
     /// when it does not.
     pub fn add(self: *Painter, key: Key, quad: Sprite) !void {
-        try self.quads.append(self.gpa, quad);
+        const kept = if (self.clip_to) |rect| (rect.clip(quad) orelse return) else quad;
+        try self.quads.append(self.gpa, kept);
 
         if (self.runs.items.len > 0) {
             const last = &self.runs.items[self.runs.items.len - 1];
@@ -161,4 +197,51 @@ test "sorting gathers the runs a key belongs to" {
     try std.testing.expectEqual(@as(usize, 3), keys);
     try std.testing.expect(runs[0].key.eql(text));
     try std.testing.expect(runs[runs.len - 1].key.eql(bar));
+}
+
+test "a quad wholly inside is left alone" {
+    const rect: Rect = .{ .x = 0, .y = 0, .width = 100, .height = 100 };
+    const quad: Sprite = .{ .dest = .{ 10, 10 }, .source = .{ 5, 5 }, .size = .{ 20, 20 } };
+    const kept = rect.clip(quad).?;
+    try std.testing.expectEqual(quad.dest, kept.dest);
+    try std.testing.expectEqual(quad.source, kept.source);
+    try std.testing.expectEqual(quad.size, kept.size);
+}
+
+test "a quad wholly outside is dropped" {
+    const rect: Rect = .{ .x = 0, .y = 0, .width = 100, .height = 100 };
+    try std.testing.expect(rect.clip(.{ .dest = .{ 200, 0 }, .source = .{ 0, 0 }, .size = .{ 10, 10 } }) == null);
+    try std.testing.expect(rect.clip(.{ .dest = .{ -20, 0 }, .source = .{ 0, 0 }, .size = .{ 10, 10 } }) == null);
+}
+
+test "clipping the right edge shortens the quad and leaves its source alone" {
+    const rect: Rect = .{ .x = 0, .y = 0, .width = 100, .height = 100 };
+    const kept = rect.clip(.{ .dest = .{ 90, 0 }, .source = .{ 30, 40 }, .size = .{ 20, 20 } }).?;
+    try std.testing.expectEqual(@as(f32, 90), kept.dest[0]);
+    try std.testing.expectEqual(@as(f32, 10), kept.size[0]);
+    // Nothing came off the left, so the glyph is sampled from where it was.
+    try std.testing.expectEqual(@as(f32, 30), kept.source[0]);
+}
+
+test "clipping the left edge moves the source with the quad" {
+    const rect: Rect = .{ .x = 100, .y = 0, .width = 100, .height = 100 };
+    const kept = rect.clip(.{ .dest = .{ 94, 0 }, .source = .{ 30, 40 }, .size = .{ 20, 20 } }).?;
+    try std.testing.expectEqual(@as(f32, 100), kept.dest[0]);
+    try std.testing.expectEqual(@as(f32, 14), kept.size[0]);
+    // Six pixels came off the left, so six texels come off the source too --
+    // which is the whole reason one size can serve both.
+    try std.testing.expectEqual(@as(f32, 36), kept.source[0]);
+}
+
+test "a painter clipped to a rect keeps only what falls in it" {
+    var painter: Painter = .init(std.testing.allocator);
+    defer painter.deinit();
+    painter.clipTo(.{ .x = 0, .y = 0, .width = 100, .height = 100 });
+
+    const key: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = .{ 0, 0, 0, 1 } };
+    try painter.add(key, .{ .dest = .{ 10, 10 }, .source = .{ 0, 0 }, .size = .{ 5, 5 } });
+    try painter.add(key, .{ .dest = .{ 500, 10 }, .source = .{ 0, 0 }, .size = .{ 5, 5 } });
+
+    try std.testing.expectEqual(@as(usize, 1), painter.quads.items.len);
+    try std.testing.expectEqual(@as(u32, 1), painter.runs.items[0].count);
 }

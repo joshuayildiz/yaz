@@ -277,6 +277,12 @@ pub const TextView = struct {
     /// remains per frame is placing the cached glyphs, which has to happen
     /// anyway to fill the buffer the GPU reads.
     pub fn draw(self: *TextView, atlas: *GlyphAtlas, painter: *Painter) !void {
+        // Nothing this view draws may reach outside the room it was given: a
+        // long line runs past the right edge, and a line at the bottom is only
+        // partly on screen.
+        painter.clipTo(self.rect);
+        defer painter.clipTo(null);
+
         const at = self.origin(atlas);
         const x = at[0];
         const top = at[1] - self.rect.y;
