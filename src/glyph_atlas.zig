@@ -211,7 +211,7 @@ pub const GlyphAtlas = struct {
         var shaper = try Shaper.init(scale);
         errdefer shaper.deinit();
 
-        const self: GlyphAtlas = .{
+        return .{
             .gpa = gpa,
             .gpu = gpu,
             .library = library,
@@ -224,8 +224,6 @@ pub const GlyphAtlas = struct {
             .line_height = fromFixed(face.*.size.*.metrics.height),
             .scale = scale,
         };
-
-        return self;
     }
 
     /// Rebuilds the atlas at a new display scale, answering whether it had to.

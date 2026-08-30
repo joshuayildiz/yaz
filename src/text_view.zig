@@ -129,7 +129,7 @@ pub const TextView = struct {
     }
 
     /// Where the scrollbar's thumb sits in a window `height` tall.
-    pub fn scrollbar(self: *const TextView, atlas: *const GlyphAtlas, top: f32, height: f32) Thumb {
+    fn scrollbar(self: *const TextView, atlas: *const GlyphAtlas, top: f32, height: f32) Thumb {
         const count: f32 = @floatFromInt(self.document.lineCount());
         return thumb(self.scroll, top + count * atlas.line_height, height, @round(bar_minimum * atlas.scale));
     }
@@ -470,7 +470,7 @@ fn visibleLines(
 }
 
 /// Where the scrollbar's thumb goes, in pixels down the window.
-pub const Thumb = struct { y: f32, height: f32 };
+const Thumb = struct { y: f32, height: f32 };
 
 /// The thumb for a scroll of `scroll` through a document `content` tall, in a
 /// track `height` tall.

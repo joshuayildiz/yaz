@@ -46,7 +46,6 @@ const Ink = extern struct {
 const initial_sprites = 4096;
 
 pub const Renderer = struct {
-    gpa: std.mem.Allocator,
     gpu: *c.SDL_GPUDevice,
     window: *c.SDL_Window,
     pipeline: *c.SDL_GPUGraphicsPipeline,
@@ -130,7 +129,6 @@ pub const Renderer = struct {
         const transfer = try createTransferBuffer(gpu, initial_sprites);
 
         return .{
-            .gpa = gpa,
             .gpu = gpu,
             .window = window,
             .pipeline = pipeline,

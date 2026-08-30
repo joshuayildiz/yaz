@@ -73,7 +73,7 @@ pub const Buffer = struct {
         self.gpa.free(self.bytes);
     }
 
-    pub fn byteLen(self: *const Buffer) usize {
+    fn byteLen(self: *const Buffer) usize {
         return self.bytes.len - (self.gap_end - self.gap_start);
     }
 
@@ -162,7 +162,7 @@ pub const Buffer = struct {
         return at;
     }
 
-    pub fn byteAt(self: *const Buffer, offset: usize) u8 {
+    fn byteAt(self: *const Buffer, offset: usize) u8 {
         std.debug.assert(offset < self.byteLen());
         const gap = self.gap_end - self.gap_start;
         return if (offset < self.gap_start) self.bytes[offset] else self.bytes[offset + gap];
@@ -182,7 +182,7 @@ pub const Buffer = struct {
     }
 
     /// `[from, to)` as one slice, copying it out when the gap divides it.
-    pub fn slice(self: *Buffer, from: usize, to: usize) ![]const u8 {
+    fn slice(self: *Buffer, from: usize, to: usize) ![]const u8 {
         const gap = self.gap_end - self.gap_start;
         if (to <= self.gap_start) return self.bytes[from..to];
         if (from >= self.gap_start) return self.bytes[from + gap .. to + gap];
@@ -214,7 +214,7 @@ pub const Buffer = struct {
     }
 
     /// Reallocates with a hole of at least `needed`, left where it already is.
-    pub fn grow(self: *Buffer, needed: usize) !void {
+    fn grow(self: *Buffer, needed: usize) !void {
         const tail = self.bytes.len - self.gap_end;
         const capacity = self.byteLen() + @max(needed, min_gap);
 
