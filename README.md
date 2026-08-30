@@ -71,9 +71,8 @@ error: latin1.txt is not UTF-8: the byte at offset 4102 does not begin or
 
 The size limit is not about reading, and no longer about drawing either — see
 [the layout cache](#the-layout-cache). What is left is that the cache holds a
-64-byte entry per line of the document however little is on screen, and that
-nothing scrolls yet, so the rest of a large file would be paid for and
-unreachable.
+64-byte entry per line of the document however little is on screen, and the line
+index behind it is the same shape.
 
 UTF-8 is refused rather than drawn because only one layer would complain.
 HarfBuzz substitutes a replacement character and carries on, so bad bytes would
@@ -133,6 +132,37 @@ dragging to another display — happens inside the platform's modal loop, where
 only the resize watch runs. When it does change the atlas is rebuilt in place:
 the texture survives, and what is given up is the packing state, the metrics and
 every shaped line.
+
+### Scrolling
+
+The wheel moves the view. An edit brings the caret back to the **middle** of the
+window if it had scrolled out of sight, rather than nudging it to whichever edge
+it went behind — something typed where the view had wandered off wants what is
+around it. A click reads the view where it is and leaves it alone.
+
+The far end of the scroll is where the **last line reaches the top** of the
+window, not the bottom, so the end of a file is not somewhere the view cannot
+follow you to. A document shorter than the window scrolls by the same rule.
+
+**The offset is a whole number of pixels.** Baselines are rounded per line and
+`line_height` is fractional, so they already round unevenly — 15, 15, 16, 15 —
+and that pattern only survives if the offset shifts every line by the same whole
+amount. A fractional offset re-rounds each line on its own and the text shimmers
+as it moves. What a gesture leaves over waits in `pending` for the next event
+rather than rounding away, so a slow drag still moves.
+
+A wheel delta is read as **points, always**: SDL reports tenths of a point from a
+precise device and whole lines from a notched one, in one field with no flag
+between them, and macOS registers a single mouse with no name, so nothing can
+tell them apart. A trackpad therefore tracks the finger exactly and a wheel click
+moves about ten points.
+
+Momentum is macOS's own. SDL disables it by default, and
+`SDL_HINT_MAC_SCROLL_MOMENTUM` — set before `SDL_Init` — turns it back on, so a
+flick keeps scrolling with the system's curve and the system's settings. It costs
+nothing when nothing is moving: momentum is more wheel events, and they stop
+arriving when it stops, so the loop goes back to blocking. There is no animation
+timer here and there does not need to be one.
 
 ### Redrawing
 
@@ -351,11 +381,11 @@ translation would change which subpixel variant each glyph points at, which
 than per glyph, which is the same answer for anything without a fractional
 vertical offset — everything in this font.
 
-Only the lines that intersect the window are placed, and a line below it is not
+Only the lines that intersect the window are placed, and a line outside it is not
 shaped either — which is where the cost of opening a long file went. `layout`
 takes the window's pixel height and `visibleCount` turns it into a line count;
 the existing `if (!entry.shaped)` does the rest. The caret is the exception: its
-line is shaped and its quad built even when it is off the bottom, because the
+line is shaped and its quad built even when it is outside the range, because the
 renderer draws one unconditionally. The numbers are in
 [OPTIMIZATIONS.md](OPTIMIZATIONS.md).
 

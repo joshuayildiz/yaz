@@ -6,9 +6,9 @@ const TextView = @import("./text_view.zig").TextView;
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 
-/// The largest file yaz will open. The layout cache holds a 64-byte entry per
-/// line of the document whatever is on screen, and nothing scrolls yet, so the
-/// rest of a large file would be paid for and unreachable.
+/// The largest file yaz will open. What still costs per line of the document
+/// rather than per line on screen is the layout cache, which holds a 64-byte
+/// entry for each of them, and the line index behind it.
 const file_limit = 1 << 20;
 
 /// Where the first line's top-left corner sits, at a display scale of one.
@@ -21,6 +21,12 @@ fn textOrigin(scale: f32) [2]f32 {
 }
 
 pub fn main(init: std.process.Init) !void {
+    // macOS makes inertial scroll events of its own and SDL turns them off
+    // unless asked. Asking costs nothing while nothing is moving: momentum is
+    // more wheel events, and they stop arriving when it stops. Before
+    // `SDL_Init`, which is when SDL reads it.
+    _ = c.SDL_SetHint(c.SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
+
     // Before SDL, so a file that cannot be opened fails without a window having
     // appeared and gone again.
     const opened = try open(init);
@@ -109,6 +115,15 @@ pub fn main(init: std.process.Init) !void {
                     },
                     else => {},
                 },
+                c.SDL_EVENT_MOUSE_WHEEL => {
+                    const atlas = &app.renderer.atlas;
+                    app.view.scrollBy(
+                        wheelPixels(event.wheel.y, c.SDL_GetWindowPixelDensity(window)),
+                        atlas,
+                        textOrigin(atlas.scale)[1],
+                    );
+                    dirty = true;
+                },
                 // Where the caret goes is a question about the layout, so the
                 // view answers it; nothing here knows how wide a character is.
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -137,6 +152,19 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+/// A wheel delta as pixels to move the view by, positive downwards.
+///
+/// SDL reports a precise device as tenths of a point, so ten times the delta is
+/// how far a finger moved. A notched wheel reports whole lines instead, and
+/// nothing tells the two apart -- macOS registers one mouse and gives it no
+/// name -- so everything is read as points. A trackpad then tracks the finger
+/// exactly, momentum included, and a wheel click moves about ten points.
+fn wheelPixels(delta: f32, density: f32) f32 {
+    // SDL counts a wheel positive away from the reader, which is towards the
+    // start of the document.
+    return -delta * 10 * density;
+}
+
 /// Together because the event watch reaches them from behind one `void *`.
 const App = struct {
     renderer: Renderer,
@@ -156,6 +184,9 @@ const App = struct {
         _ = c.SDL_GetWindowSizeInPixels(self.renderer.window, null, &height);
 
         const origin = textOrigin(scale);
+        if (self.view.follow_caret) {
+            self.view.scrollToCaret(&self.renderer.atlas, origin[1], @floatFromInt(height));
+        }
         const frame = try self.view.layout(&self.renderer.atlas, origin[0], origin[1], @floatFromInt(height));
         try self.renderer.present(frame.quads, frame.caret);
     }
@@ -204,7 +235,7 @@ fn open(init: std.process.Init) !Opened {
         error.FileNotFound => return .{ .text = try init.gpa.alloc(u8, 0), .path = path },
         error.StreamTooLong => {
             std.log.err(
-                "{s} is larger than the {d}MB yaz will open, and nothing scrolls to the rest of it yet",
+                "{s} is larger than the {d}MB yaz will open: the layout cache holds an entry for every line of it, on screen or not",
                 .{ path, file_limit >> 20 },
             );
             return error.FileTooLarge;

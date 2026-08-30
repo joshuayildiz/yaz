@@ -49,6 +49,20 @@ pub const TextView = struct {
     /// which is what keeps a redraw free of the allocator.
     sprites: std.ArrayList(Sprite) = .empty,
 
+    /// How far down the document the window sits, in whole pixels. A fraction
+    /// would re-round every baseline independently and the text would shimmer
+    /// as it moved.
+    scroll: f32 = 0,
+
+    /// What is left of a gesture too small to have moved a whole pixel yet. A
+    /// trackpad reports fractions, and without this a slow drag would round
+    /// away to nothing every event.
+    pending: f32 = 0,
+
+    /// Set by an edit, acted on by `scrollToCaret`. Typing that has gone off
+    /// screen brings the view back; clicking reads the view where it is.
+    follow_caret: bool = false,
+
     /// The caret starts at the top: nothing scrolls yet, so a caret at the end
     /// of a long file is one nobody can see.
     pub fn init(gpa: std.mem.Allocator, text: []const u8) !TextView {
@@ -73,6 +87,7 @@ pub const TextView = struct {
         const edit = try self.document.insert(self.cursor, text);
         try self.splice(edit);
         self.cursor += text.len;
+        self.follow_caret = true;
     }
 
     /// Deletes the character before the caret, answering whether there was one.
@@ -83,7 +98,37 @@ pub const TextView = struct {
         const edit = self.document.delete(from, self.cursor - from);
         try self.splice(edit);
         self.cursor = from;
+        self.follow_caret = true;
         return true;
+    }
+
+    /// Moves the view by `pixels`, keeping the offset a whole number of them.
+    /// What is left over waits for the next event rather than rounding away.
+    pub fn scrollBy(self: *TextView, pixels: f32, atlas: *const GlyphAtlas, top: f32) void {
+        self.pending += pixels;
+        const whole = @trunc(self.pending);
+        self.pending -= whole;
+        self.scrollTo(self.scroll + whole, atlas, top);
+    }
+
+    /// Brings the caret's line into view, and clears the flag that asked for it.
+    pub fn scrollToCaret(self: *TextView, atlas: *const GlyphAtlas, top: f32, height: f32) void {
+        self.follow_caret = false;
+        const index = self.document.lineAt(self.cursor);
+        // A jump is not a gesture, so anything a gesture had part-way through
+        // it goes rather than being applied on top of the answer.
+        self.pending = 0;
+        self.scrollTo(scrollToCentre(self.scroll, index, top, height, atlas.line_height), atlas, top);
+    }
+
+    /// The far end is where the last line reaches the top of the window rather
+    /// than the bottom: the end of a file stops being somewhere the view cannot
+    /// follow you to, and what you are reading sits where you are looking. A
+    /// document shorter than the window scrolls by the same rule.
+    fn scrollTo(self: *TextView, to: f32, atlas: *const GlyphAtlas, top: f32) void {
+        const last = self.document.lineCount() -| 1;
+        const furthest = @max(0, @ceil(top + @as(f32, @floatFromInt(last)) * atlas.line_height));
+        self.scroll = @min(furthest, @max(0, to));
     }
 
     /// Places every line's glyphs on screen, shaping the ones whose text has
@@ -99,6 +144,7 @@ pub const TextView = struct {
         // would change which subpixel variant each one points at, and the cache
         // would be answering the wrong question.
         std.debug.assert(x == @round(x));
+        std.debug.assert(self.scroll == @round(self.scroll));
 
         self.sprites.clearRetainingCapacity();
         const count = self.document.lineCount();
@@ -112,13 +158,12 @@ pub const TextView = struct {
         // same shaped layout as the glyphs it sits between.
         var caret: ?Sprite = null;
 
-        const visible = visibleCount(top, height, atlas.line_height, count);
-        var baseline = top + atlas.ascent;
-        for (self.lines.items[0..visible], 0..) |*entry, index| {
+        const range = visibleLines(top, self.scroll, height, atlas.line_height, count);
+        for (self.lines.items[range.first..range.last], range.first..) |*entry, index| {
             if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
             std.debug.assert(entry.bytes == self.document.lineLength(index));
 
-            const origin: [2]f32 = .{ x, @round(baseline) };
+            const origin: [2]f32 = .{ x, @round(lineTop(index, top, self.scroll, atlas.line_height) + atlas.ascent) };
             try self.sprites.ensureUnusedCapacity(self.gpa, entry.sprites.items.len);
             for (entry.sprites.items) |sprite| {
                 self.sprites.appendAssumeCapacity(.{
@@ -129,22 +174,19 @@ pub const TextView = struct {
             }
 
             if (index == caret_line) caret = self.caretOn(atlas, entry, index, x, origin[1]);
-
-            baseline += atlas.line_height;
         }
 
-        // The caret can be below the last line drawn -- enough newlines push it
-        // past the bottom of the window. Its quad is built anyway, out where the
-        // GPU discards it, because `present` draws one unconditionally. Nothing
-        // partly on screen reaches here, so where exactly it lands does not
-        // matter.
+        // The caret can be outside the range drawn, above it or below it. Its
+        // quad is built anyway, out where the GPU discards it, because `present`
+        // draws one unconditionally. Nothing partly on screen reaches here, so
+        // where exactly it lands does not matter.
         if (caret == null) {
             const entry = &self.lines.items[caret_line];
             if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(caret_line), entry);
             std.debug.assert(entry.bytes == self.document.lineLength(caret_line));
 
-            const below = top + atlas.ascent + @as(f32, @floatFromInt(caret_line)) * atlas.line_height;
-            caret = self.caretOn(atlas, entry, caret_line, x, @round(below));
+            const off = lineTop(caret_line, top, self.scroll, atlas.line_height) + atlas.ascent;
+            caret = self.caretOn(atlas, entry, caret_line, x, @round(off));
         }
         // Last, so it draws over the glyph it sits beside, and so its own
         // colour is a second draw over the tail rather than a per-glyph field.
@@ -181,7 +223,7 @@ pub const TextView = struct {
         // Nothing has been laid out, so there is nothing on screen to click.
         if (self.lines.items.len == 0) return;
 
-        const row = (point[1] - top) / atlas.line_height;
+        const row = (point[1] - top + self.scroll) / atlas.line_height;
         const index = if (row < 0)
             0
         else
@@ -335,15 +377,45 @@ test "deleting across lines collapses them onto the one the edit started in" {
     try std.testing.expect(!cache.items[0].shaped);
 }
 
-/// How many lines from the top of the document intersect a viewport `height`
-/// tall. `top` is where the first line begins, so a larger margin leaves room
-/// for fewer of them.
-fn visibleCount(top: f32, height: f32, line_height: f32, count: usize) usize {
-    // Line `i` begins at `top + i * line_height` and shows while that is above
-    // the bottom of the window. Ceil rather than `@floor(..) + 1`, which is one
-    // too many whenever the division comes out even -- for a window of no
-    // height, a line drawn out of nothing.
-    return clampIndex(@ceil((height - top) / line_height), count);
+/// Where line `index` sits, before rounding.
+///
+/// A function of the index rather than a running total, so a line lands in the
+/// same place whatever else was drawn. Adding `line_height` repeatedly from the
+/// first line on screen answers differently from adding it from line zero --
+/// float addition does not associate -- and the two can fall either side of a
+/// `@round`, which is a line jumping a pixel according to where it was scrolled
+/// from.
+fn lineTop(index: usize, top: f32, scroll: f32, line_height: f32) f32 {
+    return top - scroll + @as(f32, @floatFromInt(index)) * line_height;
+}
+
+/// The lines that intersect a viewport `height` tall, as a half-open range.
+fn visibleLines(
+    top: f32,
+    scroll: f32,
+    height: f32,
+    line_height: f32,
+    count: usize,
+) struct { first: usize, last: usize } {
+    // `lineTop(i) + line_height > 0` and `lineTop(i) < height`, solved for i.
+    // Ceil rather than `@floor(..) + 1`, which is one too many whenever the
+    // division comes out even -- for a window of no height, a line drawn out of
+    // nothing.
+    const above = scroll - top;
+    const first = clampIndex(@floor(above / line_height), count);
+    const last = clampIndex(@ceil((above + height) / line_height), count);
+    return .{ .first = first, .last = @max(first, last) };
+}
+
+/// Where the scroll has to move to put line `index` down the middle of the
+/// window, or the scroll it was given when the line is already on screen.
+///
+/// The middle rather than whichever edge it went behind: typing somewhere the
+/// view had left behind wants what is around it, and an edge shows half of that.
+fn scrollToCentre(scroll: f32, index: usize, top: f32, height: f32, line_height: f32) f32 {
+    const y = lineTop(index, top, scroll, line_height);
+    if (y >= 0 and y + line_height <= height) return scroll;
+    return @round(scroll + y - (height - line_height) / 2);
 }
 
 /// A line number that arithmetic produced, brought into `[0, count]` before it
@@ -359,47 +431,104 @@ fn clampIndex(value: f32, count: usize) usize {
 }
 
 test "a viewport taller than the document shows all of it" {
-    try std.testing.expectEqual(@as(usize, 4), visibleCount(10, 1000, 15, 4));
+    const range = visibleLines(10, 0, 1000, 15, 4);
+    try std.testing.expectEqual(@as(usize, 0), range.first);
+    try std.testing.expectEqual(@as(usize, 4), range.last);
 }
 
 test "a viewport shorter than the document stops short of its end" {
     // Lines of 15 starting 10 down, so the sixth begins at 85 and the seventh
     // at 100, which is already the bottom edge.
-    try std.testing.expectEqual(@as(usize, 6), visibleCount(10, 100, 15, 10));
+    try std.testing.expectEqual(@as(usize, 6), visibleLines(10, 0, 100, 15, 10).last);
 }
 
 test "a line beginning exactly at the bottom edge is not drawn" {
     // Lines of 15 from 0: the fourth begins at 45, which is the edge itself.
     // The `@floor(..) + 1` spelling answers 4 here.
-    try std.testing.expectEqual(@as(usize, 3), visibleCount(0, 45, 15, 10));
+    try std.testing.expectEqual(@as(usize, 3), visibleLines(0, 0, 45, 15, 10).last);
 }
 
 test "a window with no height draws nothing" {
-    try std.testing.expectEqual(@as(usize, 0), visibleCount(0, 0, 15, 10));
+    const range = visibleLines(0, 0, 0, 15, 10);
+    try std.testing.expectEqual(range.first, range.last);
 }
 
 test "a margin taller than the window leaves room for nothing" {
-    try std.testing.expectEqual(@as(usize, 0), visibleCount(60, 40, 15, 10));
+    const range = visibleLines(60, 0, 40, 15, 10);
+    try std.testing.expectEqual(range.first, range.last);
 }
 
-test "the last line drawn is on screen and the next one is not" {
+test "scrolling a whole line past the top drops exactly that line" {
+    try std.testing.expectEqual(@as(usize, 1), visibleLines(0, 15, 100, 15, 10).first);
+}
+
+test "a line scrolled half out of view is still drawn" {
+    try std.testing.expectEqual(@as(usize, 0), visibleLines(0, 7, 100, 15, 10).first);
+}
+
+test "the lines either side of the range are the ones off screen" {
     // The property the arithmetic exists for, rather than worked answers: at
-    // every height, everything counted begins above the edge and the first line
-    // left out does not.
+    // every offset, everything in the range touches the window and its two
+    // neighbours do not.
     const top = 5;
+    const height = 97;
     const line_height = 15.2;
     const count = 400;
 
-    var height: f32 = 0;
-    while (height <= 2000) : (height += 7) {
-        const visible = visibleCount(top, height, line_height, count);
-        if (visible > 0) {
-            const last = top + @as(f32, @floatFromInt(visible - 1)) * line_height;
-            try std.testing.expect(last < height);
+    var scroll: f32 = 0;
+    while (scroll <= 600) : (scroll += 3) {
+        const range = visibleLines(top, scroll, height, line_height, count);
+
+        if (range.first > 0) {
+            const before = lineTop(range.first - 1, top, scroll, line_height);
+            try std.testing.expect(before + line_height <= 0);
         }
-        if (visible < count) {
-            const next = top + @as(f32, @floatFromInt(visible)) * line_height;
-            try std.testing.expect(next >= height);
+        if (range.last < count) {
+            const after = lineTop(range.last, top, scroll, line_height);
+            try std.testing.expect(after >= height);
+        }
+
+        var index = range.first;
+        while (index < range.last) : (index += 1) {
+            const y = lineTop(index, top, scroll, line_height);
+            try std.testing.expect(y < height and y + line_height > 0);
+        }
+    }
+}
+
+test "scrollToCentre leaves a line that is already on screen alone" {
+    try std.testing.expectEqual(@as(f32, 40), scrollToCentre(40, 4, 0, 100, 15));
+}
+
+test "scrollToCentre brings a line above the window to the middle" {
+    // Scrolled 40, line 1 sits 25 above the window. The middle of 100 starts at
+    // 42.5, so it asks for 40 - 25 - 42.5, rounded away from zero. The caller
+    // clamps that back to the top of the document.
+    try std.testing.expectEqual(@as(f32, -28), scrollToCentre(40, 1, 0, 100, 15));
+}
+
+test "scrollToCentre brings a line below the window to the middle" {
+    // Line 20 spans 300 to 315, and centring it asks for 300 - 42.5.
+    try std.testing.expectEqual(@as(f32, 258), scrollToCentre(0, 20, 0, 100, 15));
+}
+
+test "scrollToCentre lands on whole pixels and asks for somewhere on screen" {
+    const line_height = 15.2;
+    const top = 5;
+    const height = 97;
+
+    var index: usize = 0;
+    while (index < 40) : (index += 1) {
+        var scroll: f32 = 0;
+        while (scroll <= 600) : (scroll += 7) {
+            const want = scrollToCentre(scroll, index, top, height, line_height);
+            try std.testing.expectEqual(want, @round(want));
+
+            // Where it asks to be is fully inside the window; the caller
+            // clamping the answer can only push it towards an edge.
+            const y = lineTop(index, top, want, line_height);
+            try std.testing.expect(y >= 0);
+            try std.testing.expect(y + line_height <= height);
         }
     }
 }

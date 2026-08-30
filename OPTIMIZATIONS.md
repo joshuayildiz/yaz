@@ -221,6 +221,11 @@ gives 51 lines and 600 gives 20, at the current size. Then hold Return past the
 bottom of the window in a Debug build: the caret leaves the drawn range, and
 nothing asserts.
 
+Scrolling rests on this too, and on the offset being whole pixels. `layout`
+asserts that; the symptom if it ever stops holding is text that shimmers rather
+than moves. Checked by scrolling a pixel at a time and comparing frames: at 1, 2
+and 30 pixels the image is the one before it translated by exactly that much.
+
 ## Not optimizations yet
 
 Stated so they are not mistaken for finished work:
