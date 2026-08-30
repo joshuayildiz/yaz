@@ -175,9 +175,12 @@ suggests something is scanning fonts, which would mean SDL is doing it, not us.
 Every glyph is one instance of a four-vertex triangle strip, and the screenful is
 a single `SDL_DrawGPUPrimitives`. Nothing is sent per glyph: where each lands,
 what to sample and how big it is come out of a storage buffer the vertex shader
-indexes by `gl_InstanceIndex`. The caret and the scrollbar are a call each after
-it, over the last two quads of the same buffer, on a second pipeline that samples
-nothing -- what changes between the three is the fragment uniform.
+indexes by `gl_InstanceIndex`.
+
+Components add quads to a painter under a key -- a layer, a pipeline and a colour
+-- and `present` sorts by it, so one call covers every quad wanting the same
+thing however many components produced them. A frame is three keys today, and
+would still be three with a hundred text views.
 
 **Rests on:** `first_instance` reaching the shader through `gl_InstanceIndex` on
 Metal as it does on Vulkan. Metal's `[[instance_id]]` counts from zero whatever
@@ -186,6 +189,13 @@ caret's draw recolours the first glyph on screen and leaves the caret alone.
 
 **Check:** set `caret_colour` to something loud and look at the first character
 on the first line. Only the caret should change. Done on an M2: it did.
+
+Draw calls are not where a frame goes, and this is not here for speed. Measured
+over 2000 calls on an M2, generating every quad of a screenful -- 2282 of them --
+costs 4.5us, or 0.03% of a frame at 60Hz, in Debug and ReleaseFast alike. The
+shaping that would be expensive is already cached per line, so a redraw only
+copies. Batching is for keeping the number of calls flat as components are added,
+not for saving time there is none of.
 
 ## 10. Per-line layout cache
 

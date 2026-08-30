@@ -4,6 +4,8 @@ const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const TextView = @import("./text_view.zig").TextView;
 const Event = @import("./event.zig").Event;
+const Painter = @import("./painter.zig").Painter;
+const Rect = @import("./painter.zig").Rect;
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 
@@ -58,9 +60,11 @@ pub fn main(init: std.process.Init) !void {
     var app: App = .{
         .renderer = try Renderer.init(init.gpa, window),
         .view = try TextView.init(init.gpa, opened.text),
+        .painter = .init(init.gpa),
     };
     defer app.renderer.deinit();
     defer app.view.deinit();
+    defer app.painter.deinit();
 
     if (!c.SDL_AddEventWatch(redrawWhileResizing, &app)) {
         std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
@@ -88,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
         // swapchain, so each redundant one costs real latency, not just work.
         while (true) {
             const density = c.SDL_GetWindowPixelDensity(window);
-            if (Event.init(&event, density)) |what| try app.handle(what);
+            if (Event.init(&event, density)) |what| try app.update(what);
             if (!c.SDL_PollEvent(&event)) break;
         }
     }
@@ -98,6 +102,7 @@ pub fn main(init: std.process.Init) !void {
 const App = struct {
     renderer: Renderer,
     view: TextView,
+    painter: Painter,
     running: bool = true,
 
     /// What has changed at this level, as against inside the view. True to
@@ -114,9 +119,15 @@ const App = struct {
         self.view.setDirty(value);
     }
 
+    /// Divides the room it has been given between what it holds. One view for
+    /// now, so it gets all of it.
+    fn place(self: *App, rect: Rect) void {
+        self.view.place(rect);
+    }
+
     /// Takes what belongs to the window and hands the rest down. What changed
     /// is not answered here; it is asked for afterwards, through `isDirty`.
-    fn handle(self: *App, event: Event) !void {
+    fn update(self: *App, event: Event) !void {
         switch (event) {
             .quit => {
                 self.running = false;
@@ -129,7 +140,12 @@ const App = struct {
             else => {},
         }
 
-        try self.view.handle(event, &self.renderer.atlas);
+        try self.view.update(event, &self.renderer.atlas);
+    }
+
+    /// Every quad the frame is made of, from everything it holds.
+    fn draw(self: *App, painter: *Painter) !void {
+        try self.view.draw(&self.renderer.atlas, painter);
     }
 
     fn redraw(self: *App) !void {
@@ -146,9 +162,7 @@ const App = struct {
         var height: c_int = 0;
         _ = c.SDL_GetWindowSizeInPixels(self.renderer.window, &width, &height);
 
-        // The whole window, for now. Whatever else gets drawn will be given a
-        // rect of its own out of the same division.
-        self.view.place(.{
+        self.place(.{
             .x = 0,
             .y = 0,
             .width = @floatFromInt(width),
@@ -156,8 +170,10 @@ const App = struct {
         });
 
         if (self.view.follow_caret) self.view.scrollToCaret(&self.renderer.atlas);
-        const frame = try self.view.layout(&self.renderer.atlas);
-        try self.renderer.present(frame.quads, frame.caret, frame.bar);
+
+        self.painter.clear();
+        try self.draw(&self.painter);
+        try self.renderer.present(&self.painter);
     }
 };
 

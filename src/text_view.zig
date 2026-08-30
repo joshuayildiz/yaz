@@ -9,7 +9,12 @@
 
 const std = @import("std");
 
+const config = @import("./config.zig");
 const Event = @import("./event.zig").Event;
+const painter_mod = @import("./painter.zig");
+const Key = painter_mod.Key;
+const Painter = painter_mod.Painter;
+pub const Rect = painter_mod.Rect;
 
 const Buffer = @import("./document.zig").Buffer;
 const Edit = @import("./document.zig").Edit;
@@ -42,26 +47,11 @@ const bar_minimum = 24;
 /// the bar is down the left and the text starts after it.
 const text_margin: [2]f32 = .{ 5, 5 };
 
-/// Somewhere to put something, in device pixels. The window is divided into
-/// these and each one is handed to whatever draws in it; a view is told the
-/// room it has and divides it again, rather than being told where its parts go.
-pub const Rect = struct {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-};
-
-/// One array rather than two: the quads reach the GPU as a single buffer and are
-/// drawn by index into it, so the split is where the colour changes rather than
-/// where the memory does.
-pub const Frame = struct {
-    quads: []const Sprite,
-    /// After every glyph, so it draws over the one it sits beside.
-    caret: u32,
-    /// After the caret. Both are drawn by the pipeline that samples nothing.
-    bar: u32,
-};
+/// What this view draws with. Glyphs sample the atlas; the caret and the
+/// scrollbar do not, and each sits a layer above what it has to cover.
+const glyph_key: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = config.text_colour };
+const caret_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.caret_colour };
+const bar_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.scrollbar_colour };
 
 pub const TextView = struct {
     gpa: std.mem.Allocator,
@@ -77,11 +67,6 @@ pub const TextView = struct {
     /// every edit already speaks in offsets, and a pair would be a second thing
     /// to keep in step for no gain.
     cursor: usize,
-
-    /// The frame's glyphs, placed on screen. Cleared rather than freed between
-    /// frames: it settles at the size of a screenful and stops allocating,
-    /// which is what keeps a redraw free of the allocator.
-    sprites: std.ArrayList(Sprite) = .empty,
 
     /// How far down the document the window sits, in whole pixels. A fraction
     /// would re-round every baseline independently and the text would shimmer
@@ -121,7 +106,6 @@ pub const TextView = struct {
     }
 
     pub fn deinit(self: *TextView) void {
-        self.sprites.deinit(self.gpa);
         for (self.lines.items) |*entry| {
             entry.sprites.deinit(self.gpa);
             entry.carets.deinit(self.gpa);
@@ -166,7 +150,7 @@ pub const TextView = struct {
 
     /// Everything that happens inside the view. What belongs to the window has
     /// been dealt with before this is called.
-    pub fn handle(self: *TextView, event: Event, atlas: *GlyphAtlas) !void {
+    pub fn update(self: *TextView, event: Event, atlas: *GlyphAtlas) !void {
         switch (event) {
             .quit, .resized => {},
             .text => |typed| {
@@ -292,14 +276,13 @@ pub const TextView = struct {
     /// read the document; a keystroke shapes the one line it landed in. What
     /// remains per frame is placing the cached glyphs, which has to happen
     /// anyway to fill the buffer the GPU reads.
-    pub fn layout(self: *TextView, atlas: *GlyphAtlas) !Frame {
+    pub fn draw(self: *TextView, atlas: *GlyphAtlas, painter: *Painter) !void {
         const at = self.origin(atlas);
         const x = at[0];
         const top = at[1] - self.rect.y;
         const height = self.rect.height;
         std.debug.assert(self.scroll == @round(self.scroll));
 
-        self.sprites.clearRetainingCapacity();
         const count = self.document.lineCount();
         if (self.lines.items.len == 0) try self.lines.appendNTimes(self.gpa, .{}, count);
         // Anything else means an edit did not reach the cache and the entries
@@ -317,9 +300,9 @@ pub const TextView = struct {
             std.debug.assert(entry.bytes == self.document.lineLength(index));
 
             const baseline = @round(self.rect.y + lineTop(index, top, self.scroll, atlas.line_height) + atlas.ascent);
-            try self.sprites.ensureUnusedCapacity(self.gpa, entry.sprites.items.len);
+            try painter.reserve(entry.sprites.items.len);
             for (entry.sprites.items) |sprite| {
-                self.sprites.appendAssumeCapacity(.{
+                try painter.add(glyph_key, .{
                     .dest = .{ sprite.dest[0] + x, sprite.dest[1] + baseline },
                     .source = sprite.source,
                     .size = sprite.size,
@@ -330,9 +313,9 @@ pub const TextView = struct {
         }
 
         // The caret can be outside the range drawn, above it or below it. Its
-        // quad is built anyway, out where the GPU discards it, because `present`
-        // draws one unconditionally. Nothing partly on screen reaches here, so
-        // where exactly it lands does not matter.
+        // quad is added anyway, out where the GPU discards it, so that where it
+        // is never has to be a special case. Nothing partly on screen reaches
+        // here, so where exactly it lands does not matter.
         if (caret == null) {
             const entry = &self.lines.items[caret_line];
             if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(caret_line), entry);
@@ -341,22 +324,13 @@ pub const TextView = struct {
             const off = self.rect.y + lineTop(caret_line, top, self.scroll, atlas.line_height) + atlas.ascent;
             caret = self.caretOn(atlas, entry, caret_line, x, @round(off));
         }
-        // Last, so it draws over the glyph it sits beside, and so its own
-        // colour is a second draw over the tail rather than a per-glyph field.
-        try self.sprites.append(self.gpa, caret.?);
-        const caret_at: u32 = @intCast(self.sprites.items.len - 1);
+        try painter.add(caret_key, caret.?);
 
         const t = self.scrollbar(atlas);
-        try self.sprites.append(self.gpa, .solid(
+        try painter.add(bar_key, .solid(
             .{ @round(self.rect.x + bar_inset * atlas.scale), self.rect.y + t.y },
             .{ @round(bar_width * atlas.scale), t.height },
         ));
-
-        return .{
-            .quads = self.sprites.items,
-            .caret = caret_at,
-            .bar = @intCast(self.sprites.items.len - 1),
-        };
     }
 
     /// The caret's quad on `index`, whose layout must already be shaped.
@@ -860,4 +834,5 @@ test {
     // Tests follow the imports: this file pulls in the document's, so a test
     // build reaches them without `main` having to know they exist.
     _ = @import("./document.zig");
+    _ = @import("./painter.zig");
 }

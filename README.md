@@ -457,17 +457,25 @@ from the atlas — and the same day will fix both.
 
 ### Drawing
 
-A frame is three draw calls, whatever is on screen, and two of them draw a
-single quad. The vertex shader builds each quad's four corners from
-`gl_VertexIndex` and reads everything that differs between glyphs — where it
-lands, where to sample it, how big it is — out of a storage buffer indexed by
-`gl_InstanceIndex`. There is no vertex buffer, and nothing is sent per glyph:
+Every component draws into one `Painter`. A quad goes in under a **key** — a
+layer, a pipeline and a colour — and `present` sorts the runs by that key and
+issues one call per distinct one, so quads wanting the same thing end up in one
+call however many components produced them. A screenful is three calls, and would
+still be three with a hundred components drawing into it.
 
-```
-SDL_DrawGPUPrimitives(pass, 4, glyph_count, 0, 0);          // the text
-SDL_DrawGPUPrimitives(pass, 4, 1, 0, glyph_count);          // the caret
-SDL_DrawGPUPrimitives(pass, 4, 1, 0, glyph_count + 1);      // the scrollbar
-```
+**The layer is what makes the sort safe.** These quads are alpha blended, so
+reordering them is only correct where they do not overlap, and the layer states
+that rule rather than assuming it: *within a layer, nothing overlaps.* Glyphs are
+0, the caret 1, the scrollbar 2.
+
+A call covers a contiguous span of instances, so the runs are staged in sorted
+order — one `memcpy` per run into the transfer buffer, each left saying where it
+landed — instead of the whole array in one go.
+
+The vertex shader builds each quad's four corners from `gl_VertexIndex` and reads
+everything that differs between glyphs — where it lands, where to sample it, how
+big it is — out of a storage buffer indexed by `gl_InstanceIndex`. There is no
+vertex buffer, and nothing is sent per glyph.
 
 **There are two pipelines**, and they differ by their fragment shader alone —
 same vertex shader, same storage buffer, same blend, same target. One samples the
@@ -686,11 +694,15 @@ What comes out goes to `App` first: it acts on what belongs to the window and
 hands the rest to the view, which is given a `Rect` and told what happened in it.
 Neither takes an `SDL_Event`.
 
-The view therefore names no SDL type and makes no SDL call: it answers with a
-`Response` saying what changed and whether the pointer took hold, and `App` does
-the capturing. It does reach `sdl.zig` through `event.zig`, so the separation is
-one of vocabulary rather than of linkage. That seam is where a second panel would
-be added.
+`App` and `TextView` share the same five: `place` to be given room, `update` to
+be told what happened, `draw` to add quads to a painter, and `isDirty`/`setDirty`
+so a parent answers for what it holds. A parent calls them on its children, so
+the tree is the type system rather than a vtable; that is enough until the set of
+children has to vary at runtime.
+
+The view therefore names no SDL type and makes no SDL call. It does reach
+`sdl.zig` through `event.zig`, so the separation is one of vocabulary rather than
+of linkage.
 
 `document.zig` is the text and where its lines begin, and nothing above that. It
 does not know that text gets shaped, drawn or scrolled, which is why it can be

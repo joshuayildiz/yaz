@@ -6,6 +6,10 @@ const c = sdl.c;
 
 const config = @import("./config.zig");
 
+const painter_mod = @import("./painter.zig");
+const Painter = painter_mod.Painter;
+const Run = painter_mod.Run;
+
 const glyph_atlas = @import("./glyph_atlas.zig");
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const Sprite = glyph_atlas.Sprite;
@@ -152,14 +156,22 @@ pub const Renderer = struct {
         c.SDL_DestroyGPUDevice(self.gpu);
     }
 
-    /// Draws the quads it is handed and knows nothing else about them.
+    /// Draws what the painter was given and knows nothing else about it.
     ///
-    /// `caret` says which one is the caret, drawn by a second call so it can be
-    /// a different colour. The alternative is four more floats on every sprite,
-    /// uploaded per glyph per frame to repeat one value.
-    pub fn present(self: *Renderer, sprites: []const Sprite, caret: u32, bar: u32) !void {
-        std.debug.assert(sprites.len == 0 or caret < sprites.len);
-        std.debug.assert(sprites.len == 0 or bar < sprites.len);
+    /// The colour comes off the run rather than the sprite: it changes once per
+    /// call, and putting it on every quad would upload four floats per glyph per
+    /// frame to repeat one value.
+    pub fn present(self: *Renderer, painter: *Painter) !void {
+        // Sorted so that quads wanting the same thing end up next to each other,
+        // however many components produced them. Safe to reorder because the
+        // key's layer says what has to stay on top of what.
+        std.mem.sort(Run, painter.runs.items, {}, struct {
+            fn less(_: void, a: Run, b: Run) bool {
+                return painter_mod.Key.before({}, a.key, b.key);
+            }
+        }.less);
+
+        const sprites = painter.quads.items;
         // A copy pass cannot be opened inside a render pass, and doing it here
         // keeps it out of the wait for a frame.
         try self.atlas.upload();
@@ -174,7 +186,7 @@ pub const Renderer = struct {
 
         // Before the swapchain: this does not need a frame handed back first,
         // so doing it here keeps it out of the wait.
-        if (count > 0) self.stage(cmd, sprites) catch |err| {
+        if (count > 0) self.stage(cmd, painter) catch |err| {
             _ = c.SDL_SubmitGPUCommandBuffer(cmd);
             return err;
         };
@@ -218,37 +230,44 @@ pub const Renderer = struct {
             c.SDL_PushGPUVertexUniformData(cmd, 0, &frame, @sizeOf(Frame));
 
             const instances = [_]?*c.SDL_GPUBuffer{self.instances};
+            const binding = std.mem.zeroInit(c.SDL_GPUTextureSamplerBinding, .{
+                .texture = self.atlas.texture,
+                .sampler = self.sampler,
+            });
 
-            // Every glyph on screen, in one call. The caret is the first quad
-            // that is not one, so an empty document draws no glyphs at all.
-            if (caret > 0) {
-                c.SDL_BindGPUGraphicsPipeline(pass, self.pipeline);
-                const binding = std.mem.zeroInit(c.SDL_GPUTextureSamplerBinding, .{
-                    .texture = self.atlas.texture,
-                    .sampler = self.sampler,
-                });
-                c.SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
-                c.SDL_BindGPUVertexStorageBuffers(pass, 0, &instances, 1);
+            // One call per key. The runs are sorted and staged in that order, so
+            // every run sharing a key is contiguous and covered by one draw.
+            var bound: ?painter_mod.Pipeline = null;
+            var i: usize = 0;
+            while (i < painter.runs.items.len) {
+                const run = painter.runs.items[i];
 
-                const ink: Ink = .{ .colour = config.text_colour };
+                var instances_in_call = run.count;
+                var next = i + 1;
+                while (next < painter.runs.items.len and
+                    painter.runs.items[next].key.eql(run.key)) : (next += 1)
+                {
+                    instances_in_call += painter.runs.items[next].count;
+                }
+
+                if (bound == null or bound.? != run.key.pipeline) {
+                    switch (run.key.pipeline) {
+                        .glyphs => {
+                            c.SDL_BindGPUGraphicsPipeline(pass, self.pipeline);
+                            c.SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+                        },
+                        .solid => c.SDL_BindGPUGraphicsPipeline(pass, self.solid),
+                    }
+                    c.SDL_BindGPUVertexStorageBuffers(pass, 0, &instances, 1);
+                    bound = run.key.pipeline;
+                }
+
+                const ink: Ink = .{ .colour = run.key.colour };
                 c.SDL_PushGPUFragmentUniformData(cmd, 0, &ink, @sizeOf(Ink));
-                c.SDL_DrawGPUPrimitives(pass, 4, caret, 0, 0);
+                c.SDL_DrawGPUPrimitives(pass, 4, instances_in_call, 0, run.first);
+
+                i = next;
             }
-
-            // The caret and the scrollbar sample nothing, so they go through a
-            // pipeline that does not, and a quad stops being limited to the size
-            // of something in the atlas. One call each because they are two
-            // colours; the pipeline is bound once for both.
-            c.SDL_BindGPUGraphicsPipeline(pass, self.solid);
-            c.SDL_BindGPUVertexStorageBuffers(pass, 0, &instances, 1);
-
-            const caret_ink: Ink = .{ .colour = config.caret_colour };
-            c.SDL_PushGPUFragmentUniformData(cmd, 0, &caret_ink, @sizeOf(Ink));
-            c.SDL_DrawGPUPrimitives(pass, 4, 1, 0, caret);
-
-            const bar_ink: Ink = .{ .colour = config.scrollbar_colour };
-            c.SDL_PushGPUFragmentUniformData(cmd, 0, &bar_ink, @sizeOf(Ink));
-            c.SDL_DrawGPUPrimitives(pass, 4, 1, 0, bar);
         }
 
         c.SDL_EndGPURenderPass(pass);
@@ -282,14 +301,24 @@ pub const Renderer = struct {
 
     /// Both halves cycle: the previous frame may still be in flight, and waiting
     /// for it would stall the middle of a redraw.
-    fn stage(self: *Renderer, cmd: *c.SDL_GPUCommandBuffer, sprites: []const Sprite) !void {
-        const bytes = std.mem.sliceAsBytes(sprites);
+    /// Copies run by run rather than in one go, so that the buffer ends up in
+    /// the order the runs were sorted into and a run's quads are contiguous --
+    /// which is what lets one call cover several runs. Each run is left saying
+    /// where it landed.
+    fn stage(self: *Renderer, cmd: *c.SDL_GPUCommandBuffer, painter: *Painter) !void {
+        const bytes = painter.quads.items.len * @sizeOf(Sprite);
 
         const mapped = c.SDL_MapGPUTransferBuffer(self.gpu, self.transfer, true) orelse {
             std.log.err("SDL_MapGPUTransferBuffer: {s}", .{sdl.lastError()});
             return error.SdlMapTransferBuffer;
         };
-        @memcpy(@as([*]u8, @ptrCast(mapped))[0..bytes.len], bytes);
+        const into = @as([*]Sprite, @ptrCast(@alignCast(mapped)));
+        var at: u32 = 0;
+        for (painter.runs.items) |*run| {
+            @memcpy(into[at..][0..run.count], painter.quads.items[run.first..][0..run.count]);
+            run.first = at;
+            at += run.count;
+        }
         c.SDL_UnmapGPUTransferBuffer(self.gpu, self.transfer);
 
         const source = std.mem.zeroInit(c.SDL_GPUTransferBufferLocation, .{
@@ -297,7 +326,7 @@ pub const Renderer = struct {
         });
         const destination = std.mem.zeroInit(c.SDL_GPUBufferRegion, .{
             .buffer = self.instances,
-            .size = @as(u32, @intCast(bytes.len)),
+            .size = @as(u32, @intCast(bytes)),
         });
 
         const pass = c.SDL_BeginGPUCopyPass(cmd);
