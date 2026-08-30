@@ -23,13 +23,11 @@ pub fn main(init: std.process.Init) !void {
 
     // Before SDL, so a file that cannot be opened fails without a window having
     // appeared and gone again.
-    const opened = try open(init, 0);
-    defer init.gpa.free(opened.text);
-    defer if (opened.path) |path| init.gpa.free(path);
-
-    const second = try open(init, 1);
-    defer init.gpa.free(second.text);
-    defer if (second.path) |path| init.gpa.free(path);
+    var opened = try openAll(init);
+    defer {
+        for (opened.items) |*file| file.deinit(init.gpa);
+        opened.deinit(init.gpa);
+    }
 
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
         std.log.err("SDL_Init: {s}", .{sdl.lastError()});
@@ -59,18 +57,17 @@ pub fn main(init: std.process.Init) !void {
     }
     defer _ = c.SDL_StopTextInput(window);
 
-    if (opened.path) |path| _ = c.SDL_SetWindowTitle(window, path.ptr);
+    if (opened.items[0].path) |path| _ = c.SDL_SetWindowTitle(window, path.ptr);
 
     var app: App = .{
+        .gpa = init.gpa,
         .renderer = try Renderer.init(init.gpa, window),
-        .view = try TextView.init(init.gpa, opened.text),
-        .other = if (second.path != null) try TextView.init(init.gpa, second.text) else null,
         .painter = .init(init.gpa),
     };
-    defer app.renderer.deinit();
-    defer app.view.deinit();
-    defer if (app.other) |*o| o.deinit();
-    defer app.painter.deinit();
+    defer app.deinit();
+
+    try app.views.ensureTotalCapacity(init.gpa, opened.items.len);
+    for (opened.items) |file| app.views.appendAssumeCapacity(try TextView.init(init.gpa, file.text));
 
     if (!c.SDL_AddEventWatch(redrawWhileResizing, &app)) {
         std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
@@ -115,9 +112,13 @@ fn pointer(event: Event) ?[2]f32 {
 
 /// Together because the event watch reaches them from behind one `void *`.
 const App = struct {
+    gpa: std.mem.Allocator,
     renderer: Renderer,
-    view: TextView,
-    other: ?TextView,
+
+    /// Left to right across the window, and never empty: a document nobody
+    /// named is still a document.
+    views: std.ArrayList(TextView) = .empty,
+
     painter: Painter,
     running: bool = true,
 
@@ -125,30 +126,39 @@ const App = struct {
     /// begin with: the first frame has never been drawn.
     dirty: bool = true,
 
+    fn deinit(self: *App) void {
+        for (self.views.items) |*view| view.deinit();
+        self.views.deinit(self.gpa);
+        self.painter.deinit();
+        self.renderer.deinit();
+    }
+
     /// Answers for everything it holds, so the loop asks one thing.
     fn isDirty(self: *const App) bool {
-        if (self.other) |*other| {
-            if (other.isDirty()) return true;
+        for (self.views.items) |*view| {
+            if (view.isDirty()) return true;
         }
-        return self.dirty or self.view.isDirty();
+        return self.dirty;
     }
 
     fn setDirty(self: *App, value: bool) void {
         self.dirty = value;
-        self.view.setDirty(value);
-        if (self.other) |*other| other.setDirty(value);
+        for (self.views.items) |*view| view.setDirty(value);
     }
 
-    /// Divides the room it has been given between what it holds. One view for
-    /// now, so it gets all of it.
+    /// Divides the room it has been given between what it holds: equal columns,
+    /// left to right.
     fn place(self: *App, rect: Rect) void {
-        if (self.other) |*other| {
-            const half = @round(rect.width / 2);
-            self.view.place(.{ .x = rect.x, .y = rect.y, .width = half, .height = rect.height });
-            other.place(.{ .x = rect.x + half, .y = rect.y, .width = rect.width - half, .height = rect.height });
-            return;
+        const count: f32 = @floatFromInt(self.views.items.len);
+        var left = rect.x;
+        for (self.views.items, 1..) |*view, nth| {
+            // Each edge from the full width rather than by adding widths up, so
+            // rounding cannot leave a seam between two columns or short of the
+            // last one.
+            const right = @round(rect.x + rect.width * @as(f32, @floatFromInt(nth)) / count);
+            view.place(.{ .x = left, .y = rect.y, .width = right - left, .height = rect.height });
+            left = right;
         }
-        self.view.place(rect);
     }
 
     /// Takes what belongs to the window and hands the rest down. What changed
@@ -181,31 +191,29 @@ const App = struct {
         }
 
         // Typing, for want of anything that decides focus yet.
-        try self.view.update(event, atlas);
+        try self.views.items[0].update(event, atlas);
     }
 
     /// The view whose scrollbar the pointer has hold of, if any.
     fn holding(self: *App) ?*TextView {
-        if (self.view.drag != null) return &self.view;
-        if (self.other) |*other| {
-            if (other.drag != null) return other;
+        for (self.views.items) |*view| {
+            if (view.drag != null) return view;
         }
         return null;
     }
 
-    /// The view a point falls in.
+    /// The view a point falls in. The columns do not overlap, so at most one
+    /// can answer.
     fn over(self: *App, at: [2]f32) ?*TextView {
-        if (self.other) |*other| {
-            if (other.rect.contains(at)) return other;
+        for (self.views.items) |*view| {
+            if (view.rect.contains(at)) return view;
         }
-        if (self.view.rect.contains(at)) return &self.view;
         return null;
     }
 
     /// Every quad the frame is made of, from everything it holds.
     fn draw(self: *App, painter: *Painter) !void {
-        try self.view.draw(&self.renderer.atlas, painter);
-        if (self.other) |*other| try other.draw(&self.renderer.atlas, painter);
+        for (self.views.items) |*view| try view.draw(&self.renderer.atlas, painter);
     }
 
     fn redraw(self: *App) !void {
@@ -213,7 +221,9 @@ const App = struct {
         // scale changed, and dragging to another display happens inside the
         // modal loop, where only the watch below runs.
         const scale = displayScale(self.renderer.window);
-        if (try self.renderer.atlas.setScale(scale)) self.view.invalidate();
+        if (try self.renderer.atlas.setScale(scale)) {
+            for (self.views.items) |*view| view.invalidate();
+        }
 
         // The window rather than the swapchain, which is not acquired until
         // `present`. The two can disagree for a frame mid-resize, which is one
@@ -229,9 +239,8 @@ const App = struct {
             .height = @floatFromInt(height),
         });
 
-        if (self.view.follow_caret) self.view.scrollToCaret(&self.renderer.atlas);
-        if (self.other) |*other| {
-            if (other.follow_caret) other.scrollToCaret(&self.renderer.atlas);
+        for (self.views.items) |*view| {
+            if (view.follow_caret) view.scrollToCaret(&self.renderer.atlas);
         }
 
         self.painter.clear();
@@ -261,23 +270,42 @@ const Opened = struct {
     text: []u8,
     /// Sentinel-terminated because it goes to SDL as a window title.
     path: ?[:0]u8,
+
+    fn deinit(self: *Opened, gpa: std.mem.Allocator) void {
+        gpa.free(self.text);
+        if (self.path) |path| gpa.free(path);
+    }
 };
 
-/// Reads the file named by the first argument, if there is one.
+/// Every file named on the command line, in the order they were named, and one
+/// empty document when none was. Never empty, so there is always a view.
+fn openAll(init: std.process.Init) !std.ArrayList(Opened) {
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
+    defer args.deinit();
+    _ = args.skip(); // The program itself.
+
+    var opened: std.ArrayList(Opened) = .empty;
+    errdefer {
+        for (opened.items) |*file| file.deinit(init.gpa);
+        opened.deinit(init.gpa);
+    }
+
+    // Read one at a time rather than gathering the paths first: the iterator
+    // owns what it returns until the next call, and `open` copies it.
+    while (args.next()) |named| try opened.append(init.gpa, try open(init, named));
+
+    if (opened.items.len == 0) {
+        try opened.append(init.gpa, .{ .text = try init.gpa.alloc(u8, 0), .path = null });
+    }
+    return opened;
+}
+
+/// Reads one named file.
 ///
 /// A path that does not exist opens empty under that name, the way a new file
 /// starts. Anything else stops the program: an empty window otherwise looks
 /// exactly like an empty file.
-fn open(init: std.process.Init, which: usize) !Opened {
-    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
-    defer args.deinit();
-
-    _ = args.skip(); // The program itself.
-    var skip: usize = 0;
-    while (skip < which) : (skip += 1) _ = args.skip();
-    const named = args.next() orelse return .{ .text = try init.gpa.alloc(u8, 0), .path = null };
-
-    // The iterator owns what it returns and is about to go.
+fn open(init: std.process.Init, named: []const u8) !Opened {
     const path = try init.gpa.dupeZ(u8, named);
     errdefer init.gpa.free(path);
 
