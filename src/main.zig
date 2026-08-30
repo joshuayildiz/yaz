@@ -8,6 +8,7 @@ const Painter = @import("./painter.zig").Painter;
 const Rect = @import("./painter.zig").Rect;
 const sdl = @import("./sdl.zig");
 const tools = @import("./tools.zig");
+const Healthcheck = @import("./healthcheck.zig").Healthcheck;
 const c = sdl.c;
 
 /// The largest file yaz will open. What still costs per line of the document
@@ -28,9 +29,14 @@ pub fn main(init: std.process.Init) !void {
     // `SDL_Init`, which is when SDL reads it.
     _ = c.SDL_SetHint(c.SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
 
+    // The tools before the files: when either is missing nothing but the
+    // healthcheck runs, and reading a file first would report the wrong problem
+    // when the path is also bad.
+    const absent = try tools.missing(init.gpa, init.io, init.minimal.environ);
+
     // Before SDL, so a file that cannot be opened fails without a window having
     // appeared and gone again.
-    var opened = try openAll(init);
+    var opened: std.ArrayList(Opened) = if (absent.any()) .empty else try openAll(init);
     defer {
         for (opened.items) |*file| file.deinit(init.gpa);
         opened.deinit(init.gpa);
@@ -64,10 +70,16 @@ pub fn main(init: std.process.Init) !void {
     }
     defer _ = c.SDL_StopTextInput(window);
 
-    if (opened.items[0].path) |path| _ = c.SDL_SetWindowTitle(window, path.ptr);
+    if (opened.items.len > 0) {
+        if (opened.items[0].path) |path| _ = c.SDL_SetWindowTitle(window, path.ptr);
+    }
 
     var app: App = .{
         .gpa = init.gpa,
+        .health = if (absent.any())
+            try Healthcheck.init(init.gpa, init.minimal.environ, absent)
+        else
+            null,
         .renderer = try Renderer.init(init.gpa, window),
         .painter = .init(init.gpa),
     };
@@ -122,8 +134,12 @@ const App = struct {
     gpa: std.mem.Allocator,
     renderer: Renderer,
 
-    /// Left to right across the window, and never empty: a document nobody
-    /// named is still a document.
+    /// When set, one of the two tools does not run, and this is the whole
+    /// window: no views, no files read, nothing routed anywhere else.
+    health: ?Healthcheck = null,
+
+    /// Left to right across the window. Empty only while `health` is set; a
+    /// document nobody named is still a document.
     views: std.ArrayList(TextView) = .empty,
 
     /// Which of them a keystroke goes to. Moved by a press and by nothing else:
@@ -139,6 +155,7 @@ const App = struct {
     dirty: bool = true,
 
     fn deinit(self: *App) void {
+        if (self.health) |*health| health.deinit();
         for (self.views.items) |*view| view.deinit();
         self.views.deinit(self.gpa);
         self.painter.deinit();
@@ -147,6 +164,7 @@ const App = struct {
 
     /// Answers for everything it holds, so the loop asks one thing.
     fn isDirty(self: *const App) bool {
+        if (self.health) |*health| return self.dirty or health.isDirty();
         for (self.views.items) |*view| {
             if (view.isDirty()) return true;
         }
@@ -155,12 +173,15 @@ const App = struct {
 
     fn setDirty(self: *App, value: bool) void {
         self.dirty = value;
+        if (self.health) |*health| return health.setDirty(value);
         for (self.views.items) |*view| view.setDirty(value);
     }
 
     /// Divides the room it has been given between what it holds: equal columns,
     /// left to right.
     fn place(self: *App, rect: Rect) void {
+        if (self.health) |*health| return health.place(rect);
+
         const count: f32 = @floatFromInt(self.views.items.len);
         var left = rect.x;
         for (self.views.items, 1..) |*view, nth| {
@@ -187,6 +208,9 @@ const App = struct {
             },
             else => {},
         }
+
+        // Nothing below the window works while a tool is missing.
+        if (self.health) |*health| return health.update(event);
 
         const atlas = &self.renderer.atlas;
 
@@ -235,6 +259,7 @@ const App = struct {
 
     /// Every quad the frame is made of, from everything it holds.
     fn draw(self: *App, painter: *Painter) !void {
+        if (self.health) |*health| return health.draw(&self.renderer.atlas, painter);
         for (self.views.items) |*view| try view.draw(&self.renderer.atlas, painter);
     }
 
@@ -244,6 +269,7 @@ const App = struct {
         // modal loop, where only the watch below runs.
         const scale = displayScale(self.renderer.window);
         if (try self.renderer.atlas.setScale(scale)) {
+            if (self.health) |*health| health.invalidate();
             for (self.views.items) |*view| view.invalidate();
         }
 

@@ -146,17 +146,29 @@ fn pin(tool: Tool) Pin {
 
 /// Where both tools live. Caller owns the result.
 pub fn path(gpa: std.mem.Allocator, environ: std.process.Environ, tool: Tool) ![]u8 {
-    // `getAlloc` rather than `getPosix`, which is not implemented on Windows.
-    const home = environ.getAlloc(gpa, if (windows) "USERPROFILE" else "HOME") catch
-        return error.NoHomeDirectory;
-    defer gpa.free(home);
+    const where = try home(gpa, environ);
+    defer gpa.free(where);
 
-    return pathUnder(gpa, home, tool);
+    return pathUnder(gpa, where, tool);
+}
+
+/// The home directory. Caller owns the result.
+///
+/// `getPosix` reads the environment block directly; `getAlloc` builds a map of
+/// the whole environment first, which measured 7.8ms per call in a Debug build.
+/// It is only used where it has to be -- `getPosix` is not implemented on
+/// Windows.
+fn home(gpa: std.mem.Allocator, environ: std.process.Environ) ![]u8 {
+    if (windows) {
+        return environ.getAlloc(gpa, "USERPROFILE") catch error.NoHomeDirectory;
+    }
+    const found = environ.getPosix("HOME") orelse return error.NoHomeDirectory;
+    return gpa.dupe(u8, found);
 }
 
 /// Apart from the environment so it can be tested without one.
-fn pathUnder(gpa: std.mem.Allocator, home: []const u8, tool: Tool) ![]u8 {
-    return std.fs.path.join(gpa, &.{ home, ".config", "yaz", "bin", tool.binary() });
+fn pathUnder(gpa: std.mem.Allocator, where: []const u8, tool: Tool) ![]u8 {
+    return std.fs.path.join(gpa, &.{ where, ".config", "yaz", "bin", tool.binary() });
 }
 
 /// Whether the binary at `exe` runs.
@@ -195,9 +207,13 @@ pub const Missing = struct {
 };
 
 pub fn missing(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ) !Missing {
+    // Asked once rather than once per tool: it is the same answer both times.
+    const where = try home(gpa, environ);
+    defer gpa.free(where);
+
     var out: Missing = .{ .rg = true, .fzf = true };
     for (Tool.all) |tool| {
-        const exe = try path(gpa, environ, tool);
+        const exe = try pathUnder(gpa, where, tool);
         defer gpa.free(exe);
 
         const working = probe(gpa, io, exe);

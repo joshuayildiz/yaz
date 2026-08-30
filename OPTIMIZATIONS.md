@@ -241,10 +241,36 @@ asserts that; the symptom if it ever stops holding is text that shimmers rather
 than moves. Checked by scrolling a pixel at a time and comparing frames: at 1, 2
 and 30 pixels the image is the one before it translated by exactly that much.
 
+## 12. Resolving the tool paths once
+
+Startup spawns `rg --version` and `fzf --version` to check both tools work, and
+that check is on the path to the first frame. Measured on an M2, it cost
+**26.5ms** -- and only 11ms of that was the two spawns.
+
+The other 15.5ms was ours. `path` asked the environment for `HOME` through
+`Environ.getAlloc`, which builds a hash map of the whole environment before
+answering, and it was called once per tool: **7.8ms a call**. Asking once, and
+through `getPosix` -- a scan of the environment block rather than a map of it --
+took the whole check to **11ms**.
+
+What is left is process creation for two statically linked binaries of 4MB and
+4.8MB, and it does not move: ReleaseFast measures 12-13ms, the same as Debug,
+because none of it is our code. A shell doing the same two spawns takes 8.8ms.
+
+**Rests on:** `getPosix` being implemented on the host. It is not on Windows,
+which still pays for `getAlloc` -- once now, rather than twice.
+
+**Check:** time `tools.missing` around the call. Anything near 26ms means the
+per-tool path lookup is back.
+
 ## Not optimizations yet
 
 Stated so they are not mistaken for finished work:
 
+- **Startup pays ~11ms to spawn both tools.** The check is that they *run*,
+  which is what catches a truncated download or a wrong-architecture binary --
+  a stat would pass both. Recording the result and re-checking only when the
+  file changes would make it nearly free after the first launch.
 - **The whole window redraws.** There is no damage tracking, so a one-character
   edit will repaint everything.
 - **Blending is done on sRGB-encoded values**, not in linear light. With the

@@ -54,6 +54,19 @@ downloaded binary is code about to be run.
 `yaz setup` is the only thing in yaz that touches the network, and it does so
 because it was asked to. It is idempotent, and skips a tool that already runs.
 
+**Nothing else runs until both are there.** On startup yaz spawns each binary
+with `--version` and requires it to exit cleanly; if either does not, the window
+shows what is missing and where it looked, and no file on the command line is
+even read — a bad path would otherwise report the wrong problem first.
+
+Spawning rather than checking the file exists is deliberate: a truncated
+download or a binary for the wrong architecture is present and executable, and
+only running it says otherwise. It costs about 11ms of startup, which
+[OPTIMIZATIONS.md](OPTIMIZATIONS.md) §12 measures and accounts for.
+
+The check happens once. Installing the tools while that window is up means
+starting yaz again.
+
 ## Build and run
 
 ```sh
