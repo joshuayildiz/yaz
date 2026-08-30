@@ -49,23 +49,10 @@ yaz               # an empty document
 yaz notes.md      # notes.md, with the caret at the top
 yaz new.md        # new.md does not exist: an empty document under that name
 yaz a.md b.md     # both, in equal columns
-yaz a.md a.md     # two views of one file, editable through either
 ```
 
 Any number of paths, in equal columns left to right in the order named; the
-window takes its title from the first.
-
-**Naming the same file twice opens one document and two views of it**, so an
-edit made through either shows in both the same frame. Two arguments name the
-same file when they resolve to the same path, so `a.md`, `./a.md` and a symlink
-to it all agree; a file that does not exist yet cannot be resolved — and opening
-one is how a new file starts here — so there the argument stands in for itself,
-and `yaz new.md new.md` still shares.
-
-Each view keeps its own caret and its own scroll. Typing through one pushes the
-other's caret along by what was inserted rather than dragging it to the edit,
-and deleting lines out from under a view parked at the end leaves it clamped to
-the new end rather than looking past it. `assets/sample.txt` is there to be
+window takes its title from the first. `assets/sample.txt` is there to be
 opened — six lines exercising ligatures, a combining mark, `.notdef` and
 proportional advances.
 
@@ -422,8 +409,7 @@ Shaping is the expensive half of turning a line into pixels, and it depends on
 **the line's bytes and nothing else** — not on where the line sits. So each
 line's sprites are shaped once and kept **on the document**, in coordinates of
 the line's own: x from where the line starts, y from its baseline. Placing them
-is then an add, and two views of one file place the same cached line twice
-rather than shaping it twice.
+is then an add.
 
 That is what makes the cache survive an ordinary edit. A newline at the top of
 the file moves every line below it down a row without moving anything within
@@ -711,7 +697,7 @@ the order to read it in:
 | `document.zig` | glyph_atlas |
 | `renderer.zig` | config, sdl, glyph_atlas |
 | `text_view.zig` | document, event, glyph_atlas |
-| `main.zig` | document, event, renderer, text_view, sdl |
+| `main.zig` | event, renderer, text_view, sdl |
 
 Where to start depends on what you are changing: what a keystroke does is
 `TextView.handle`; where text lands on screen is `TextView.layout`; what a glyph
@@ -733,12 +719,6 @@ so a parent answers for what it holds. A parent calls them on its children, so
 the tree is the type system rather than a vtable; that is enough until the set of
 children has to vary at runtime.
 
-`TextView.update` answers with the `Edit` it made, and `App` walks the other
-views of that same document to catch them up. It is done there rather than
-through a back-pointer from the document because nothing here points upwards. A
-version counter on the document would not do: it tells a view *that* it is
-behind, not how far to move its caret, which needs the edit itself.
-
 **A keystroke goes to `App.focus`, and a press is the only thing that moves it.**
 The pointer never consults it — the wheel turns whatever it is under and a
 scrollbar drag stays with the view it began in — so reading one file never
@@ -756,7 +736,9 @@ gets drawn or scrolled, and holds no coordinates but its own, which is why it ca
 be read and tested on its own.
 
 The layout cache is there rather than in the view because it depends on a line's
-bytes and the atlas scale and on nothing a view has.
+bytes and the atlas scale and on nothing a view has, which is also what lets
+`insert` and `delete` splice it themselves rather than leaving that to a
+caller.
 
 `glyph_atlas.zig` keeps shaping and rasterizing together because neither can be
 asked without the other — shaping decides which glyphs exist, rasterizing decides

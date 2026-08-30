@@ -1,28 +1,20 @@
 //! The document: the text itself, where its lines begin, and what each line
 //! shaped to.
 //!
-//! Everything here is derived from the bytes and from nothing a view has, which
-//! is why several views can share one of these. What a view keeps of its own is
-//! where its caret is and how far down it is looking. See text_view.zig.
+//! Everything here is derived from the bytes and from nothing a view has. What
+//! a view keeps of its own is where its caret is and how far down it is
+//! looking. See text_view.zig.
 
 const std = @import("std");
 
 const LineLayout = @import("./glyph_atlas.zig").LineLayout;
 
-/// What an edit did, in both the terms anything downstream of it might be keyed
-/// by: bytes, for a caret, and lines, for a layout cache.
+/// What an edit did to the line index, so anything else keyed by line can be
+/// spliced rather than rebuilt. Both counts are of lines after `line`.
 pub const Edit = struct {
-    /// Where in the document it happened.
-    at: usize,
-    /// Bytes that went in at `at`, and bytes that came out of it. One of the two
-    /// is always zero -- an edit is an insert or a delete, never both.
-    inserted: usize,
-    deleted: usize,
-
     /// The line the edit landed in. Its bytes changed; no other line's did.
     line: usize,
-    /// Lines that stopped existing, their newlines having been deleted. Counted
-    /// after `line`, as `added` is.
+    /// Lines that stopped existing, their newlines having been deleted.
     removed: usize,
     /// Lines that came into being, from newlines in the inserted text.
     added: usize,
@@ -96,7 +88,7 @@ pub const Buffer = struct {
     pub fn insert(self: *Buffer, at: usize, text: []const u8) !Edit {
         std.debug.assert(at <= self.byteLen());
         const line = self.lineAt(at);
-        if (text.len == 0) return .{ .at = at, .inserted = 0, .deleted = 0, .line = line, .removed = 0, .added = 0 };
+        if (text.len == 0) return .{ .line = line, .removed = 0, .added = 0 };
 
         // Both allocations happen before a byte is written, so failing here
         // leaves the document and its index exactly as they were.
@@ -109,7 +101,7 @@ pub const Buffer = struct {
         self.gap_start += text.len;
 
         self.reindexInsert(line, at, text, added);
-        return .{ .at = at, .inserted = text.len, .deleted = 0, .line = line, .removed = 0, .added = added };
+        return .{ .line = line, .removed = 0, .added = added };
     }
 
     /// Deletes the `count` bytes starting at `at`. Cannot fail: the text stays
@@ -117,19 +109,12 @@ pub const Buffer = struct {
     pub fn delete(self: *Buffer, at: usize, count: usize) Edit {
         std.debug.assert(at + count <= self.byteLen());
         const line = self.lineAt(at);
-        if (count == 0) return .{ .at = at, .inserted = 0, .deleted = 0, .line = line, .removed = 0, .added = 0 };
+        if (count == 0) return .{ .line = line, .removed = 0, .added = 0 };
 
         self.moveGap(at);
         self.gap_end += count;
 
-        return .{
-            .at = at,
-            .inserted = 0,
-            .deleted = count,
-            .line = line,
-            .removed = self.reindexDelete(line, at, count),
-            .added = 0,
-        };
+        return .{ .line = line, .removed = self.reindexDelete(line, at, count), .added = 0 };
     }
 
     /// Line `index` without its newline. The result borrows from the buffer and
@@ -547,12 +532,12 @@ test "random edits agree with a plain array doing the same thing" {
     }
 }
 
-/// A document and every view's shared view of it.
+/// The text and everything derived from it.
 ///
-/// The layout cache is here rather than in a view because shaping depends on a
-/// line's bytes and on the atlas scale, and on nothing else. Two views of one
-/// file would otherwise shape and store every line twice, and splice the same
-/// edit into each copy.
+/// The layout cache is here rather than in the view because shaping depends on
+/// a line's bytes and on the atlas scale, and on nothing a view has. Keeping it
+/// beside the text is also what lets `insert` and `delete` splice it themselves,
+/// rather than leaving a caller to remember to.
 pub const Document = struct {
     gpa: std.mem.Allocator,
     buffer: Buffer,
@@ -572,14 +557,6 @@ pub const Document = struct {
         }
         self.lines.deinit(self.gpa);
         self.buffer.deinit();
-    }
-
-    /// One entry per line, made on the first frame rather than at init: nothing
-    /// needs the cache until something is drawn, and an unshown document should
-    /// not pay for one.
-    pub fn ensureLines(self: *Document) !void {
-        if (self.lines.items.len != 0) return;
-        try self.lines.appendNTimes(self.gpa, .{}, self.buffer.lineCount());
     }
 
     pub fn insert(self: *Document, at: usize, text: []const u8) !Edit {
