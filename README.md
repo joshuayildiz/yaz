@@ -671,12 +671,14 @@ Where to start depends on what you are changing: what a keystroke does is
 looks like is `glyph_atlas.zig`; how big or what colour anything is is
 `config.zig`.
 
-**Events go to `App` first and are handed down.** `Event.init` turns what SDL
-sends into what happened — quit, resized, typed text, a key, a wheel delta, a
-press, a move, a release — and answers null for the rest, which is most of it.
-Window coordinates become pixels there, once, so nothing downstream knows what a
-display scale is. `App` acts on what belongs to the window and hands the rest to
-the view, which is given a `Rect` and told what happened in it.
+**SDL stops at the event loop.** `Event.init` turns what SDL sends into what
+happened — quit, resized, typed text, a key, a wheel delta, a press, a move, a
+release — and answers null for the rest, which is most of it. Window coordinates
+become pixels there, once, so nothing downstream knows what a display scale is.
+
+What comes out goes to `App` first: it acts on what belongs to the window and
+hands the rest to the view, which is given a `Rect` and told what happened in it.
+Neither takes an `SDL_Event`.
 
 The view therefore names no SDL type and makes no SDL call: it answers with a
 `Response` saying what changed and whether the pointer took hold, and `App` does

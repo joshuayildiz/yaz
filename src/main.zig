@@ -88,7 +88,10 @@ pub fn main(init: std.process.Init) !void {
         // behind presents of unchanged content: presenting blocks on the
         // swapchain, so each redundant one costs real latency, not just work.
         while (true) {
-            if (try app.handle(&event, window)) dirty = true;
+            const density = c.SDL_GetWindowPixelDensity(window);
+            if (Event.init(&event, density)) |what| {
+                if (try app.handle(what)) dirty = true;
+            }
             if (!c.SDL_PollEvent(&event)) break;
         }
     }
@@ -102,11 +105,8 @@ const App = struct {
 
     /// Takes what belongs to the window and hands the rest down. Answers
     /// whether anything changed that has to be drawn.
-    fn handle(self: *App, event: *const c.SDL_Event, window: *c.SDL_Window) !bool {
-        const density = c.SDL_GetWindowPixelDensity(window);
-        const what = Event.init(event, density) orelse return false;
-
-        switch (what) {
+    fn handle(self: *App, event: Event) !bool {
+        switch (event) {
             .quit => {
                 self.running = false;
                 return false;
@@ -115,7 +115,7 @@ const App = struct {
             else => {},
         }
 
-        const response = try self.view.handle(what, &self.renderer.atlas);
+        const response = try self.view.handle(event, &self.renderer.atlas);
         if (response.capture) |on| _ = c.SDL_CaptureMouse(on);
         return response.dirty;
     }
