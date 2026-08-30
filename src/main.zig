@@ -7,6 +7,7 @@ const Event = @import("./event.zig").Event;
 const Painter = @import("./painter.zig").Painter;
 const Rect = @import("./painter.zig").Rect;
 const sdl = @import("./sdl.zig");
+const tools = @import("./tools.zig");
 const c = sdl.c;
 
 /// The largest file yaz will open. What still costs per line of the document
@@ -14,7 +15,13 @@ const c = sdl.c;
 /// entry for each of them, and the line index behind it.
 const file_limit = 1 << 20;
 
+/// `setup` prints, so it has to be heard from in a release build too, where the
+/// default would keep everything below an error to itself.
+pub const std_options: std.Options = .{ .log_level = .info };
+
 pub fn main(init: std.process.Init) !void {
+    if (try wantsSetup(init)) return setup(init);
+
     // macOS makes inertial scroll events of its own and SDL turns them off
     // unless asked. Asking costs nothing while nothing is moving: momentum is
     // more wheel events, and they stop arriving when it stops. Before
@@ -263,6 +270,59 @@ const App = struct {
         try self.renderer.present(&self.painter);
     }
 };
+
+/// `yaz setup`, and exactly that. A file genuinely named `setup` is still
+/// openable, by naming it `./setup`.
+fn wantsSetup(init: std.process.Init) !bool {
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
+    defer args.deinit();
+
+    _ = args.skip(); // The program itself.
+    const first = args.next() orelse return false;
+    if (!std.mem.eql(u8, first, "setup")) return false;
+    return args.next() == null;
+}
+
+/// Installs the two tools the editor will not run without.
+///
+/// A command rather than something startup does on its own: this is the only
+/// place in yaz that reaches the network, and it should happen because it was
+/// asked for.
+fn setup(init: std.process.Init) !void {
+    var failed = false;
+
+    for (tools.Tool.all) |tool| {
+        const exe = try tools.path(init.gpa, init.minimal.environ, tool);
+        defer init.gpa.free(exe);
+
+        if (tools.probe(init.gpa, init.io, exe)) {
+            std.log.info("{s} is already installed at {s}", .{ tool.title(), exe });
+            continue;
+        }
+
+        std.log.info("installing {s}", .{tool.title()});
+        tools.install(init.gpa, init.io, init.minimal.environ, tool) catch |err| {
+            std.log.err("{s}: {s}", .{ tool.title(), @errorName(err) });
+            failed = true;
+            continue;
+        };
+
+        // What was written, not what was downloaded: the whole point of the
+        // check is that the thing now on disk runs.
+        if (!tools.probe(init.gpa, init.io, exe)) {
+            std.log.err("{s}: installed at {s} but it does not run", .{ tool.title(), exe });
+            failed = true;
+            continue;
+        }
+
+        std.log.info("{s} installed at {s}", .{ tool.title(), exe });
+    }
+
+    // Exiting rather than returning the error: everything that went wrong has
+    // already been reported in terms a person can act on, and returning it would
+    // add a Zig stack trace that says nothing they can.
+    if (failed) std.process.exit(1);
+}
 
 /// Windows and macOS run a modal loop while a window is dragged or resized, and
 /// do not hand control back until it ends, so `SDL_WaitEvent` is stuck inside it

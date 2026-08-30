@@ -31,6 +31,29 @@ binaries are cross-compiled.
 SDL, FreeType and HarfBuzz are built from source by the Zig build system and
 linked statically, so no system `-dev` packages are needed.
 
+## The two tools
+
+yaz runs on two external binaries — **ripgrep** to list the files the finder
+chooses between, and **fzf** to rank them against what has been typed. Neither
+is bundled. Install them with:
+
+```sh
+yaz setup
+```
+
+They land in `~/.config/yaz/bin/`, and that is the only place yaz looks. `PATH`
+is deliberately not consulted: yaz runs what it installed and checked, so
+another `rg` earlier on the path cannot quietly change what the finder does.
+
+Versions are **pinned and checksummed**. `setup` refuses to install an archive
+whose bytes do not hash to the SHA-256 recorded in `src/tools.zig`, taken from
+the checksum files published beside each release — the same rule
+`vendor/setup-macos-sdk.sh` applies to the macOS SDK, for the same reason: a
+downloaded binary is code about to be run.
+
+`yaz setup` is the only thing in yaz that touches the network, and it does so
+because it was asked to. It is idempotent, and skips a tool that already runs.
+
 ## Build and run
 
 ```sh
