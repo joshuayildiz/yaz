@@ -119,6 +119,11 @@ const App = struct {
     /// named is still a document.
     views: std.ArrayList(TextView) = .empty,
 
+    /// Which of them a keystroke goes to. Moved by a press and by nothing else:
+    /// the pointer routes by position without consulting it, so the wheel turns
+    /// whatever it is over without deciding where typing lands.
+    focus: usize = 0,
+
     painter: Painter,
     running: bool = true,
 
@@ -181,32 +186,42 @@ const App = struct {
         // A view holding the scrollbar keeps the pointer until it lets go,
         // wherever it wanders. Without this a drag crossing into the next view
         // would be handed over half way through.
-        if (self.holding()) |held| return held.update(event, atlas);
+        if (self.holding()) |held| return self.views.items[held].update(event, atlas);
 
         // Otherwise a pointer goes to whatever it is over, focus or no focus:
         // the wheel turns the view under it, which is what one expects of it.
         if (pointer(event)) |at| {
-            if (self.over(at)) |view| try view.update(event, atlas);
-            return;
+            const which = self.over(at) orelse return;
+
+            // A press, and only a press. A wheel or a pointer merely passing
+            // over would move where typing lands without anyone asking it to.
+            //
+            // Nothing is marked dirty for the move itself: focus is not drawn,
+            // so a frame showing it would be a frame identical to the last, and
+            // presenting one costs the wait for a swapchain image.
+            if (event == .press) self.focus = which;
+
+            return self.views.items[which].update(event, atlas);
         }
 
-        // Typing, for want of anything that decides focus yet.
-        try self.views.items[0].update(event, atlas);
+        // Everything left is typing, which goes to the focused view wherever
+        // the pointer happens to be.
+        try self.views.items[self.focus].update(event, atlas);
     }
 
-    /// The view whose scrollbar the pointer has hold of, if any.
-    fn holding(self: *App) ?*TextView {
-        for (self.views.items) |*view| {
-            if (view.drag != null) return view;
+    /// Which view has hold of the pointer through its scrollbar, if any.
+    fn holding(self: *App) ?usize {
+        for (self.views.items, 0..) |*view, which| {
+            if (view.drag != null) return which;
         }
         return null;
     }
 
-    /// The view a point falls in. The columns do not overlap, so at most one
+    /// Which view a point falls in. The columns do not overlap, so at most one
     /// can answer.
-    fn over(self: *App, at: [2]f32) ?*TextView {
-        for (self.views.items) |*view| {
-            if (view.rect.contains(at)) return view;
+    fn over(self: *App, at: [2]f32) ?usize {
+        for (self.views.items, 0..) |*view, which| {
+            if (view.rect.contains(at)) return which;
         }
         return null;
     }

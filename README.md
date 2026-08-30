@@ -717,6 +717,13 @@ so a parent answers for what it holds. A parent calls them on its children, so
 the tree is the type system rather than a vtable; that is enough until the set of
 children has to vary at runtime.
 
+**A keystroke goes to `App.focus`, and a press is the only thing that moves it.**
+The pointer never consults it — the wheel turns whatever it is under and a
+scrollbar drag stays with the view it began in — so reading one file never
+decides where typing lands in another. Focus is not drawn: every view shows the
+same caret, so today the way to tell which one has it is to type. That is the
+first thing a border or an active title would fix.
+
 The view therefore names no SDL type and makes no SDL call. It does reach
 `sdl.zig` through `event.zig`, so the separation is one of vocabulary rather than
 of linkage.
