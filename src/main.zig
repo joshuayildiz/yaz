@@ -3,7 +3,7 @@ const std = @import("std");
 const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const TextView = @import("./text_view.zig").TextView;
-const Input = @import("./text_view.zig").Input;
+const Event = @import("./event.zig").Event;
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 
@@ -100,54 +100,22 @@ const App = struct {
     view: TextView,
     running: bool = true,
 
-    /// Takes what belongs to the window and hands the rest down, translated.
-    /// Answers whether anything changed that has to be drawn.
-    ///
-    /// The translation is the point: a window coordinate becomes a pixel here,
-    /// once, and what reaches the view says what happened rather than what SDL
-    /// called it.
+    /// Takes what belongs to the window and hands the rest down. Answers
+    /// whether anything changed that has to be drawn.
     fn handle(self: *App, event: *const c.SDL_Event, window: *c.SDL_Window) !bool {
         const density = c.SDL_GetWindowPixelDensity(window);
-        const input: Input = switch (event.type) {
-            c.SDL_EVENT_QUIT => {
+        const what = Event.init(event, density) orelse return false;
+
+        switch (what) {
+            .quit => {
                 self.running = false;
                 return false;
             },
-            c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => return true,
+            .resized => return true,
+            else => {},
+        }
 
-            // Text arrives as finished characters rather than keys; return and
-            // backspace are not text and do not arrive as any.
-            c.SDL_EVENT_TEXT_INPUT => .{ .text = std.mem.span(event.text.text) },
-            c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
-                c.SDLK_RETURN => .newline,
-                c.SDLK_BACKSPACE => .backspace,
-                else => return false,
-            },
-
-            // A precise device is reported in tenths of a point, so ten times
-            // the delta is how far a finger moved. A notched wheel reports whole
-            // lines instead and nothing tells the two apart -- macOS registers
-            // one mouse and gives it no name -- so everything is read as points.
-            // Negated because SDL counts a wheel positive away from the reader,
-            // which is towards the start of the document.
-            c.SDL_EVENT_MOUSE_WHEEL => .{ .wheel = -event.wheel.y * 10 * density },
-
-            c.SDL_EVENT_MOUSE_BUTTON_DOWN => if (event.button.button == c.SDL_BUTTON_LEFT)
-                .{ .press = .{ event.button.x * density, event.button.y * density } }
-            else
-                return false,
-            c.SDL_EVENT_MOUSE_MOTION => .{ .move = .{ event.motion.x * density, event.motion.y * density } },
-            c.SDL_EVENT_MOUSE_BUTTON_UP => if (event.button.button == c.SDL_BUTTON_LEFT)
-                .release
-            else
-                return false,
-
-            // Exposure belongs to the watcher, which has already drawn by the
-            // time the event arrives here; marking it would draw twice.
-            else => return false,
-        };
-
-        const response = try self.view.handle(input, &self.renderer.atlas);
+        const response = try self.view.handle(what, &self.renderer.atlas);
         if (response.capture) |on| _ = c.SDL_CaptureMouse(on);
         return response.dirty;
     }

@@ -9,6 +9,8 @@
 
 const std = @import("std");
 
+const Event = @import("./event.zig").Event;
+
 const Buffer = @import("./document.zig").Buffer;
 const Edit = @import("./document.zig").Edit;
 
@@ -50,21 +52,7 @@ pub const Rect = struct {
     height: f32,
 };
 
-/// What a view is told happened. Already in pixels by the time one of these is
-/// made, so nothing below here has to know what a display scale is, and nothing
-/// below here has to know what SDL calls things.
-pub const Input = union(enum) {
-    text: []const u8,
-    newline,
-    backspace,
-    /// Pixels to move the view by, positive downwards.
-    wheel: f32,
-    press: [2]f32,
-    move: [2]f32,
-    release,
-};
-
-/// What a view did about an input, and what is left for the caller to do.
+/// What a view did about an event, and what is left for the caller to do.
 pub const Response = struct {
     /// Something changed that has to be drawn.
     dirty: bool = false,
@@ -173,9 +161,11 @@ pub const TextView = struct {
         self.rect = rect;
     }
 
-    /// Everything that happens inside the view.
-    pub fn handle(self: *TextView, input: Input, atlas: *GlyphAtlas) !Response {
-        switch (input) {
+    /// Everything that happens inside the view. What belongs to the window has
+    /// been dealt with before this is called.
+    pub fn handle(self: *TextView, event: Event, atlas: *GlyphAtlas) !Response {
+        switch (event) {
+            .quit, .resized => return .{},
             .text => |typed| {
                 try self.insert(typed);
                 return .{ .dirty = true };

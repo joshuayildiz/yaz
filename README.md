@@ -643,6 +643,7 @@ change nothing, which is the opposite of what the event loop is for.
 src/
   main.zig         # SDL setup, the window, the event loop, opening a file
   text_view.zig    # scrolling, the caret, the per-line layout cache
+  event.zig        # what happened, in our words rather than SDL's
   document.zig     # the gap buffer and the line index
   renderer.zig     # GPU device, the two pipelines, drawing
   glyph_atlas.zig  # shaping, rasterizing, atlas uploads
@@ -659,23 +660,29 @@ the order to read it in:
 | | imports |
 | --- | --- |
 | `config.zig`, `sdl.zig`, `document.zig` | nothing of ours |
+| `event.zig` | sdl |
 | `glyph_atlas.zig` | config, sdl |
 | `renderer.zig` | config, sdl, glyph_atlas |
-| `text_view.zig` | document, glyph_atlas |
-| `main.zig` | renderer, text_view, sdl |
+| `text_view.zig` | document, event, glyph_atlas |
+| `main.zig` | event, renderer, text_view, sdl |
 
 Where to start depends on what you are changing: what a keystroke does is
 `TextView.handle`; where text lands on screen is `TextView.layout`; what a glyph
 looks like is `glyph_atlas.zig`; how big or what colour anything is is
 `config.zig`.
 
-**Events go to `App` first and are handed down translated.** `App` takes what
-belongs to the window — quitting, resizing — and turns the rest into a
-`TextView.Input`: typed text, a key, a wheel delta in pixels, a press, a move, a
-release. The view is given a `Rect` and told what happened in it, so it needs no
-notion of SDL, of a display scale, or of where the window is. That is why
-`text_view.zig` is the one file here that does not import `sdl.zig`, and it is
-the seam a second panel would be added along.
+**Events go to `App` first and are handed down.** `Event.init` turns what SDL
+sends into what happened — quit, resized, typed text, a key, a wheel delta, a
+press, a move, a release — and answers null for the rest, which is most of it.
+Window coordinates become pixels there, once, so nothing downstream knows what a
+display scale is. `App` acts on what belongs to the window and hands the rest to
+the view, which is given a `Rect` and told what happened in it.
+
+The view therefore names no SDL type and makes no SDL call: it answers with a
+`Response` saying what changed and whether the pointer took hold, and `App` does
+the capturing. It does reach `sdl.zig` through `event.zig`, so the separation is
+one of vocabulary rather than of linkage. That seam is where a second panel would
+be added.
 
 `document.zig` is the text and where its lines begin, and nothing above that. It
 does not know that text gets shaped, drawn or scrolled, which is why it can be
