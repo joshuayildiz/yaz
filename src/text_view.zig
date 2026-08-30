@@ -29,11 +29,26 @@ const bar_width = 8;
 const bar_inset = 3;
 
 /// The room the scrollbar takes down the left, which the text starts after.
-pub const bar_gutter = bar_inset + bar_width;
+const bar_gutter = bar_inset + bar_width;
 
 /// The shortest the thumb is allowed to get. A long document would otherwise
 /// scale it down to something there is no catching with a pointer.
 const bar_minimum = 24;
+
+/// Where the first line's top-left corner sits inside the rect, at a display
+/// scale of one. Measured from the scrollbar rather than from the edge, since
+/// the bar is down the left and the text starts after it.
+const text_margin: [2]f32 = .{ 5, 5 };
+
+/// Somewhere to put something, in device pixels. The window is divided into
+/// these and each one is handed to whatever draws in it; a view is told the
+/// room it has and divides it again, rather than being told where its parts go.
+pub const Rect = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+};
 
 /// One array rather than two: the quads reach the GPU as a single buffer and are
 /// drawn by index into it, so the split is where the colour changes rather than
@@ -80,6 +95,10 @@ pub const TextView = struct {
     /// screen brings the view back; clicking reads the view where it is.
     follow_caret: bool = false,
 
+    /// The room this view has been given. Everything it draws and everything it
+    /// is asked about a point on screen is measured from here.
+    rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+
     /// The caret starts at the top: nothing scrolls yet, so a caret at the end
     /// of a long file is one nobody can see.
     pub fn init(gpa: std.mem.Allocator, text: []const u8) !TextView {
@@ -119,19 +138,36 @@ pub const TextView = struct {
         return true;
     }
 
+    /// Hands the view the room it has. Called before anything is drawn or asked
+    /// about, so nothing else has to be told the window's size.
+    pub fn place(self: *TextView, rect: Rect) void {
+        self.rect = rect;
+    }
+
+    /// Where the first line's top-left corner sits. Whole pixels, which the
+    /// layout cache depends on: a fractional origin would change which subpixel
+    /// variant every cached glyph points at.
+    fn origin(self: *const TextView, atlas: *const GlyphAtlas) [2]f32 {
+        return .{
+            @round(self.rect.x + (bar_gutter + text_margin[0]) * atlas.scale),
+            @round(self.rect.y + text_margin[1] * atlas.scale),
+        };
+    }
+
     /// Moves the view by `pixels`, keeping the offset a whole number of them.
     /// What is left over waits for the next event rather than rounding away.
-    pub fn scrollBy(self: *TextView, pixels: f32, atlas: *const GlyphAtlas, top: f32) void {
+    pub fn scrollBy(self: *TextView, pixels: f32, atlas: *const GlyphAtlas) void {
         self.pending += pixels;
         const whole = @trunc(self.pending);
         self.pending -= whole;
-        self.scrollTo(self.scroll + whole, atlas, top);
+        self.scrollTo(self.scroll + whole, atlas);
     }
 
     /// Where the scrollbar's thumb sits in a window `height` tall.
-    fn scrollbar(self: *const TextView, atlas: *const GlyphAtlas, top: f32, height: f32) Thumb {
+    fn scrollbar(self: *const TextView, atlas: *const GlyphAtlas) Thumb {
         const count: f32 = @floatFromInt(self.document.lineCount());
-        return thumb(self.scroll, top + count * atlas.line_height, height, @round(bar_minimum * atlas.scale));
+        const content = self.origin(atlas)[1] - self.rect.y + count * atlas.line_height;
+        return thumb(self.scroll, content, self.rect.height, @round(bar_minimum * atlas.scale));
     }
 
     /// Where on the thumb a press at `point` takes hold, or null when the press
@@ -141,45 +177,48 @@ pub const TextView = struct {
     /// points wide is a small thing to ask anyone to hit. A press on the track
     /// rather than the thumb takes hold of its middle, so the thumb jumps to the
     /// pointer and carries on from there.
-    pub fn thumbGrab(self: *const TextView, atlas: *const GlyphAtlas, top: f32, height: f32, point: [2]f32) ?f32 {
-        if (point[0] < 0 or point[0] >= @round(bar_gutter * atlas.scale)) return null;
+    pub fn thumbGrab(self: *const TextView, atlas: *const GlyphAtlas, point: [2]f32) ?f32 {
+        const from_left = point[0] - self.rect.x;
+        if (from_left < 0 or from_left >= @round(bar_gutter * atlas.scale)) return null;
 
-        const t = self.scrollbar(atlas, top, height);
-        const offset = point[1] - t.y;
+        const t = self.scrollbar(atlas);
+        const offset = point[1] - self.rect.y - t.y;
         if (offset < 0 or offset >= t.height) return t.height / 2;
         return offset;
     }
 
     /// Drags the thumb so that the point `grab` down it sits at `y`.
-    pub fn dragTo(self: *TextView, atlas: *const GlyphAtlas, top: f32, height: f32, y: f32, grab: f32) void {
-        if (height <= 0) return;
+    pub fn dragTo(self: *TextView, atlas: *const GlyphAtlas, y: f32, grab: f32) void {
+        if (self.rect.height <= 0) return;
         const count: f32 = @floatFromInt(self.document.lineCount());
         // The inverse of the thumb, whose top is `scroll * height / content`.
-        const content = top + count * atlas.line_height;
+        const content = self.origin(atlas)[1] - self.rect.y + count * atlas.line_height;
         self.pending = 0;
-        self.scrollTo(@round((y - grab) * content / height), atlas, top);
+        self.scrollTo(@round((y - self.rect.y - grab) * content / self.rect.height), atlas);
     }
 
     /// Brings the caret's line into view, and clears the flag that asked for it.
-    pub fn scrollToCaret(self: *TextView, atlas: *const GlyphAtlas, top: f32, height: f32) void {
+    pub fn scrollToCaret(self: *TextView, atlas: *const GlyphAtlas) void {
         self.follow_caret = false;
         const index = self.document.lineAt(self.cursor);
         // A jump is not a gesture, so anything a gesture had part-way through
         // it goes rather than being applied on top of the answer.
         self.pending = 0;
-        self.scrollTo(scrollToCentre(self.scroll, index, top, height, atlas.line_height), atlas, top);
+        const top = self.origin(atlas)[1] - self.rect.y;
+        self.scrollTo(scrollToCentre(self.scroll, index, top, self.rect.height, atlas.line_height), atlas);
     }
 
-    fn scrollTo(self: *TextView, to: f32, atlas: *const GlyphAtlas, top: f32) void {
-        self.scroll = @min(self.furthest(atlas, top), @max(0, to));
+    fn scrollTo(self: *TextView, to: f32, atlas: *const GlyphAtlas) void {
+        self.scroll = @min(self.furthest(atlas), @max(0, to));
     }
 
     /// The far end of the scroll: where the last line reaches the top of the
     /// window rather than the bottom, so the end of a file stops being somewhere
     /// the view cannot follow you to. A document shorter than the window scrolls
     /// by the same rule.
-    fn furthest(self: *const TextView, atlas: *const GlyphAtlas, top: f32) f32 {
+    fn furthest(self: *const TextView, atlas: *const GlyphAtlas) f32 {
         const last = self.document.lineCount() -| 1;
+        const top = self.origin(atlas)[1] - self.rect.y;
         return @max(0, @ceil(top + @as(f32, @floatFromInt(last)) * atlas.line_height));
     }
 
@@ -191,13 +230,11 @@ pub const TextView = struct {
     /// read the document; a keystroke shapes the one line it landed in. What
     /// remains per frame is placing the cached glyphs, which has to happen
     /// anyway to fill the buffer the GPU reads.
-    pub fn layout(self: *TextView, atlas: *GlyphAtlas, origin: [2]f32, height: f32) !Frame {
-        const x = origin[0];
-        const top = origin[1];
-        // Cached glyphs are placed by adding whole pixels. A fractional origin
-        // would change which subpixel variant each one points at, and the cache
-        // would be answering the wrong question.
-        std.debug.assert(x == @round(x));
+    pub fn layout(self: *TextView, atlas: *GlyphAtlas) !Frame {
+        const at = self.origin(atlas);
+        const x = at[0];
+        const top = at[1] - self.rect.y;
+        const height = self.rect.height;
         std.debug.assert(self.scroll == @round(self.scroll));
 
         self.sprites.clearRetainingCapacity();
@@ -217,7 +254,7 @@ pub const TextView = struct {
             if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
             std.debug.assert(entry.bytes == self.document.lineLength(index));
 
-            const baseline = @round(lineTop(index, top, self.scroll, atlas.line_height) + atlas.ascent);
+            const baseline = @round(self.rect.y + lineTop(index, top, self.scroll, atlas.line_height) + atlas.ascent);
             try self.sprites.ensureUnusedCapacity(self.gpa, entry.sprites.items.len);
             for (entry.sprites.items) |sprite| {
                 self.sprites.appendAssumeCapacity(.{
@@ -239,7 +276,7 @@ pub const TextView = struct {
             if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(caret_line), entry);
             std.debug.assert(entry.bytes == self.document.lineLength(caret_line));
 
-            const off = lineTop(caret_line, top, self.scroll, atlas.line_height) + atlas.ascent;
+            const off = self.rect.y + lineTop(caret_line, top, self.scroll, atlas.line_height) + atlas.ascent;
             caret = self.caretOn(atlas, entry, caret_line, x, @round(off));
         }
         // Last, so it draws over the glyph it sits beside, and so its own
@@ -247,9 +284,9 @@ pub const TextView = struct {
         try self.sprites.append(self.gpa, caret.?);
         const caret_at: u32 = @intCast(self.sprites.items.len - 1);
 
-        const t = self.scrollbar(atlas, top, height);
+        const t = self.scrollbar(atlas);
         try self.sprites.append(self.gpa, .solid(
-            .{ @round(bar_inset * atlas.scale), t.y },
+            .{ @round(self.rect.x + bar_inset * atlas.scale), self.rect.y + t.y },
             .{ @round(bar_width * atlas.scale), t.height },
         ));
 
@@ -281,11 +318,12 @@ pub const TextView = struct {
     ///
     /// A click below the last line or right of a line's end lands on the nearest
     /// place the caret can go, which is what makes dragging past the end behave.
-    pub fn moveCaretTo(self: *TextView, atlas: *GlyphAtlas, x: f32, top: f32, point: [2]f32) !void {
+    pub fn moveCaretTo(self: *TextView, atlas: *GlyphAtlas, point: [2]f32) !void {
         // Nothing has been laid out, so there is nothing on screen to click.
         if (self.lines.items.len == 0) return;
 
-        const row = (point[1] - top + self.scroll) / atlas.line_height;
+        const at = self.origin(atlas);
+        const row = (point[1] - at[1] + self.scroll) / atlas.line_height;
         const index = if (row < 0)
             0
         else
@@ -296,7 +334,7 @@ pub const TextView = struct {
         const entry = &self.lines.items[index];
         if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
 
-        self.cursor = self.document.lineStart(index) + caretOffset(entry.carets.items, point[0] - x);
+        self.cursor = self.document.lineStart(index) + caretOffset(entry.carets.items, point[0] - at[0]);
     }
 
     /// Drops every shaped line, for after the atlas is rebuilt at a different

@@ -3,7 +3,6 @@ const std = @import("std");
 const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const TextView = @import("./text_view.zig").TextView;
-const bar_gutter = @import("./text_view.zig").bar_gutter;
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 
@@ -11,21 +10,6 @@ const c = sdl.c;
 /// rather than per line on screen is the layout cache, which holds a 64-byte
 /// entry for each of them, and the line index behind it.
 const file_limit = 1 << 20;
-
-/// Where the first line's top-left corner sits, at a display scale of one.
-const text_margin: [2]f32 = .{ 5, 5 };
-
-/// Whole pixels, which the layout cache depends on: a fractional origin would
-/// change which subpixel variant every cached glyph points at.
-///
-/// The margin is measured from the scrollbar rather than from the window, since
-/// the bar is down the left and the text starts after it.
-fn textOrigin(scale: f32) [2]f32 {
-    return .{
-        @round((bar_gutter + text_margin[0]) * scale),
-        @round(text_margin[1] * scale),
-    };
-}
 
 pub fn main(init: std.process.Init) !void {
     // macOS makes inertial scroll events of its own and SDL turns them off
@@ -132,7 +116,7 @@ pub fn main(init: std.process.Init) !void {
                     // counts a wheel positive away from the reader, which is
                     // towards the start of the document.
                     const pixels = -event.wheel.y * 10 * c.SDL_GetWindowPixelDensity(window);
-                    app.view.scrollBy(pixels, atlas, textOrigin(atlas.scale)[1]);
+                    app.view.scrollBy(pixels, atlas);
                     dirty = true;
                 },
                 // Where the caret goes is a question about the layout, so the
@@ -145,21 +129,17 @@ pub fn main(init: std.process.Init) !void {
                         // draw.
                         const density = c.SDL_GetWindowPixelDensity(window);
                         const at: [2]f32 = .{ event.button.x * density, event.button.y * density };
-                        const origin = textOrigin(app.renderer.atlas.scale);
-                        var pixels: c_int = 0;
-                        _ = c.SDL_GetWindowSizeInPixels(window, null, &pixels);
-                        const height: f32 = @floatFromInt(pixels);
 
                         // The scrollbar is asked first, so a press on it moves
                         // the view rather than the caret.
-                        if (app.view.thumbGrab(&app.renderer.atlas, origin[1], height, at)) |grab| {
+                        if (app.view.thumbGrab(&app.renderer.atlas, at)) |grab| {
                             app.drag = grab;
                             // So a drag that wanders off the window keeps
                             // arriving rather than stopping where it left.
                             _ = c.SDL_CaptureMouse(true);
-                            app.view.dragTo(&app.renderer.atlas, origin[1], height, at[1], grab);
+                            app.view.dragTo(&app.renderer.atlas, at[1], grab);
                         } else {
-                            try app.view.moveCaretTo(&app.renderer.atlas, origin[0], origin[1], at);
+                            try app.view.moveCaretTo(&app.renderer.atlas, at);
                         }
                         dirty = true;
                     }
@@ -167,16 +147,7 @@ pub fn main(init: std.process.Init) !void {
                 c.SDL_EVENT_MOUSE_MOTION => {
                     if (app.drag) |grab| {
                         const density = c.SDL_GetWindowPixelDensity(window);
-                        const origin = textOrigin(app.renderer.atlas.scale);
-                        var pixels: c_int = 0;
-                        _ = c.SDL_GetWindowSizeInPixels(window, null, &pixels);
-                        app.view.dragTo(
-                            &app.renderer.atlas,
-                            origin[1],
-                            @floatFromInt(pixels),
-                            event.motion.y * density,
-                            grab,
-                        );
+                        app.view.dragTo(&app.renderer.atlas, event.motion.y * density, grab);
                         dirty = true;
                     }
                 },
@@ -215,14 +186,21 @@ const App = struct {
         // The window rather than the swapchain, which is not acquired until
         // `present`. The two can disagree for a frame mid-resize, which is one
         // line too many or too few.
+        var width: c_int = 0;
         var height: c_int = 0;
-        _ = c.SDL_GetWindowSizeInPixels(self.renderer.window, null, &height);
+        _ = c.SDL_GetWindowSizeInPixels(self.renderer.window, &width, &height);
 
-        const origin = textOrigin(scale);
-        if (self.view.follow_caret) {
-            self.view.scrollToCaret(&self.renderer.atlas, origin[1], @floatFromInt(height));
-        }
-        const frame = try self.view.layout(&self.renderer.atlas, origin, @floatFromInt(height));
+        // The whole window, for now. Whatever else gets drawn will be given a
+        // rect of its own out of the same division.
+        self.view.place(.{
+            .x = 0,
+            .y = 0,
+            .width = @floatFromInt(width),
+            .height = @floatFromInt(height),
+        });
+
+        if (self.view.follow_caret) self.view.scrollToCaret(&self.renderer.atlas);
+        const frame = try self.view.layout(&self.renderer.atlas);
         try self.renderer.present(frame.quads, frame.caret, frame.bar);
     }
 };
