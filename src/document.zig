@@ -9,12 +9,20 @@ const std = @import("std");
 
 const LineLayout = @import("./glyph_atlas.zig").LineLayout;
 
-/// What an edit did to the line index, so anything else keyed by line can be
-/// spliced rather than rebuilt. Both counts are of lines after `line`.
+/// What an edit did, in both the terms anything downstream of it might be keyed
+/// by: bytes, for a caret, and lines, for a layout cache.
 pub const Edit = struct {
+    /// Where in the document it happened.
+    at: usize,
+    /// Bytes that went in at `at`, and bytes that came out of it. One of the two
+    /// is always zero -- an edit is an insert or a delete, never both.
+    inserted: usize,
+    deleted: usize,
+
     /// The line the edit landed in. Its bytes changed; no other line's did.
     line: usize,
-    /// Lines that stopped existing, their newlines having been deleted.
+    /// Lines that stopped existing, their newlines having been deleted. Counted
+    /// after `line`, as `added` is.
     removed: usize,
     /// Lines that came into being, from newlines in the inserted text.
     added: usize,
@@ -88,7 +96,7 @@ pub const Buffer = struct {
     pub fn insert(self: *Buffer, at: usize, text: []const u8) !Edit {
         std.debug.assert(at <= self.byteLen());
         const line = self.lineAt(at);
-        if (text.len == 0) return .{ .line = line, .removed = 0, .added = 0 };
+        if (text.len == 0) return .{ .at = at, .inserted = 0, .deleted = 0, .line = line, .removed = 0, .added = 0 };
 
         // Both allocations happen before a byte is written, so failing here
         // leaves the document and its index exactly as they were.
@@ -101,7 +109,7 @@ pub const Buffer = struct {
         self.gap_start += text.len;
 
         self.reindexInsert(line, at, text, added);
-        return .{ .line = line, .removed = 0, .added = added };
+        return .{ .at = at, .inserted = text.len, .deleted = 0, .line = line, .removed = 0, .added = added };
     }
 
     /// Deletes the `count` bytes starting at `at`. Cannot fail: the text stays
@@ -109,12 +117,19 @@ pub const Buffer = struct {
     pub fn delete(self: *Buffer, at: usize, count: usize) Edit {
         std.debug.assert(at + count <= self.byteLen());
         const line = self.lineAt(at);
-        if (count == 0) return .{ .line = line, .removed = 0, .added = 0 };
+        if (count == 0) return .{ .at = at, .inserted = 0, .deleted = 0, .line = line, .removed = 0, .added = 0 };
 
         self.moveGap(at);
         self.gap_end += count;
 
-        return .{ .line = line, .removed = self.reindexDelete(line, at, count), .added = 0 };
+        return .{
+            .at = at,
+            .inserted = 0,
+            .deleted = count,
+            .line = line,
+            .removed = self.reindexDelete(line, at, count),
+            .added = 0,
+        };
     }
 
     /// Line `index` without its newline. The result borrows from the buffer and

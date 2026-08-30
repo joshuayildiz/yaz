@@ -17,6 +17,7 @@ const Painter = painter_mod.Painter;
 pub const Rect = painter_mod.Rect;
 
 const Document = @import("./document.zig").Document;
+const Edit = @import("./document.zig").Edit;
 
 const glyph_atlas = @import("./glyph_atlas.zig");
 const Caret = glyph_atlas.Caret;
@@ -99,21 +100,42 @@ pub const TextView = struct {
         return .{ .document = document, .cursor = 0 };
     }
 
-    pub fn insert(self: *TextView, text: []const u8) !void {
-        _ = try self.document.insert(self.cursor, text);
+    pub fn insert(self: *TextView, text: []const u8) !Edit {
+        const edit = try self.document.insert(self.cursor, text);
         self.cursor += text.len;
         self.follow_caret = true;
+        return edit;
     }
 
-    /// Deletes the character before the caret, answering whether there was one.
-    pub fn backspace(self: *TextView) !bool {
+    /// Deletes the character before the caret, answering with what it did, or
+    /// null when there was nothing there to delete.
+    pub fn backspace(self: *TextView) !?Edit {
         const from = self.document.buffer.stepBack(self.cursor);
-        if (from == self.cursor) return false;
+        if (from == self.cursor) return null;
 
-        _ = try self.document.delete(from, self.cursor - from);
+        const edit = try self.document.delete(from, self.cursor - from);
         self.cursor = from;
         self.follow_caret = true;
-        return true;
+        return edit;
+    }
+
+    /// Catches this view up with an edit made through another view of the same
+    /// document.
+    ///
+    /// The text and its layout are shared, so both are already right. What is
+    /// not is where this view's caret sits, which the edit may have moved bytes
+    /// out from under, and how far down it is looking, which lines that stopped
+    /// existing may have put past the end.
+    ///
+    /// `follow_caret` is deliberately not set: somebody else typing is not a
+    /// reason to move what this view is looking at.
+    pub fn follow(self: *TextView, edit: Edit, atlas: *const GlyphAtlas) void {
+        self.cursor = shifted(self.cursor, edit);
+
+        // Lines can have stopped existing, leaving this view looking past the
+        // end of what is left. `scrollTo` clamps.
+        self.scrollTo(self.scroll, atlas);
+        self.dirty = true;
     }
 
     /// Whether anything here has changed since it was last drawn.
@@ -133,18 +155,27 @@ pub const TextView = struct {
 
     /// Everything that happens inside the view. What belongs to the window has
     /// been dealt with before this is called.
-    pub fn update(self: *TextView, event: Event, atlas: *GlyphAtlas) !void {
+    /// Answers with the edit it made, so that other views of the same document
+    /// can be brought up to date with it. Null when it made none, which is
+    /// everything but typing.
+    pub fn update(self: *TextView, event: Event, atlas: *GlyphAtlas) !?Edit {
         switch (event) {
             .quit, .resized => {},
             .text => |typed| {
-                try self.insert(typed);
+                const edit = try self.insert(typed);
                 self.dirty = true;
+                return edit;
             },
             .newline => {
-                try self.insert("\n");
+                const edit = try self.insert("\n");
                 self.dirty = true;
+                return edit;
             },
-            .backspace => self.dirty = try self.backspace() or self.dirty,
+            .backspace => {
+                const edit = try self.backspace() orelse return null;
+                self.dirty = true;
+                return edit;
+            },
             .wheel => |wheel| {
                 self.scrollBy(wheel.delta, atlas);
                 self.dirty = true;
@@ -156,7 +187,7 @@ pub const TextView = struct {
                     self.drag = grab;
                     self.dragTo(atlas, at[1], grab);
                     self.dirty = true;
-                    return;
+                    return null;
                 }
                 try self.moveCaretTo(atlas, at);
                 self.dirty = true;
@@ -165,12 +196,13 @@ pub const TextView = struct {
                 // The only reason motion is looked at at all: OPTIMIZATIONS.md 2
                 // has the loop ignoring it, and a redraw per motion event is what
                 // that buys.
-                const grab = self.drag orelse return;
+                const grab = self.drag orelse return null;
                 self.dragTo(atlas, at[1], grab);
                 self.dirty = true;
             },
             .release => self.drag = null,
         }
+        return null;
     }
 
     /// Where the first line's top-left corner sits. Whole pixels, which the
@@ -687,4 +719,49 @@ test {
     // build reaches them without `main` having to know they exist.
     _ = @import("./document.zig");
     _ = @import("./painter.zig");
+}
+
+/// Where an offset in a document ends up after an edit somewhere in it.
+///
+/// Text inserted exactly at the offset pushes it along, so a caret stays after
+/// the same character rather than being overtaken by what someone else typed. A
+/// delete spanning the offset leaves it where the deleted text began, there
+/// being nowhere else it could honestly point.
+fn shifted(offset: usize, edit: Edit) usize {
+    if (offset >= edit.at + edit.deleted) return offset + edit.inserted - edit.deleted;
+    if (offset > edit.at) return edit.at;
+    return offset;
+}
+
+fn insertion(at: usize, bytes: usize) Edit {
+    return .{ .at = at, .inserted = bytes, .deleted = 0, .line = 0, .removed = 0, .added = 0 };
+}
+
+fn deletion(at: usize, bytes: usize) Edit {
+    return .{ .at = at, .inserted = 0, .deleted = bytes, .line = 0, .removed = 0, .added = 0 };
+}
+
+test "an insert moves only what was after it" {
+    try std.testing.expectEqual(@as(usize, 10), shifted(10, insertion(20, 3)));
+    try std.testing.expectEqual(@as(usize, 23), shifted(20, insertion(20, 3)));
+    try std.testing.expectEqual(@as(usize, 33), shifted(30, insertion(20, 3)));
+}
+
+test "a delete pulls back what was after it" {
+    try std.testing.expectEqual(@as(usize, 10), shifted(10, deletion(20, 5)));
+    try std.testing.expectEqual(@as(usize, 20), shifted(20, deletion(20, 5)));
+    try std.testing.expectEqual(@as(usize, 20), shifted(25, deletion(20, 5)));
+    try std.testing.expectEqual(@as(usize, 25), shifted(30, deletion(20, 5)));
+}
+
+test "an offset inside what was deleted lands where it began" {
+    try std.testing.expectEqual(@as(usize, 20), shifted(21, deletion(20, 5)));
+    try std.testing.expectEqual(@as(usize, 20), shifted(24, deletion(20, 5)));
+}
+
+test "an edit that did nothing moves nothing" {
+    for ([_]usize{ 0, 20, 100 }) |offset| {
+        try std.testing.expectEqual(offset, shifted(offset, insertion(20, 0)));
+        try std.testing.expectEqual(offset, shifted(offset, deletion(20, 0)));
+    }
 }

@@ -4,6 +4,7 @@ const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const TextView = @import("./text_view.zig").TextView;
 const Document = @import("./document.zig").Document;
+const Edit = @import("./document.zig").Edit;
 const Event = @import("./event.zig").Event;
 const Painter = @import("./painter.zig").Painter;
 const Rect = @import("./painter.zig").Rect;
@@ -69,7 +70,14 @@ pub fn main(init: std.process.Init) !void {
 
     try app.documents.ensureTotalCapacity(init.gpa, opened.items.len);
     try app.views.ensureTotalCapacity(init.gpa, opened.items.len);
-    for (opened.items) |file| {
+    for (opened.items, 0..) |file, which| {
+        // Named twice: another view of the one document, so that an edit made
+        // through either is an edit both are looking at.
+        if (file.first < which) {
+            app.views.appendAssumeCapacity(.init(app.views.items[file.first].document));
+            continue;
+        }
+
         const document = try init.gpa.create(Document);
         errdefer init.gpa.destroy(document);
         document.* = try Document.init(init.gpa, file.text);
@@ -199,30 +207,45 @@ const App = struct {
 
         const atlas = &self.renderer.atlas;
 
-        // A view holding the scrollbar keeps the pointer until it lets go,
-        // wherever it wanders. Without this a drag crossing into the next view
-        // would be handed over half way through.
-        if (self.holding()) |held| return self.views.items[held].update(event, atlas);
+        const which = which: {
+            // A view holding the scrollbar keeps the pointer until it lets go,
+            // wherever it wanders. Without this a drag crossing into the next
+            // view would be handed over half way through.
+            if (self.holding()) |held| break :which held;
 
-        // Otherwise a pointer goes to whatever it is over, focus or no focus:
-        // the wheel turns the view under it, which is what one expects of it.
-        if (pointer(event)) |at| {
-            const which = self.over(at) orelse return;
+            // Otherwise a pointer goes to whatever it is over, focus or no
+            // focus: the wheel turns the view under it, as one expects of it.
+            if (pointer(event)) |at| {
+                const under = self.over(at) orelse return;
 
-            // A press, and only a press. A wheel or a pointer merely passing
-            // over would move where typing lands without anyone asking it to.
-            //
-            // Nothing is marked dirty for the move itself: focus is not drawn,
-            // so a frame showing it would be a frame identical to the last, and
-            // presenting one costs the wait for a swapchain image.
-            if (event == .press) self.focus = which;
+                // A press, and only a press. A wheel or a pointer merely
+                // passing over would move where typing lands without anyone
+                // asking it to.
+                //
+                // Nothing is marked dirty for the move itself: focus is not
+                // drawn, so a frame showing it would be identical to the last,
+                // and presenting one costs the wait for a swapchain image.
+                if (event == .press) self.focus = under;
+                break :which under;
+            }
 
-            return self.views.items[which].update(event, atlas);
+            // Everything left is typing, which goes to the focused view
+            // wherever the pointer happens to be.
+            break :which self.focus;
+        };
+
+        if (try self.views.items[which].update(event, atlas)) |edit| self.share(which, edit);
+    }
+
+    /// Brings every other view of the same document up to date with an edit one
+    /// of them just made. The text and the layout cache are shared, so what is
+    /// left is each view's own caret and scroll.
+    fn share(self: *App, editor: usize, edit: Edit) void {
+        const document = self.views.items[editor].document;
+        for (self.views.items, 0..) |*view, which| {
+            if (which == editor or view.document != document) continue;
+            view.follow(edit, &self.renderer.atlas);
         }
-
-        // Everything left is typing, which goes to the focused view wherever
-        // the pointer happens to be.
-        try self.views.items[self.focus].update(event, atlas);
     }
 
     /// Which view has hold of the pointer through its scrollbar, if any.
@@ -300,9 +323,13 @@ fn redrawWhileResizing(userdata: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.
 /// Both fields are owned by the caller. `path` is null when nothing was named,
 /// which is not the same as a file that turned out to be empty.
 const Opened = struct {
+    /// Empty when an earlier argument named the same file and already read it.
     text: []u8,
     /// Sentinel-terminated because it goes to SDL as a window title.
     path: ?[:0]u8,
+    /// The first argument naming this same file, which is this one's own index
+    /// when it is that argument. Arguments sharing a `first` share a document.
+    first: usize = 0,
 
     fn deinit(self: *Opened, gpa: std.mem.Allocator) void {
         gpa.free(self.text);
@@ -317,6 +344,13 @@ fn openAll(init: std.process.Init) !std.ArrayList(Opened) {
     defer args.deinit();
     _ = args.skip(); // The program itself.
 
+    // Only for telling one argument from another. Nothing keeps them.
+    var keys: std.ArrayList([:0]u8) = .empty;
+    defer {
+        for (keys.items) |key| init.gpa.free(key);
+        keys.deinit(init.gpa);
+    }
+
     var opened: std.ArrayList(Opened) = .empty;
     errdefer {
         for (opened.items) |*file| file.deinit(init.gpa);
@@ -325,12 +359,47 @@ fn openAll(init: std.process.Init) !std.ArrayList(Opened) {
 
     // Read one at a time rather than gathering the paths first: the iterator
     // owns what it returns until the next call, and `open` copies it.
-    while (args.next()) |named| try opened.append(init.gpa, try open(init, named));
+    while (args.next()) |named| {
+        const which = opened.items.len;
+        try keys.append(init.gpa, try sameFileKey(init, named));
+
+        const first = for (keys.items[0..which], 0..) |earlier, i| {
+            if (std.mem.eql(u8, earlier, keys.items[which])) break i;
+        } else which;
+
+        if (first < which) {
+            // Already read by the argument at `first`. Reading it again would
+            // be a second copy to drift away from the first as either is typed
+            // into, which is the opposite of what naming it twice asks for.
+            try opened.append(init.gpa, .{
+                .text = try init.gpa.alloc(u8, 0),
+                .path = try init.gpa.dupeZ(u8, named),
+                .first = first,
+            });
+            continue;
+        }
+
+        var file = try open(init, named);
+        errdefer file.deinit(init.gpa);
+        file.first = which;
+        try opened.append(init.gpa, file);
+    }
 
     if (opened.items.len == 0) {
         try opened.append(init.gpa, .{ .text = try init.gpa.alloc(u8, 0), .path = null });
     }
     return opened;
+}
+
+/// What decides that two arguments name the same file.
+///
+/// The resolved path, so `a.txt`, `./a.txt` and a symlink to it all agree. A
+/// file that does not exist yet cannot be resolved -- and opening one of those
+/// is how a new file starts here -- so there the argument stands in for itself,
+/// and `yaz new.md new.md` still shares.
+fn sameFileKey(init: std.process.Init, named: []const u8) ![:0]u8 {
+    return std.Io.Dir.cwd().realPathFileAlloc(init.io, named, init.gpa) catch
+        init.gpa.dupeZ(u8, named);
 }
 
 /// Reads one named file.
