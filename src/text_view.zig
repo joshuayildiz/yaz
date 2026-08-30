@@ -162,8 +162,8 @@ pub const TextView = struct {
                 self.dirty = true;
             },
             .backspace => self.dirty = try self.backspace() or self.dirty,
-            .wheel => |pixels| {
-                self.scrollBy(pixels, atlas);
+            .wheel => |wheel| {
+                self.scrollBy(wheel.delta, atlas);
                 self.dirty = true;
             },
             .press => |at| {

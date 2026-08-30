@@ -15,8 +15,9 @@ pub const Event = union(enum) {
     newline,
     backspace,
 
-    /// Pixels to move a view by, positive downwards.
-    wheel: f32,
+    /// Pixels to move a view by, positive downwards, and where the pointer was
+    /// while it happened -- which is what decides whose view moves.
+    wheel: struct { delta: f32, at: [2]f32 },
     press: [2]f32,
     move: [2]f32,
     release,
@@ -45,7 +46,10 @@ pub const Event = union(enum) {
             // one mouse and gives it no name -- so everything is read as points.
             // Negated because SDL counts a wheel positive away from the reader,
             // which is towards the start of the document.
-            c.SDL_EVENT_MOUSE_WHEEL => .{ .wheel = -event.wheel.y * 10 * density },
+            c.SDL_EVENT_MOUSE_WHEEL => .{ .wheel = .{
+                .delta = -event.wheel.y * 10 * density,
+                .at = .{ event.wheel.mouse_x * density, event.wheel.mouse_y * density },
+            } },
 
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => if (event.button.button == c.SDL_BUTTON_LEFT)
                 .{ .press = .{ event.button.x * density, event.button.y * density } }

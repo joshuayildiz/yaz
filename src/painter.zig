@@ -16,6 +16,11 @@ pub const Rect = struct {
     width: f32,
     height: f32,
 
+    pub fn contains(self: Rect, point: [2]f32) bool {
+        return point[0] >= self.x and point[0] < self.x + self.width and
+            point[1] >= self.y and point[1] < self.y + self.height;
+    }
+
     /// `quad` cut down to what falls inside, or null when none of it does.
     ///
     /// A `Sprite` uses one size for both the quad and the region it samples, so

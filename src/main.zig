@@ -104,6 +104,15 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+/// Where the pointer was, for the events that carry it.
+fn pointer(event: Event) ?[2]f32 {
+    return switch (event) {
+        .press, .move => |at| at,
+        .wheel => |wheel| wheel.at,
+        else => null,
+    };
+}
+
 /// Together because the event watch reaches them from behind one `void *`.
 const App = struct {
     renderer: Renderer,
@@ -157,9 +166,40 @@ const App = struct {
             else => {},
         }
 
-        // Everything still goes to the first view: nothing decides yet which
-        // one an event belongs to.
-        try self.view.update(event, &self.renderer.atlas);
+        const atlas = &self.renderer.atlas;
+
+        // A view holding the scrollbar keeps the pointer until it lets go,
+        // wherever it wanders. Without this a drag crossing into the next view
+        // would be handed over half way through.
+        if (self.holding()) |held| return held.update(event, atlas);
+
+        // Otherwise a pointer goes to whatever it is over, focus or no focus:
+        // the wheel turns the view under it, which is what one expects of it.
+        if (pointer(event)) |at| {
+            if (self.over(at)) |view| try view.update(event, atlas);
+            return;
+        }
+
+        // Typing, for want of anything that decides focus yet.
+        try self.view.update(event, atlas);
+    }
+
+    /// The view whose scrollbar the pointer has hold of, if any.
+    fn holding(self: *App) ?*TextView {
+        if (self.view.drag != null) return &self.view;
+        if (self.other) |*other| {
+            if (other.drag != null) return other;
+        }
+        return null;
+    }
+
+    /// The view a point falls in.
+    fn over(self: *App, at: [2]f32) ?*TextView {
+        if (self.other) |*other| {
+            if (other.rect.contains(at)) return other;
+        }
+        if (self.view.rect.contains(at)) return &self.view;
+        return null;
     }
 
     /// Every quad the frame is made of, from everything it holds.

@@ -138,7 +138,12 @@ every shaped line.
 
 ### Scrolling
 
-The wheel moves the view. An edit brings the caret back to the **middle** of the
+The wheel moves **the view under the pointer**. Pointing at something and turning
+the wheel is a whole instruction by itself, so it does not wait on focus and will
+not start to once focus exists. A view being dragged by its scrollbar keeps the
+pointer wherever it wanders, so a drag that leaves the view still scrolls it.
+
+An edit brings the caret back to the **middle** of the
 window if it had scrolled out of sight, rather than nudging it to whichever edge
 it went behind — something typed where the view had wandered off wants what is
 around it. A click reads the view where it is and leaves it alone.
