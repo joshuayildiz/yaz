@@ -665,9 +665,17 @@ the order to read it in:
 | `main.zig` | renderer, text_view, sdl |
 
 Where to start depends on what you are changing: what a keystroke does is
-`main.zig`'s event loop; where text lands on screen is `TextView.layout`; what a
-glyph looks like is `glyph_atlas.zig`; how big or what colour anything is is
+`TextView.handle`; where text lands on screen is `TextView.layout`; what a glyph
+looks like is `glyph_atlas.zig`; how big or what colour anything is is
 `config.zig`.
+
+**Events go to `App` first and are handed down translated.** `App` takes what
+belongs to the window — quitting, resizing — and turns the rest into a
+`TextView.Input`: typed text, a key, a wheel delta in pixels, a press, a move, a
+release. The view is given a `Rect` and told what happened in it, so it needs no
+notion of SDL, of a display scale, or of where the window is. That is why
+`text_view.zig` is the one file here that does not import `sdl.zig`, and it is
+the seam a second panel would be added along.
 
 `document.zig` is the text and where its lines begin, and nothing above that. It
 does not know that text gets shaped, drawn or scrolled, which is why it can be

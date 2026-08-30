@@ -3,6 +3,7 @@ const std = @import("std");
 const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const TextView = @import("./text_view.zig").TextView;
+const Input = @import("./text_view.zig").Input;
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 
@@ -70,9 +71,8 @@ pub fn main(init: std.process.Init) !void {
     // Blocking wait, not a poll loop: idle costs nothing. Waking up is not a
     // reason to draw, though; only a change to what is on screen is.
     var dirty = true;
-    var running = true;
     var event: c.SDL_Event = undefined;
-    while (running) {
+    while (app.running) {
         if (dirty) {
             try app.redraw();
             dirty = false;
@@ -88,79 +88,7 @@ pub fn main(init: std.process.Init) !void {
         // behind presents of unchanged content: presenting blocks on the
         // swapchain, so each redundant one costs real latency, not just work.
         while (true) {
-            switch (event.type) {
-                c.SDL_EVENT_QUIT => running = false,
-                c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => dirty = true,
-                c.SDL_EVENT_TEXT_INPUT => {
-                    try app.view.insert(std.mem.span(event.text.text));
-                    dirty = true;
-                },
-                // Return and backspace are not text and do not arrive as any.
-                c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
-                    c.SDLK_RETURN => {
-                        try app.view.insert("\n");
-                        dirty = true;
-                    },
-                    c.SDLK_BACKSPACE => {
-                        if (try app.view.backspace()) dirty = true;
-                    },
-                    else => {},
-                },
-                c.SDL_EVENT_MOUSE_WHEEL => {
-                    const atlas = &app.renderer.atlas;
-                    // A precise device is reported in tenths of a point, so ten
-                    // times the delta is how far a finger moved. A notched wheel
-                    // reports whole lines instead and nothing tells the two
-                    // apart -- macOS registers one mouse and gives it no name --
-                    // so everything is read as points. Negated because SDL
-                    // counts a wheel positive away from the reader, which is
-                    // towards the start of the document.
-                    const pixels = -event.wheel.y * 10 * c.SDL_GetWindowPixelDensity(window);
-                    app.view.scrollBy(pixels, atlas);
-                    dirty = true;
-                },
-                // Where the caret goes is a question about the layout, so the
-                // view answers it; nothing here knows how wide a character is.
-                c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                    if (event.button.button == c.SDL_BUTTON_LEFT) {
-                        // One of the two places a window coordinate gets in,
-                        // so it becomes pixels here. Density rather than display
-                        // scale: how many pixels a point is, not how large to
-                        // draw.
-                        const density = c.SDL_GetWindowPixelDensity(window);
-                        const at: [2]f32 = .{ event.button.x * density, event.button.y * density };
-
-                        // The scrollbar is asked first, so a press on it moves
-                        // the view rather than the caret.
-                        if (app.view.thumbGrab(&app.renderer.atlas, at)) |grab| {
-                            app.drag = grab;
-                            // So a drag that wanders off the window keeps
-                            // arriving rather than stopping where it left.
-                            _ = c.SDL_CaptureMouse(true);
-                            app.view.dragTo(&app.renderer.atlas, at[1], grab);
-                        } else {
-                            try app.view.moveCaretTo(&app.renderer.atlas, at);
-                        }
-                        dirty = true;
-                    }
-                },
-                c.SDL_EVENT_MOUSE_MOTION => {
-                    if (app.drag) |grab| {
-                        const density = c.SDL_GetWindowPixelDensity(window);
-                        app.view.dragTo(&app.renderer.atlas, event.motion.y * density, grab);
-                        dirty = true;
-                    }
-                },
-                c.SDL_EVENT_MOUSE_BUTTON_UP => {
-                    if (app.drag != null) {
-                        app.drag = null;
-                        _ = c.SDL_CaptureMouse(false);
-                    }
-                },
-                // Exposure belongs to the watcher, which has already drawn by
-                // the time the event arrives here; marking it would draw twice.
-                else => {},
-            }
+            if (try app.handle(&event, window)) dirty = true;
             if (!c.SDL_PollEvent(&event)) break;
         }
     }
@@ -170,11 +98,59 @@ pub fn main(init: std.process.Init) !void {
 const App = struct {
     renderer: Renderer,
     view: TextView,
+    running: bool = true,
 
-    /// Where on the thumb the pointer took hold, while it is holding it. The
-    /// only reason mouse motion is looked at: OPTIMIZATIONS.md 2 has the loop
-    /// ignoring it otherwise, and a redraw per motion event is what that buys.
-    drag: ?f32 = null,
+    /// Takes what belongs to the window and hands the rest down, translated.
+    /// Answers whether anything changed that has to be drawn.
+    ///
+    /// The translation is the point: a window coordinate becomes a pixel here,
+    /// once, and what reaches the view says what happened rather than what SDL
+    /// called it.
+    fn handle(self: *App, event: *const c.SDL_Event, window: *c.SDL_Window) !bool {
+        const density = c.SDL_GetWindowPixelDensity(window);
+        const input: Input = switch (event.type) {
+            c.SDL_EVENT_QUIT => {
+                self.running = false;
+                return false;
+            },
+            c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => return true,
+
+            // Text arrives as finished characters rather than keys; return and
+            // backspace are not text and do not arrive as any.
+            c.SDL_EVENT_TEXT_INPUT => .{ .text = std.mem.span(event.text.text) },
+            c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
+                c.SDLK_RETURN => .newline,
+                c.SDLK_BACKSPACE => .backspace,
+                else => return false,
+            },
+
+            // A precise device is reported in tenths of a point, so ten times
+            // the delta is how far a finger moved. A notched wheel reports whole
+            // lines instead and nothing tells the two apart -- macOS registers
+            // one mouse and gives it no name -- so everything is read as points.
+            // Negated because SDL counts a wheel positive away from the reader,
+            // which is towards the start of the document.
+            c.SDL_EVENT_MOUSE_WHEEL => .{ .wheel = -event.wheel.y * 10 * density },
+
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => if (event.button.button == c.SDL_BUTTON_LEFT)
+                .{ .press = .{ event.button.x * density, event.button.y * density } }
+            else
+                return false,
+            c.SDL_EVENT_MOUSE_MOTION => .{ .move = .{ event.motion.x * density, event.motion.y * density } },
+            c.SDL_EVENT_MOUSE_BUTTON_UP => if (event.button.button == c.SDL_BUTTON_LEFT)
+                .release
+            else
+                return false,
+
+            // Exposure belongs to the watcher, which has already drawn by the
+            // time the event arrives here; marking it would draw twice.
+            else => return false,
+        };
+
+        const response = try self.view.handle(input, &self.renderer.atlas);
+        if (response.capture) |on| _ = c.SDL_CaptureMouse(on);
+        return response.dirty;
+    }
 
     fn redraw(self: *App) !void {
         // Read rather than listened for: three window events can imply the

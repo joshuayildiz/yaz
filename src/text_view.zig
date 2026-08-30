@@ -50,6 +50,31 @@ pub const Rect = struct {
     height: f32,
 };
 
+/// What a view is told happened. Already in pixels by the time one of these is
+/// made, so nothing below here has to know what a display scale is, and nothing
+/// below here has to know what SDL calls things.
+pub const Input = union(enum) {
+    text: []const u8,
+    newline,
+    backspace,
+    /// Pixels to move the view by, positive downwards.
+    wheel: f32,
+    press: [2]f32,
+    move: [2]f32,
+    release,
+};
+
+/// What a view did about an input, and what is left for the caller to do.
+pub const Response = struct {
+    /// Something changed that has to be drawn.
+    dirty: bool = false,
+
+    /// Set when the pointer takes hold of something, or lets go. The caller
+    /// captures the mouse for the duration, so a drag that wanders out of the
+    /// window keeps arriving rather than stopping where it left.
+    capture: ?bool = null,
+};
+
 /// One array rather than two: the quads reach the GPU as a single buffer and are
 /// drawn by index into it, so the split is where the colour changes rather than
 /// where the memory does.
@@ -99,6 +124,10 @@ pub const TextView = struct {
     /// is asked about a point on screen is measured from here.
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
+    /// Where on the thumb the pointer took hold, while it is holding it. Null
+    /// the rest of the time, which is also the answer to whether a drag is on.
+    drag: ?f32 = null,
+
     /// The caret starts at the top: nothing scrolls yet, so a caret at the end
     /// of a long file is one nobody can see.
     pub fn init(gpa: std.mem.Allocator, text: []const u8) !TextView {
@@ -142,6 +171,49 @@ pub const TextView = struct {
     /// about, so nothing else has to be told the window's size.
     pub fn place(self: *TextView, rect: Rect) void {
         self.rect = rect;
+    }
+
+    /// Everything that happens inside the view.
+    pub fn handle(self: *TextView, input: Input, atlas: *GlyphAtlas) !Response {
+        switch (input) {
+            .text => |typed| {
+                try self.insert(typed);
+                return .{ .dirty = true };
+            },
+            .newline => {
+                try self.insert("\n");
+                return .{ .dirty = true };
+            },
+            .backspace => return .{ .dirty = try self.backspace() },
+            .wheel => |pixels| {
+                self.scrollBy(pixels, atlas);
+                return .{ .dirty = true };
+            },
+            .press => |at| {
+                // The scrollbar is asked first, so a press on it moves the view
+                // rather than the caret.
+                if (self.thumbGrab(atlas, at)) |grab| {
+                    self.drag = grab;
+                    self.dragTo(atlas, at[1], grab);
+                    return .{ .dirty = true, .capture = true };
+                }
+                try self.moveCaretTo(atlas, at);
+                return .{ .dirty = true };
+            },
+            .move => |at| {
+                // The only reason motion is looked at at all: OPTIMIZATIONS.md 2
+                // has the loop ignoring it, and a redraw per motion event is what
+                // that buys.
+                const grab = self.drag orelse return .{};
+                self.dragTo(atlas, at[1], grab);
+                return .{ .dirty = true };
+            },
+            .release => {
+                if (self.drag == null) return .{};
+                self.drag = null;
+                return .{ .capture = false };
+            },
+        }
     }
 
     /// Where the first line's top-left corner sits. Whole pixels, which the
