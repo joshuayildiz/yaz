@@ -703,6 +703,14 @@ const Shaper = struct {
         var count: c_uint = 0;
         const infos = hb.hb_buffer_get_glyph_infos(self.buffer, &count);
         const positions = hb.hb_buffer_get_glyph_positions(self.buffer, &count);
+
+        // A line with nothing on it shapes to nothing, and HarfBuzz answers
+        // that with a null pointer rather than a pointer to no glyphs. Slicing
+        // null is not the same as an empty slice, so it is spelled out here.
+        // Every file that ends in a newline has such a line, and so does any
+        // document the moment Return is pressed at the end of it.
+        if (count == 0) return .{ .infos = &.{}, .positions = &.{} };
+
         return .{ .infos = infos[0..count], .positions = positions[0..count] };
     }
 };
@@ -757,6 +765,19 @@ test "a ligature's characters share one cluster" {
     var clusters: [4]u32 = undefined;
     for (shaped.infos, &clusters) |info, *cluster| cluster.* = info.cluster;
     try std.testing.expectEqualSlices(u32, &.{ 0, 1, 4, 5 }, &clusters);
+}
+
+test "an empty line shapes to no glyphs rather than crashing" {
+    var shaper = try Shaper.init(1);
+    defer shaper.deinit();
+
+    // HarfBuzz reports an empty buffer as a null pointer and a count of zero.
+    // Reachable from a keystroke -- Return at the end of the document makes an
+    // empty last line -- and from opening any file that ends in a newline,
+    // which is most of them.
+    const shaped = shaper.shape("");
+    try std.testing.expectEqual(@as(usize, 0), shaped.infos.len);
+    try std.testing.expectEqual(@as(usize, 0), shaped.positions.len);
 }
 
 test "shaping follows a change of scale" {
