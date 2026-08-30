@@ -7,7 +7,7 @@ pub const font_path = "assets/DejaVuSans.ttf";
 
 /// Nominal, not pixels: what reaches FreeType is this times the window's display
 /// scale, so text is the same size to look at on any display.
-pub const font_size = 10;
+pub const font_size = 13;
 
 // -- Theme --------------------------------------------------------------------
 //

@@ -12,7 +12,7 @@ const c = sdl.c;
 const file_limit = 1 << 20;
 
 /// Where the first line's top-left corner sits, at a display scale of one.
-const text_margin: [2]f32 = .{ 48, 48 };
+const text_margin: [2]f32 = .{ 5, 5 };
 
 /// Whole pixels, which the layout cache depends on: a fractional origin would
 /// change which subpixel variant every cached glyph points at.
