@@ -124,11 +124,15 @@ pub fn main(init: std.process.Init) !void {
                 },
                 c.SDL_EVENT_MOUSE_WHEEL => {
                     const atlas = &app.renderer.atlas;
-                    app.view.scrollBy(
-                        wheelPixels(event.wheel.y, c.SDL_GetWindowPixelDensity(window)),
-                        atlas,
-                        textOrigin(atlas.scale)[1],
-                    );
+                    // A precise device is reported in tenths of a point, so ten
+                    // times the delta is how far a finger moved. A notched wheel
+                    // reports whole lines instead and nothing tells the two
+                    // apart -- macOS registers one mouse and gives it no name --
+                    // so everything is read as points. Negated because SDL
+                    // counts a wheel positive away from the reader, which is
+                    // towards the start of the document.
+                    const pixels = -event.wheel.y * 10 * c.SDL_GetWindowPixelDensity(window);
+                    app.view.scrollBy(pixels, atlas, textOrigin(atlas.scale)[1]);
                     dirty = true;
                 },
                 // Where the caret goes is a question about the layout, so the
@@ -189,19 +193,6 @@ pub fn main(init: std.process.Init) !void {
             if (!c.SDL_PollEvent(&event)) break;
         }
     }
-}
-
-/// A wheel delta as pixels to move the view by, positive downwards.
-///
-/// SDL reports a precise device as tenths of a point, so ten times the delta is
-/// how far a finger moved. A notched wheel reports whole lines instead, and
-/// nothing tells the two apart -- macOS registers one mouse and gives it no
-/// name -- so everything is read as points. A trackpad then tracks the finger
-/// exactly, momentum included, and a wheel click moves about ten points.
-fn wheelPixels(delta: f32, density: f32) f32 {
-    // SDL counts a wheel positive away from the reader, which is towards the
-    // start of the document.
-    return -delta * 10 * density;
 }
 
 /// Together because the event watch reaches them from behind one `void *`.
