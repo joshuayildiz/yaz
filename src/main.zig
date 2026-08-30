@@ -23,9 +23,13 @@ pub fn main(init: std.process.Init) !void {
 
     // Before SDL, so a file that cannot be opened fails without a window having
     // appeared and gone again.
-    const opened = try open(init);
+    const opened = try open(init, 0);
     defer init.gpa.free(opened.text);
     defer if (opened.path) |path| init.gpa.free(path);
+
+    const second = try open(init, 1);
+    defer init.gpa.free(second.text);
+    defer if (second.path) |path| init.gpa.free(path);
 
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
         std.log.err("SDL_Init: {s}", .{sdl.lastError()});
@@ -60,10 +64,12 @@ pub fn main(init: std.process.Init) !void {
     var app: App = .{
         .renderer = try Renderer.init(init.gpa, window),
         .view = try TextView.init(init.gpa, opened.text),
+        .other = if (second.path != null) try TextView.init(init.gpa, second.text) else null,
         .painter = .init(init.gpa),
     };
     defer app.renderer.deinit();
     defer app.view.deinit();
+    defer if (app.other) |*o| o.deinit();
     defer app.painter.deinit();
 
     if (!c.SDL_AddEventWatch(redrawWhileResizing, &app)) {
@@ -102,6 +108,7 @@ pub fn main(init: std.process.Init) !void {
 const App = struct {
     renderer: Renderer,
     view: TextView,
+    other: ?TextView,
     painter: Painter,
     running: bool = true,
 
@@ -111,17 +118,27 @@ const App = struct {
 
     /// Answers for everything it holds, so the loop asks one thing.
     fn isDirty(self: *const App) bool {
+        if (self.other) |*other| {
+            if (other.isDirty()) return true;
+        }
         return self.dirty or self.view.isDirty();
     }
 
     fn setDirty(self: *App, value: bool) void {
         self.dirty = value;
         self.view.setDirty(value);
+        if (self.other) |*other| other.setDirty(value);
     }
 
     /// Divides the room it has been given between what it holds. One view for
     /// now, so it gets all of it.
     fn place(self: *App, rect: Rect) void {
+        if (self.other) |*other| {
+            const half = @round(rect.width / 2);
+            self.view.place(.{ .x = rect.x, .y = rect.y, .width = half, .height = rect.height });
+            other.place(.{ .x = rect.x + half, .y = rect.y, .width = rect.width - half, .height = rect.height });
+            return;
+        }
         self.view.place(rect);
     }
 
@@ -140,12 +157,15 @@ const App = struct {
             else => {},
         }
 
+        // Everything still goes to the first view: nothing decides yet which
+        // one an event belongs to.
         try self.view.update(event, &self.renderer.atlas);
     }
 
     /// Every quad the frame is made of, from everything it holds.
     fn draw(self: *App, painter: *Painter) !void {
         try self.view.draw(&self.renderer.atlas, painter);
+        if (self.other) |*other| try other.draw(&self.renderer.atlas, painter);
     }
 
     fn redraw(self: *App) !void {
@@ -170,6 +190,9 @@ const App = struct {
         });
 
         if (self.view.follow_caret) self.view.scrollToCaret(&self.renderer.atlas);
+        if (self.other) |*other| {
+            if (other.follow_caret) other.scrollToCaret(&self.renderer.atlas);
+        }
 
         self.painter.clear();
         try self.draw(&self.painter);
@@ -205,11 +228,13 @@ const Opened = struct {
 /// A path that does not exist opens empty under that name, the way a new file
 /// starts. Anything else stops the program: an empty window otherwise looks
 /// exactly like an empty file.
-fn open(init: std.process.Init) !Opened {
+fn open(init: std.process.Init, which: usize) !Opened {
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
     defer args.deinit();
 
     _ = args.skip(); // The program itself.
+    var skip: usize = 0;
+    while (skip < which) : (skip += 1) _ = args.skip();
     const named = args.next() orelse return .{ .text = try init.gpa.alloc(u8, 0), .path = null };
 
     // The iterator owns what it returns and is about to go.

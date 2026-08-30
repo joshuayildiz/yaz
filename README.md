@@ -48,9 +48,12 @@ Later builds skip it. Targeting macOS costs more the first time; see
 yaz               # an empty document
 yaz notes.md      # notes.md, with the caret at the top
 yaz new.md        # new.md does not exist: an empty document under that name
+yaz a.md b.md     # both, side by side
 ```
 
-One optional argument; the window takes its title from the path as typed.
+Up to two paths; the window takes its title from the first. A second one splits
+the window down the middle and opens it there -- there to exercise more than one
+view, not because two is the number a text editor should stop at.
 `assets/sample.txt` is there to be opened — six lines exercising ligatures, a
 combining mark, `.notdef` and proportional advances.
 
@@ -460,8 +463,8 @@ from the atlas — and the same day will fix both.
 Every component draws into one `Painter`. A quad goes in under a **key** — a
 layer, a pipeline and a colour — and `present` sorts the runs by that key and
 issues one call per distinct one, so quads wanting the same thing end up in one
-call however many components produced them. A screenful is three calls, and would
-still be three with a hundred components drawing into it.
+call however many components produced them. A screenful is three calls with one
+text view, and still three with two of them.
 
 **The layer is what makes the sort safe.** These quads are alpha blended, so
 reordering them is only correct where they do not overlap, and the layer states
