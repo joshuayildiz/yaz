@@ -52,15 +52,6 @@ pub const Rect = struct {
     height: f32,
 };
 
-/// What is left for the caller to do about an event. Whether anything changed
-/// is not here: that is state, and the view keeps it -- see `isDirty`.
-pub const Response = struct {
-    /// Set when the pointer takes hold of something, or lets go. The caller
-    /// captures the mouse for the duration, so a drag that wanders out of the
-    /// window keeps arriving rather than stopping where it left.
-    capture: ?bool = null,
-};
-
 /// One array rather than two: the quads reach the GPU as a single buffer and are
 /// drawn by index into it, so the split is where the colour changes rather than
 /// where the memory does.
@@ -175,9 +166,9 @@ pub const TextView = struct {
 
     /// Everything that happens inside the view. What belongs to the window has
     /// been dealt with before this is called.
-    pub fn handle(self: *TextView, event: Event, atlas: *GlyphAtlas) !Response {
+    pub fn handle(self: *TextView, event: Event, atlas: *GlyphAtlas) !void {
         switch (event) {
-            .quit, .resized => return .{},
+            .quit, .resized => {},
             .text => |typed| {
                 try self.insert(typed);
                 self.dirty = true;
@@ -198,7 +189,7 @@ pub const TextView = struct {
                     self.drag = grab;
                     self.dragTo(atlas, at[1], grab);
                     self.dirty = true;
-                    return .{ .capture = true };
+                    return;
                 }
                 try self.moveCaretTo(atlas, at);
                 self.dirty = true;
@@ -207,17 +198,12 @@ pub const TextView = struct {
                 // The only reason motion is looked at at all: OPTIMIZATIONS.md 2
                 // has the loop ignoring it, and a redraw per motion event is what
                 // that buys.
-                const grab = self.drag orelse return .{};
+                const grab = self.drag orelse return;
                 self.dragTo(atlas, at[1], grab);
                 self.dirty = true;
             },
-            .release => {
-                if (self.drag == null) return .{};
-                self.drag = null;
-                return .{ .capture = false };
-            },
+            .release => self.drag = null,
         }
-        return .{};
     }
 
     /// Where the first line's top-left corner sits. Whole pixels, which the

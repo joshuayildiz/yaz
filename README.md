@@ -183,8 +183,14 @@ it cannot come from the atlas.
 eight points — that is a small thing to ask anyone to hit — and a press on the
 track rather than the thumb takes hold of its middle, so the thumb jumps to the
 pointer and carries on from there. The scrollbar is asked before the text, so a
-press on it moves the view rather than the caret. The mouse is captured for the
-duration, so a drag that wanders out of the window keeps arriving.
+press on it moves the view rather than the caret.
+
+A drag that wanders out of the window keeps arriving without anything being done
+about it. SDL captures the mouse on its own while a button is held, on the three
+backends that implement capture at all — Cocoa, Windows and X11 — and Wayland
+delivers it anyway through the compositor's implicit pointer grab. Calling
+`SDL_CaptureMouse` here would be redundant on the first three and unsupported on
+the fourth.
 
 This is the one thing that looks at mouse motion. The loop ignores it otherwise,
 which is what [OPTIMIZATIONS.md](OPTIMIZATIONS.md) §2 measures; motion is read

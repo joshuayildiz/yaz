@@ -129,8 +129,7 @@ const App = struct {
             else => {},
         }
 
-        const response = try self.view.handle(event, &self.renderer.atlas);
-        if (response.capture) |on| _ = c.SDL_CaptureMouse(on);
+        try self.view.handle(event, &self.renderer.atlas);
     }
 
     fn redraw(self: *App) !void {
