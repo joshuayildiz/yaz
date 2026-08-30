@@ -6,30 +6,22 @@ const TextView = @import("./text_view.zig").TextView;
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 
-/// The largest file yaz will open.
-///
-/// Not a limit on the buffer or on what can be edited: `TextView.layout` places
-/// every glyph of every line on every frame, so a large file is slow in a way
-/// that has nothing to do with reading it, and the atlas runs out of room before
-/// the machine runs out of memory. Refusing with a number is better than opening
-/// something that appears to hang. It comes out when layout draws only what is
-/// on screen.
+/// The largest file yaz will open. Not about reading: `TextView.layout` places
+/// every glyph of every line on every frame, so this comes out when layout draws
+/// only what is on screen.
 const file_limit = 1 << 20;
 
 /// Where the first line's top-left corner sits, at a display scale of one.
-/// Scaled with the text, so the margin is the same size to look at whatever the
-/// display, rather than half of one on a dense display and twice on a coarse.
 const text_margin: [2]f32 = .{ 48, 48 };
 
-/// The margin in device pixels. Whole ones, which the layout cache depends on:
-/// a fractional origin would change which subpixel variant every cached glyph
-/// points at. A margin is not a thing to scroll by fractions of a pixel.
+/// Whole pixels, which the layout cache depends on: a fractional origin would
+/// change which subpixel variant every cached glyph points at.
 fn textOrigin(scale: f32) [2]f32 {
     return .{ @round(text_margin[0] * scale), @round(text_margin[1] * scale) };
 }
 
 pub fn main(init: std.process.Init) !void {
-    // Before SDL, so that a file yaz cannot open fails without a window having
+    // Before SDL, so a file that cannot be opened fails without a window having
     // appeared and gone again.
     const opened = try open(init);
     defer init.gpa.free(opened.text);
@@ -41,12 +33,9 @@ pub fn main(init: std.process.Init) !void {
     }
     defer c.SDL_Quit();
 
-    // The size is in window coordinates, which are not pixels on every display.
-    // Without `HIGH_PIXEL_DENSITY` the platform hands back a back buffer at the
-    // window's size in those coordinates and scales the finished frame up to the
-    // display, which is a blur no amount of care in the text pipeline survives.
-    // With it, the swapchain is the display's own pixels and every glyph is
-    // rasterised for the grid it lands on.
+    // The size is in window coordinates. Without `HIGH_PIXEL_DENSITY` the back
+    // buffer is that size too and the finished frame is scaled up to the
+    // display, which no amount of care in the text pipeline survives.
     const flags = c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
     const window = c.SDL_CreateWindow("yaz", 1024, 768, flags) orelse {
         std.log.err("SDL_CreateWindow: {s}", .{sdl.lastError()});
@@ -66,8 +55,6 @@ pub fn main(init: std.process.Init) !void {
     }
     defer _ = c.SDL_StopTextInput(window);
 
-    // The path as it was typed, which is what the person who typed it will
-    // recognise; a file with no name is still yaz.
     if (opened.path) |path| _ = c.SDL_SetWindowTitle(window, path.ptr);
 
     var app: App = .{
@@ -126,11 +113,10 @@ pub fn main(init: std.process.Init) !void {
                 // view answers it; nothing here knows how wide a character is.
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                     if (event.button.button == c.SDL_BUTTON_LEFT) {
-                        // One of the two places a window coordinate gets in.
-                        // Everything past here is in pixels, so it is converted
-                        // at the door rather than carried further. Density, not
-                        // display scale: this is asking how many pixels a point
-                        // is, not how large to draw.
+                        // One of the two places a window coordinate gets in,
+                        // so it becomes pixels here. Density rather than display
+                        // scale: how many pixels a point is, not how large to
+                        // draw.
                         const density = c.SDL_GetWindowPixelDensity(window);
                         const origin = textOrigin(app.renderer.atlas.scale);
                         try app.view.moveCaretTo(
@@ -151,19 +137,15 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-/// A view of the document and the thing that draws it, together because the
-/// event watch needs them from behind one `void *`.
+/// Together because the event watch reaches them from behind one `void *`.
 const App = struct {
     renderer: Renderer,
     view: TextView,
 
     fn redraw(self: *App) !void {
-        // Read rather than listened for. Three window events can imply the scale
-        // has changed, and one of the ways it changes -- dragging the window to
-        // another display -- runs inside the platform's modal loop, where the
-        // event watch below is the only thing that gets called at all. Comparing
-        // the value cannot miss any of that, and it costs a load on a path that
-        // only runs because something changed anyway.
+        // Read rather than listened for: three window events can imply the
+        // scale changed, and dragging to another display happens inside the
+        // modal loop, where only the watch below runs.
         const scale = displayScale(self.renderer.window);
         if (try self.renderer.atlas.setScale(scale)) self.view.invalidate();
 
@@ -173,58 +155,46 @@ const App = struct {
     }
 };
 
-/// Windows and macOS run a modal loop of their own while a window is being
-/// dragged or resized, and it does not hand control back until the drag ends.
-/// `SDL_WaitEvent` is stuck inside it, so nothing redraws, and the area the
-/// window has just grown into keeps whatever the new swapchain came with.
-///
-/// A watch callback is the way out: SDL runs it as events are pushed, which
-/// happens from inside that modal loop.
+/// Windows and macOS run a modal loop while a window is dragged or resized, and
+/// do not hand control back until it ends, so `SDL_WaitEvent` is stuck inside it
+/// and nothing redraws. SDL runs a watch callback as events are pushed, which
+/// happens from within that loop.
 fn redrawWhileResizing(userdata: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.c) bool {
     if (event.*.type == c.SDL_EVENT_WINDOW_EXPOSED) {
         const app: *App = @ptrCast(@alignCast(userdata.?));
-        // Swallowed rather than reported: the main loop draws again the moment
-        // it gets control back, and surfaces the failure there.
+        // Swallowed: the main loop draws again the moment it gets control back
+        // and surfaces the failure there.
         app.redraw() catch {};
     }
     // Watch callbacks cannot filter; the return value is ignored.
     return true;
 }
 
-/// What a run of yaz starts with.
+/// Both fields are owned by the caller. `path` is null when nothing was named,
+/// which is not the same as a file that turned out to be empty.
 const Opened = struct {
-    /// Owned by the caller. Empty both for a file that does not exist yet and
-    /// for no file at all.
     text: []u8,
-
-    /// Owned by the caller, and null when nothing was named -- which is not the
-    /// same as a file that turned out to be empty. Sentinel-terminated because
-    /// it goes to SDL as a window title.
+    /// Sentinel-terminated because it goes to SDL as a window title.
     path: ?[:0]u8,
 };
 
 /// Reads the file named by the first argument, if there is one.
 ///
-/// A path that does not exist is not a failure: it opens empty under that name,
-/// the way a new file starts. Anything else -- a directory, a permission, a file
-/// past `file_limit` -- is reported and stops the program, because the
-/// alternative is an editor showing an empty document for a file that is not
-/// empty, and no way to tell the two apart.
+/// A path that does not exist opens empty under that name, the way a new file
+/// starts. Anything else stops the program: an empty window otherwise looks
+/// exactly like an empty file.
 fn open(init: std.process.Init) !Opened {
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
     defer args.deinit();
 
-    // The first argument is the program itself.
-    _ = args.skip();
+    _ = args.skip(); // The program itself.
     const named = args.next() orelse return .{ .text = try init.gpa.alloc(u8, 0), .path = null };
 
-    // Copied because the iterator owns what it returns and is about to go.
+    // The iterator owns what it returns and is about to go.
     const path = try init.gpa.dupeZ(u8, named);
     errdefer init.gpa.free(path);
 
     const contents = std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .limited(file_limit)) catch |err| switch (err) {
-        // Naming a file that is not there is how a new one begins, so this is
-        // an empty document rather than a refusal.
         error.FileNotFound => return .{ .text = try init.gpa.alloc(u8, 0), .path = path },
         error.StreamTooLong => {
             std.log.err(
@@ -248,31 +218,21 @@ fn open(init: std.process.Init) !Opened {
     return .{ .text = try stripCarriageReturns(init.gpa, contents), .path = path };
 }
 
-/// Where the first byte that is not part of a well-formed UTF-8 sequence is, or
-/// null if there is no such byte.
+/// An offset rather than a yes or no, because the offset is the part a caller
+/// can act on.
 ///
-/// An offset rather than a yes or no: "this is not UTF-8" is not something the
-/// person who typed the path can do anything with, and "byte 4102 is not" is.
-///
-/// Worth refusing over rather than drawing something. Every layer above assumes
-/// UTF-8 -- the shaper is handed the bytes as UTF-8, and stepping the caret back
-/// over a character walks continuation bytes until it finds one that is not.
-/// HarfBuzz would substitute a replacement character and carry on, so the text
-/// would merely look wrong; backspace would not. It would step back over as many
-/// stray continuation bytes as happened to be adjacent and delete all of them,
-/// which is an editor quietly making a file worse than it found it.
+/// Worth refusing over rather than drawing: HarfBuzz would substitute a
+/// replacement character and only look wrong, but `stepBack` walks continuation
+/// bytes until it finds one that is not, so backspace over stray bytes deletes
+/// however many happen to be adjacent.
 fn firstInvalidUtf8(text: []const u8) ?usize {
-    // One walk rather than `utf8ValidateSlice` first and this only on failure.
-    // That would be faster on a large valid file and would mean two pieces of
-    // code deciding what UTF-8 is, which is one more than there should be: the
-    // day they disagreed, the fast path would say no and this would find
-    // nothing to point at. `utf8Decode` refuses overlong encodings, surrogate
-    // halves and codepoints past U+10FFFF, so the walk is the whole rule.
+    // Not `utf8ValidateSlice` first with this only on failure: that is two
+    // pieces of code deciding what UTF-8 is, and the day they disagreed the
+    // fast path would say no and this would find nothing to point at.
     var at: usize = 0;
     while (at < text.len) {
         const length = std.unicode.utf8ByteSequenceLength(text[at]) catch return at;
-        // A sequence that runs off the end is truncated, and the offset to
-        // report is where it started rather than where the file stopped.
+        // Truncated: report where the sequence began, not where the bytes ran out.
         if (at + length > text.len) return at;
         _ = std.unicode.utf8Decode(text[at..][0..length]) catch return at;
         at += length;
@@ -309,19 +269,12 @@ test "firstInvalidUtf8 rejects a surrogate half" {
     try std.testing.expectEqual(@as(?usize, 0), firstInvalidUtf8("\xed\xa0\x80"));
 }
 
-/// Turns CRLF into LF. Frees what it is given if it has to replace it, and hands
-/// it straight back when there is nothing to do, which is every file not written
-/// on Windows.
+/// Turns CRLF into LF, freeing what it is given only if it has to replace it.
 ///
-/// A carriage return is not a line break to the line index, so it would stay on
-/// the end of every line and reach the shaper, which would set it as .notdef --
-/// a box at the end of every line of a perfectly ordinary file. Stripping on the
-/// way in also leaves one kind of line ending for everything downstream to
-/// assume rather than two.
-///
-/// The bytes then stop matching the file exactly. That is a trade to revisit
-/// when there is a way to save and not before: nothing can be written back yet,
-/// so nothing can be written back wrongly.
+/// A carriage return is not a line break to the line index, so it would reach
+/// the shaper and set as .notdef at the end of every line. The bytes then stop
+/// matching the file exactly, which is a trade to revisit when there is a way
+/// to save.
 fn stripCarriageReturns(gpa: std.mem.Allocator, text: []u8) ![]u8 {
     var found: usize = 0;
     for (text, 0..) |byte, i| {

@@ -26,26 +26,22 @@ const shader_target: struct {
 const vertex_shader_code = @embedFile("quad.vert");
 const fragment_shader_code = @embedFile("quad.frag");
 
-/// Matches the uniform block in quad.vert.glsl: what every glyph in the frame
-/// shares, as against what the sprite buffer carries per glyph. Both fields are
-/// vec2, which has the same size and alignment in std140 as it does here.
+/// Matches the uniform block in quad.vert.glsl. Both fields are vec2, which has
+/// the same size and alignment in std140 as here.
 const Frame = extern struct {
     viewport: [2]f32,
     atlas_size: [2]f32,
 };
 
-/// Matches the uniform block in quad.frag.glsl. One colour per draw, not per
-/// pushed rather than compiled in so that the theme stays in config.zig with the
-/// background it has to be readable against, rather than half of it living in a
-/// shader. A `vec4` is 16 bytes and 16-aligned in std140, which is what a lone
-/// one lays out as here too.
+/// Matches the uniform block in quad.frag.glsl. Pushed rather than compiled in
+/// so the theme stays in config.zig beside the background it has to be readable
+/// against.
 const Ink = extern struct {
     colour: [4]f32,
 };
 
-/// Sprites the buffer holds before it has to grow. A screenful at this font
-/// size is a couple of thousand glyphs, so this is a startup cost and not a
-/// per-frame one.
+/// Sprites the buffer holds before it has to grow. A screenful is a couple of
+/// thousand, so this is a startup cost rather than a per-frame one.
 const initial_sprites = 4096;
 
 pub const Renderer = struct {
@@ -81,10 +77,7 @@ pub const Renderer = struct {
 
         errdefer c.SDL_ReleaseWindowFromGPUDevice(gpu, window);
 
-        // The layer exists now and not before, and its default is to stretch
-        // whatever it last held over the window's new bounds. Not stretching it
-        // leaves a gap while a window grows, so the layer is given the theme's
-        // background to show there rather than the black it comes with.
+        // The layer exists now and not before.
         sdl.anchorContentsTopLeft(window);
         sdl.setLayerBackground(window, config.background);
 
@@ -147,21 +140,15 @@ pub const Renderer = struct {
         c.SDL_DestroyGPUDevice(self.gpu);
     }
 
-    /// Draws the quads it is handed, and knows nothing else about them. What
-    /// they spell, which line each came from and what had to be shaped to
-    /// produce them all belong to whoever laid them out.
+    /// Draws the quads it is handed and knows nothing else about them.
     ///
-    /// `caret` says which of them is the caret. It is drawn by a second call so
-    /// that it can be a different colour from the text without every glyph
-    /// carrying a colour it shares with all the others: the alternative is four
-    /// more floats on a struct that is written and uploaded once per glyph per
-    /// frame, to say the same thing every time.
+    /// `caret` says which one is the caret, drawn by a second call so it can be
+    /// a different colour. The alternative is four more floats on every sprite,
+    /// uploaded per glyph per frame to repeat one value.
     pub fn present(self: *Renderer, sprites: []const Sprite, caret: u32) !void {
         std.debug.assert(sprites.len == 0 or caret < sprites.len);
-        // Glyphs the atlas was missing arrive as a copy pass, and a copy pass
-        // cannot be opened inside a render pass. Doing it here also keeps the
-        // work out of the window between waiting for a frame and handing one
-        // back.
+        // A copy pass cannot be opened inside a render pass, and doing it here
+        // keeps it out of the wait for a frame.
         try self.atlas.upload();
 
         const count: u32 = @intCast(sprites.len);
@@ -172,9 +159,8 @@ pub const Renderer = struct {
             return error.SdlAcquireCommandBuffer;
         };
 
-        // Before the swapchain rather than after: this is work that does not
-        // need a frame to be handed back first, so doing it here keeps it out
-        // of the wait.
+        // Before the swapchain: this does not need a frame handed back first,
+        // so doing it here keeps it out of the wait.
         if (count > 0) self.stage(cmd, sprites) catch |err| {
             _ = c.SDL_SubmitGPUCommandBuffer(cmd);
             return err;
@@ -220,10 +206,8 @@ pub const Renderer = struct {
         const instances = [_]?*c.SDL_GPUBuffer{self.instances};
         c.SDL_BindGPUVertexStorageBuffers(pass, 0, &instances, 1);
 
-        // Two calls for the frame, and the second draws one quad: where every
-        // glyph goes was decided during layout and is in the buffer the shader
-        // reads, so nothing is left to say per glyph. The split is the colour
-        // and nothing else -- same pipeline, same bindings, same buffer.
+        // Two calls, the second drawing one quad. The split is the colour and
+        // nothing else: same pipeline, same bindings, same buffer.
         if (count > 0) {
             const frame: Frame = .{
                 .viewport = .{ @floatFromInt(width), @floatFromInt(height) },
@@ -231,9 +215,8 @@ pub const Renderer = struct {
             };
             c.SDL_PushGPUVertexUniformData(cmd, 0, &frame, @sizeOf(Frame));
 
-            // The caret is last, so the glyphs are everything before it. A
-            // frame with nothing but a caret in it draws no glyphs at all,
-            // which is what an empty document is.
+            // The caret is last, so the glyphs are everything before it, and
+            // an empty document is a frame with only a caret in it.
             if (caret > 0) {
                 const ink: Ink = .{ .colour = config.text_colour };
                 c.SDL_PushGPUFragmentUniformData(cmd, 0, &ink, @sizeOf(Ink));
@@ -253,9 +236,8 @@ pub const Renderer = struct {
         }
     }
 
-    /// Grows both buffers to hold `count` sprites, doing nothing when they
-    /// already do. Doubling rather than fitting exactly, so a document that
-    /// grows a glyph at a time does not reallocate a glyph at a time.
+    /// Doubling rather than fitting exactly, so a document that grows a glyph
+    /// at a time does not reallocate a glyph at a time.
     fn reserve(self: *Renderer, count: u32) !void {
         if (count <= self.capacity) return;
 
@@ -266,8 +248,7 @@ pub const Renderer = struct {
         errdefer c.SDL_ReleaseGPUBuffer(self.gpu, instances);
         const transfer = try createTransferBuffer(self.gpu, capacity);
 
-        // Releasing does not free anything a frame in flight is still reading;
-        // SDL holds the resource until the GPU is done with it.
+        // SDL holds a released resource until the GPU is done with it.
         c.SDL_ReleaseGPUBuffer(self.gpu, self.instances);
         c.SDL_ReleaseGPUTransferBuffer(self.gpu, self.transfer);
 
@@ -276,9 +257,8 @@ pub const Renderer = struct {
         self.capacity = capacity;
     }
 
-    /// Copies the frame's sprites into the buffer the vertex shader reads.
-    /// Both halves cycle: the previous frame may still be in flight, and
-    /// waiting for it would put a stall in the middle of a redraw.
+    /// Both halves cycle: the previous frame may still be in flight, and waiting
+    /// for it would stall the middle of a redraw.
     fn stage(self: *Renderer, cmd: *c.SDL_GPUCommandBuffer, sprites: []const Sprite) !void {
         const bytes = std.mem.sliceAsBytes(sprites);
 
@@ -303,19 +283,15 @@ pub const Renderer = struct {
     }
 };
 
-/// How much larger than nominal to draw everything in this window: the display's
-/// pixel density and the size the user asked content to be, in one number. SDL
-/// updates it when the window moves to another display or the setting changes.
+/// How much larger than nominal to draw everything in this window: pixel density
+/// and the size the user asked content to be, in one number.
 ///
-/// Not the pixel density on its own. Windows at 150% on an ordinary panel has a
-/// density of one and a scale of one and a half; sizing text by density there
-/// renders it at the nominal size and ignores what the user asked for. Density
-/// is still the right number for turning a point into a pixel, which is a
-/// different question and belongs to whoever is holding a point.
+/// Not density alone. Windows at 150% on an ordinary panel reports a density of
+/// one and a scale of one and a half, and sizing by density there would ignore
+/// the setting. Density is still what turns a point into a pixel.
 pub fn displayScale(window: *c.SDL_Window) f32 {
+    // Zero is SDL's failure, and a font sized from it does not rasterise.
     const scale = c.SDL_GetWindowDisplayScale(window);
-    // Zero is SDL's failure, and a font sized from it does not rasterise. There
-    // is nothing better to fall back to than the scale of a plain display.
     return if (scale > 0) scale else 1;
 }
 
@@ -382,8 +358,8 @@ fn createPipeline(gpu: *c.SDL_GPUDevice, window: *c.SDL_Window) !*c.SDL_GPUGraph
 
     const color_target = std.mem.zeroInit(c.SDL_GPUColorTargetDescription, .{
         .format = c.SDL_GetGPUSwapchainTextureFormat(gpu, window),
-        // Coverage arrives as alpha, so glyphs have to blend rather than
-        // overwrite; a quad is a bounding box and most of it is empty.
+        // Coverage arrives as alpha, and a quad is a bounding box that is
+        // mostly empty, so glyphs blend rather than overwrite.
         .blend_state = std.mem.zeroInit(c.SDL_GPUColorTargetBlendState, .{
             .src_color_blendfactor = c.SDL_GPU_BLENDFACTOR_SRC_ALPHA,
             .dst_color_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
@@ -409,10 +385,8 @@ fn createPipeline(gpu: *c.SDL_GPUDevice, window: *c.SDL_Window) !*c.SDL_GPUGraph
     };
 }
 
-// The sprite array is handed to the GPU as it stands, so the Zig struct and the
-// GLSL one have to agree byte for byte. std430 gives a struct of three vec2 an
-// alignment of 8 and a stride of 24, and nothing else here warns if that stops
-// matching.
+// The array goes to the GPU as it stands, so the Zig struct and the GLSL one
+// have to agree byte for byte. Nothing else warns if that stops being true.
 test "Sprite is laid out as the vertex shader reads it" {
     try std.testing.expectEqual(24, @sizeOf(Sprite));
     try std.testing.expectEqual(0, @offsetOf(Sprite, "dest"));

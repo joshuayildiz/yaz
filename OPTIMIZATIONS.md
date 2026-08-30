@@ -36,14 +36,14 @@ a window nobody is touching does no work at all.
 **Rests on:** SDL genuinely blocking rather than spinning on the platform's
 event source.
 
-**Check:** start yaz, leave it alone for ten seconds, and look at CPU in
-Activity Monitor or `top -pid $(pgrep yaz)`. It should be 0.0%, not 0.3%.
+**Check:** leave it alone for ten seconds and read CPU from
+`top -pid $(pgrep yaz)`. It should be 0.0%, not 0.3%.
 
 ## 2. Redraw only on change
 
-Waking up is not a reason to draw. Moving the mouse across the window produces a
-stream of events, and none of them alter a pixel, so the loop tracks whether
-anything actually changed and skips the frame otherwise.
+Waking up is not a reason to draw. Mouse motion produces a stream of events that
+alter no pixel, so the loop tracks whether anything changed and skips the frame
+otherwise.
 
 Windows, four seconds of continuous mouse movement over the window:
 
@@ -70,8 +70,8 @@ redundant redraw costs a vsync; a burst of them would put a keystroke behind
 several frames of drawing content that had not moved.
 
 **Rests on:** nothing platform-specific. Listed because it is the mechanism that
-bounds input latency, and because the number that would prove it — keystroke to
-photon — cannot be taken until there is typing to measure.
+bounds input latency. The number that would prove it, keystroke to photon, has
+not been taken.
 
 **Check:** covered by 2's redraw count. A count that tracks the event count means
 the drain is not working.
@@ -106,15 +106,15 @@ GPU work. See [FIXME.md](FIXME.md).
 
 ## 5. Rasterise once, not per frame
 
-Every glyph is rasterised by FreeType at startup into one coverage texture.
-Rasterising is the expensive part of drawing a glyph and none of it happens on
-the frame path. Drawing a frame allocates nothing.
+A glyph is rasterised the first time it is asked for and kept. Shaping decides
+what exists, so the atlas cannot be filled ahead of time, but a glyph is
+rasterised once however often it is drawn. A redraw that shapes nothing new
+uploads nothing and allocates nothing.
 
 **Rests on:** nothing platform-specific.
 
-**Check:** startup should stay well under a tenth of a second, and a redraw
-should not allocate. `heaptrack`, Instruments' allocations template, or simply
-watching RSS stay flat while the window redraws.
+**Check:** RSS flat while the window redraws, and no transfer in a steady-state
+frame. `heaptrack` or Instruments' allocations template.
 
 ## 6. Pixel-aligned quads, nearest sampling
 
@@ -167,43 +167,31 @@ suggests something is scanning fonts, which would mean SDL is doing it, not us.
 
 ## 9. One draw call for the text
 
-Every glyph in the frame is one instance of a four-vertex triangle strip, and the
-whole screenful is a single `SDL_DrawGPUPrimitives`. Nothing is sent per glyph:
-where each one lands, what to sample and how big it is all come out of a storage
-buffer the vertex shader indexes by `gl_InstanceIndex`.
+Every glyph is one instance of a four-vertex triangle strip, and the screenful is
+a single `SDL_DrawGPUPrimitives`. Nothing is sent per glyph: where each lands,
+what to sample and how big it is come out of a storage buffer the vertex shader
+indexes by `gl_InstanceIndex`. The caret is a second call over the last quad of
+that buffer, so it can be a different colour.
 
-The caret is a second call over the last quad of the same buffer, drawn with the
-same pipeline and the same bindings, so that it can be a different colour from
-the text. The alternative is a colour on every sprite, which is four more floats
-written and uploaded once per glyph per frame to repeat one value.
+**Rests on:** `first_instance` reaching the shader through `gl_InstanceIndex` on
+Metal as it does on Vulkan. Metal's `[[instance_id]]` counts from zero whatever
+the base instance is, so the translation has to add it back; if it does not, the
+caret's draw recolours the first glyph on screen and leaves the caret alone.
 
-**Rests on:** `first_instance` reaching the shader as part of `gl_InstanceIndex`
-on Metal as it does on Vulkan. Metal's `[[instance_id]]` counts from zero
-whatever the base instance is, so the translation has to add it back. If it does
-not, the caret's draw addresses sprite zero and recolours the first glyph on
-screen while leaving the caret the colour of the text.
-
-**Check:** set `caret_colour` in `config.zig` to something loud — red will do —
-and look at the first character on the first line. Exactly the caret should
-change. Done this way on an M2: only the caret went red, and the leading `T`
-stayed black.
+**Check:** set `caret_colour` to something loud and look at the first character
+on the first line. Only the caret should change. Done on an M2: it did.
 
 ## 10. Per-line layout cache
 
-Shaping is the expensive half of laying out a line and depends only on that
-line's bytes, so it is done once and kept. A keystroke reshapes the line it
-landed in; every other line is placed by adding an origin to coordinates it
-already had. A line that only moved down the screen is not shaped again.
+Shaping depends only on a line's bytes, so it is done once and kept. A keystroke
+reshapes the line it landed in; every other line is placed by adding an origin to
+coordinates it already had.
 
-**Rests on:** nothing platform-specific. It does rest on the origin being whole
-pixels, which is 6's business: a fractional origin would change which subpixel
-variant each cached glyph points at, and the cache would be answering a question
-nobody asked.
+**Rests on:** the origin being whole pixels, which is 6's business — a fractional
+one would change which subpixel variant each cached glyph points at.
 
-**Check:** `TextView.layout` asserts that its `x` is already rounded, and the
-cache asserts its own length against the document's line count on every frame. A
-Debug build is the one to run, since those are what catch a cache that has
-drifted out of step with the text it describes.
+**Check:** `TextView.layout` asserts its `x` is rounded, and the cache asserts
+its length against the document's line count every frame. Run a Debug build.
 
 ## Not optimizations yet
 

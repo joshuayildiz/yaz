@@ -14,23 +14,19 @@ whether it is real.
 
 **Where:** `src/glyph_atlas.zig`, `atlas_width`.
 
-The texture is 2048x2048 on macOS and 1024x1024 everywhere else, chosen from the
-target at build time. What actually decides how fast it fills is the display
-scale: a glyph rasterised at twice the size takes four times the area. macOS is
-sized for a scale of two because every Mac SDL runs on is Retina, so there the
-proxy holds.
+2048 square on macOS and 1024 elsewhere, chosen from the target at build time.
+What decides how fast it fills is the display scale: a glyph at twice the size
+takes four times the area. The proxy holds on macOS, where every Mac is Retina.
 
-It does not hold on Windows, which offers 125%, 150%, 175% and 200% on hardware
-that may or may not be dense, and gets the smaller texture at every one of them.
-At 200% on a 4K panel the ceiling is roughly a quarter of what the number in the
-comment claims -- somewhere near 125 distinct glyphs rather than 500 -- and
-running out panics rather than degrading.
+It does not hold on Windows, which offers 125% through 200% on hardware that may
+or may not be dense and gets the smaller texture at all of them. At 200% on a 4K
+panel the ceiling is near 125 distinct glyphs rather than 500, and running out
+panics rather than degrading.
 
-**Left alone because** a page of English is nowhere near either ceiling, so this
-is reachable only by a document that would also exhaust the 2048 texture: the
-CJK case, which wants eviction or a second page rather than a bigger number.
-Sizing the texture from the scale at runtime would also mean reallocating it on
-a rebuild, which is the one thing a rescale currently does not have to do.
+**Left alone because** a page of English is nowhere near either ceiling, so only
+a CJK document reaches it -- and that wants eviction rather than a bigger number.
+Sizing from the scale at runtime would also mean reallocating the texture on a
+rebuild, which is the one thing a rescale does not currently have to do.
 
 **To assess:** run on Windows at 200% and type until it panics; the message
 names how many glyphs were in.

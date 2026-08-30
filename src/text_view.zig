@@ -15,23 +15,17 @@ const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 const Sprite = glyph_atlas.Sprite;
 
-/// How wide the caret is drawn, at a display scale of one. Two pixels rather
-/// than one: a hairline is the first thing to disappear on a dense display, and
-/// the caret is the one mark on screen that has to be found without looking for
-/// it. Scaled with the text for that same reason -- two device pixels on a
-/// Retina display is the hairline this is written to avoid.
+/// At a display scale of one, and scaled with the text: a hairline is the first
+/// thing to disappear on a dense display, and the caret is the one mark that has
+/// to be found without looking for it.
 const caret_width = 2;
 
-/// What one frame draws: every quad on screen, and where the caret is among
-/// them. One array rather than two, because they go to the GPU as a single
-/// buffer and are drawn by index into it; the split is where the colour changes,
-/// not where the memory does.
+/// One array rather than two: the quads reach the GPU as a single buffer and are
+/// drawn by index into it, so the split is where the colour changes rather than
+/// where the memory does.
 pub const Frame = struct {
     quads: []const Sprite,
-
-    /// Where the caret sits in `quads`. Last, always -- it is appended after
-    /// every glyph so that it draws over the one it sits beside rather than
-    /// under it, and the renderer draws it separately to give it its own colour.
+    /// Always the last quad, so it draws over the glyph it sits beside.
     caret: u32,
 };
 
@@ -55,9 +49,8 @@ pub const TextView = struct {
     /// which is what keeps a redraw free of the allocator.
     sprites: std.ArrayList(Sprite) = .empty,
 
-    /// The caret starts at the top of the document rather than the end of it.
-    /// Nothing scrolls yet, so a caret at the end of a file taller than the
-    /// window is a caret nobody can see, typing into a place nobody is looking.
+    /// The caret starts at the top: nothing scrolls yet, so a caret at the end
+    /// of a long file is one nobody can see.
     pub fn init(gpa: std.mem.Allocator, text: []const u8) !TextView {
         return .{
             .gpa = gpa,
@@ -116,8 +109,7 @@ pub const TextView = struct {
 
         const caret_line = self.document.lineAt(self.cursor);
         // Filled in as that line comes round, so the caret is placed from the
-        // same shaped layout as the glyphs it sits between rather than from a
-        // second pass that could disagree with them.
+        // same shaped layout as the glyphs it sits between.
         var caret: ?Sprite = null;
 
         var baseline = top + atlas.ascent;
@@ -148,9 +140,8 @@ pub const TextView = struct {
 
         // Every offset falls on a line, so the loop met the caret's.
         std.debug.assert(caret != null);
-        // Last, so it draws over the glyph it sits beside rather than under it,
-        // and so that drawing it in its own colour is a second draw over the
-        // tail of the buffer rather than a colour carried per glyph.
+        // Last, so it draws over the glyph it sits beside, and so its own
+        // colour is a second draw over the tail rather than a per-glyph field.
         try self.sprites.append(self.gpa, caret.?);
 
         return .{
@@ -159,12 +150,11 @@ pub const TextView = struct {
         };
     }
 
-    /// Puts the caret where the window was clicked. `x` and `top` are the same
-    /// origin the layout was placed at, and `point` is in the same coordinates.
+    /// `x` and `top` are the origin the layout was placed at, and `point` is in
+    /// the same coordinates.
     ///
-    /// A click below the last line or right of a line's end is not a miss: it
-    /// lands on the nearest place the caret can go, which is what makes
-    /// dragging past the end of the text behave.
+    /// A click below the last line or right of a line's end lands on the nearest
+    /// place the caret can go, which is what makes dragging past the end behave.
     pub fn moveCaretTo(self: *TextView, atlas: *GlyphAtlas, x: f32, top: f32, point: [2]f32) !void {
         // Nothing has been laid out, so there is nothing on screen to click.
         if (self.lines.items.len == 0) return;
@@ -175,27 +165,21 @@ pub const TextView = struct {
         else
             @min(self.document.lineCount() - 1, @as(usize, @intFromFloat(row)));
 
-        // Shaped on demand rather than assumed: a click always lands on a line
-        // that was drawn, but the row arithmetic clamps, and what it clamps to
-        // is a line that need not have been.
+        // A click lands on a line that was drawn, but the row arithmetic
+        // clamps, and what it clamps to need not have been.
         const entry = &self.lines.items[index];
         if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
 
         self.cursor = self.document.lineStart(index) + caretOffset(entry.carets.items, point[0] - x);
     }
 
-    /// Drops every shaped line without disturbing the document or the caret.
+    /// Drops every shaped line, for after the atlas is rebuilt at a different
+    /// scale. Nothing cached survives that: the positions are in pixels of the
+    /// old size, and scaling them is not the same answer, because hinting and
+    /// rounding do not distribute over a scale.
     ///
-    /// For after the atlas has been rebuilt at a different display scale: a
-    /// cached line holds sprite positions and caret offsets in pixels of the
-    /// size it was shaped at, and points into an atlas whose slots have all
-    /// been given up. None of that survives, and none of it can be scaled into
-    /// place either -- shaping at the new size is not the old answer times a
-    /// constant, because hinting and rounding do not distribute over a scale.
-    ///
-    /// The entries stay, so the cache is still one per line and still in step
-    /// with the document. Only their contents are given up, and the arrays keep
-    /// their capacity for the reshaping that follows.
+    /// The entries stay, so the cache is still one per line and in step with the
+    /// document.
     pub fn invalidate(self: *TextView) void {
         for (self.lines.items) |*entry| entry.shaped = false;
     }
@@ -207,15 +191,14 @@ pub const TextView = struct {
     }
 };
 
-/// Brings the cache back into step with the document after an edit, told what
-/// that edit did to the line index: which line it landed in, how many lines
-/// after it stopped existing, and how many came into being.
+/// Brings the cache back into step after an edit, told which line it landed in,
+/// how many after it stopped existing, and how many came into being.
 ///
-/// Every other entry survives untouched. A line that moved down the screen is
-/// the same shaped line at a different baseline, which is the whole reason its
-/// glyphs are kept in coordinates of their own.
+/// Every other entry survives untouched: a line that moved down the screen is
+/// the same shaped line at a different baseline, which is why its glyphs are
+/// kept in coordinates of their own.
 ///
-/// Apart from `TextView` so that it can be tested without a document to splice.
+/// Apart from `TextView` so it can be tested without a document to splice.
 fn spliceLines(
     gpa: std.mem.Allocator,
     cache: *std.ArrayList(LineLayout),
@@ -330,15 +313,12 @@ test "deleting across lines collapses them onto the one the edit started in" {
     try std.testing.expect(!cache.items[0].shaped);
 }
 
-/// How far along a line the caret sits, given an offset into that line. The
-/// direction the caret is drawn from.
+/// How far along a line the caret sits, given an offset into it.
 ///
-/// Cluster boundaries are not character boundaries: `ffi` is one glyph covering
-/// three bytes, so the two characters inside it have no boundary of their own.
-/// An offset that lands there is placed by dividing the cluster's width across
-/// its bytes -- an approximation, and one that stops being reachable at all once
-/// the cursor moves by graphemes rather than by characters, which is the same
-/// change that makes backspacing over an accent take one press instead of two.
+/// Cluster boundaries are not character boundaries: `ffi` covers three bytes, so
+/// the characters inside it have no boundary of their own. An offset landing
+/// there divides the cluster's width across its bytes -- an approximation that
+/// stops being reachable once the cursor moves by graphemes.
 fn caretX(carets: []const Caret, offset: usize) f32 {
     // Shaping always leaves the end of the line, even for an empty one.
     std.debug.assert(carets.len > 0);
@@ -361,17 +341,16 @@ fn caretX(carets: []const Caret, offset: usize) f32 {
     return at.x + (next.x - at.x) * into / across;
 }
 
-/// Which offset in a line a click at `target` means. The direction a mouse is
-/// answered in.
+/// Which offset in a line a click at `target` means.
 ///
 /// Nearest boundary rather than the one before, so clicking the right half of a
-/// character puts the caret after it. Getting this wrong is not subtly wrong:
-/// every click would feel one character behind.
+/// character puts the caret after it. Getting it wrong is not subtle: every
+/// click would feel one character behind.
 fn caretOffset(carets: []const Caret, target: f32) usize {
     std.debug.assert(carets.len > 0);
 
-    // Sorted by x because the pen only moves right, which is true here by
-    // decision: shaping is left to right and there is no bidi pass.
+    // Sorted by x because the pen only moves right: shaping is left to right
+    // and there is no bidi pass.
     var low: usize = 0;
     var high: usize = carets.len;
     while (low < high) {
@@ -387,9 +366,8 @@ fn caretOffset(carets: []const Caret, target: f32) usize {
     return if (target - before.x < after.x - target) before.offset else after.offset;
 }
 
-/// What `shapeLine` leaves for "off ice": one boundary per character up to the
-/// ligature, which covers three bytes and has none inside it, then the space and
-/// the two letters after, then the end of the line.
+/// What `shapeLine` leaves for "off ice": one boundary per character, except
+/// across the ligature, which covers three bytes and has none inside it.
 const test_carets = [_]Caret{
     .{ .offset = 0, .x = 0 },
     .{ .offset = 1, .x = 10 },
@@ -409,8 +387,7 @@ test "an offset on a boundary is placed exactly on it" {
 }
 
 test "an offset inside a ligature is placed across its width" {
-    // Bytes 4, 5 and 6 are one glyph 30 wide. Nothing shaping said puts a
-    // caret between them, so its width is divided instead.
+    // Bytes 4, 5 and 6 are one glyph 30 wide, so its width is divided.
     try std.testing.expectEqual(@as(f32, 72), caretX(&test_carets, 5));
     try std.testing.expectEqual(@as(f32, 82), caretX(&test_carets, 6));
 }
@@ -421,8 +398,7 @@ test "an empty line puts the caret at its start" {
 }
 
 test "clicking takes the nearer boundary, not the one before" {
-    // The first character spans 0 to 10. Just past its middle puts the caret
-    // after it, and just short of it leaves the caret in front.
+    // The first character spans 0 to 10, so its middle is the deciding point.
     try std.testing.expectEqual(1, caretOffset(&test_carets, 5.1));
     try std.testing.expectEqual(0, caretOffset(&test_carets, 4.9));
 }
@@ -444,9 +420,8 @@ test "the two directions agree at every boundary" {
     }
 }
 
-/// What an edit did to the line index, so that anything else keyed by line can
-/// be spliced the same way rather than thrown away and rebuilt. Both counts are
-/// of lines after `line`.
+/// What an edit did to the line index, so anything else keyed by line can be
+/// spliced rather than rebuilt. Both counts are of lines after `line`.
 const Edit = struct {
     /// The line the edit landed in. Its bytes changed; no other line's did.
     line: usize,
@@ -456,20 +431,17 @@ const Edit = struct {
     added: usize,
 };
 
-/// How much room a reallocation leaves ahead of the text. Typing arrives one
-/// character at a time, and a buffer sized to fit exactly would reallocate on
-/// every keystroke.
+/// Room left ahead of the text by a reallocation. Typing arrives one character
+/// at a time, and an exact fit would reallocate on every keystroke.
 const min_gap = 4096;
 
 /// The document: one contiguous allocation with a hole in it, kept wherever the
 /// last edit happened.
 ///
-/// Inserting or deleting at the hole is a write and a bounds change -- nothing
-/// moves, nothing is allocated. Editing anywhere else moves the hole there
-/// first, which costs one memmove of the bytes in between. That is the bet the
-/// structure makes: editing is local, so the distance is usually a few
-/// characters, and the occasional jump across the whole file is one pass at
-/// memory bandwidth rather than a data structure to maintain.
+/// Editing at the hole is a write and a bounds change. Editing elsewhere moves
+/// the hole there first, one memmove of the bytes in between. The bet is that
+/// editing is local, so a jump across the whole file is a rare pass at memory
+/// bandwidth rather than a data structure to maintain.
 const Buffer = struct {
     gpa: std.mem.Allocator,
 
@@ -479,16 +451,14 @@ const Buffer = struct {
     gap_start: usize,
     gap_end: usize,
 
-    /// Where each line begins, counting the gap as absent. Lines cannot be
-    /// found by arithmetic once they are variable-length strings set in a
-    /// proportional font, so they are indexed, and the index is patched on each
-    /// edit rather than rebuilt. A line begins at 0 and after every newline, so
-    /// text ending in one ends with an empty line.
+    /// Where each line begins, counting the gap as absent. Variable-length lines
+    /// in a proportional font cannot be found by arithmetic, so they are indexed,
+    /// and the index is patched on each edit rather than rebuilt. Text ending in
+    /// a newline therefore ends with an empty line.
     starts: std.ArrayList(usize),
 
-    /// A line containing the gap is not contiguous, so returning it as a slice
-    /// means copying it out first. Only one line can contain the gap, which is
-    /// what lets a single scratch buffer serve all of them.
+    /// A line containing the gap is not contiguous and has to be copied out.
+    /// Only one line can contain it, so one scratch buffer serves all of them.
     scratch: std.ArrayList(u8) = .empty,
 
     fn init(gpa: std.mem.Allocator, text: []const u8) !Buffer {
@@ -570,17 +540,15 @@ const Buffer = struct {
         return self.slice(from, to);
     }
 
-    /// Where line `index` begins, as an offset into the document. What turns an
-    /// offset within a line -- which is what layout and hit-testing both speak
-    /// in -- back into one the document understands.
+    /// Turns an offset within a line, which is what layout and hit-testing both
+    /// speak in, back into one the document understands.
     fn lineStart(self: *const Buffer, index: usize) usize {
         std.debug.assert(index < self.lineCount());
         return self.starts.items[index];
     }
 
-    /// How long line `index` is, without reading it. A line whose layout is
-    /// cached is never fetched, so this is what checks the cache still lines up
-    /// with the document.
+    /// Without reading it. A cached line is never fetched, so this is what
+    /// checks the cache still lines up with the document.
     fn lineLength(self: *const Buffer, index: usize) usize {
         std.debug.assert(index < self.lineCount());
         const from = self.starts.items[index];
@@ -591,21 +559,18 @@ const Buffer = struct {
         return to - from;
     }
 
-    /// The offset one character before `offset`, or `offset` itself at the
-    /// start of the document.
+    /// The offset one character before `offset`, or `offset` at the start of the
+    /// document.
     ///
-    /// A whole UTF-8 sequence, because half a character is not something the
-    /// document can hold. Not yet a whole grapheme cluster: `e` followed by a
-    /// combining acute is two of these, and backspacing over it takes two
-    /// presses. Getting that right needs the Unicode tables `zg` carries, and
-    /// it is not worth the dependency until cursor movement exists to be wrong
-    /// about.
+    /// A whole UTF-8 sequence, but not yet a whole grapheme cluster: `e` plus a
+    /// combining acute is two of these, so backspacing over it takes two presses.
+    /// Fixing that needs Unicode tables, and is not worth the dependency until
+    /// cursor movement exists to be wrong about.
     fn stepBack(self: *const Buffer, offset: usize) usize {
         var at = offset;
         while (at > 0) {
             at -= 1;
-            // Continuation bytes are 10xxxxxx; anything else begins a
-            // character.
+            // Continuation bytes are 10xxxxxx.
             if (self.byteAt(at) & 0xc0 != 0x80) break;
         }
         return at;
@@ -617,9 +582,8 @@ const Buffer = struct {
         return if (offset < self.gap_start) self.bytes[offset] else self.bytes[offset + gap];
     }
 
-    /// The line `offset` falls on: the last one starting at or before it.
-    /// Binary search, because this is what an edit and a mouse click both need
-    /// and neither knows the answer already.
+    /// The last line starting at or before `offset`. Binary search, because an
+    /// edit and a mouse click both need it and neither knows it already.
     fn lineAt(self: *const Buffer, offset: usize) usize {
         var low: usize = 0;
         var high: usize = self.starts.items.len;
@@ -643,9 +607,8 @@ const Buffer = struct {
         return self.scratch.items;
     }
 
-    /// Puts the hole at `to` by moving the bytes in between across it. The one
-    /// operation here that is not constant time, and what an edit away from the
-    /// last one costs.
+    /// Moves the bytes in between across the hole. The one operation here that
+    /// is not constant time, and what an edit away from the last one costs.
     fn moveGap(self: *Buffer, to: usize) void {
         std.debug.assert(to <= self.byteLen());
         if (to == self.gap_start) return;
@@ -676,17 +639,16 @@ const Buffer = struct {
     }
 
     /// Line starts after an insertion shift along by its length, and every
-    /// newline inside it begins a line of its own. `added` is how many, counted
-    /// by the caller so the room for them could be reserved before anything
-    /// was written.
+    /// newline inside it begins a line. `added` is counted by the caller so the
+    /// room could be reserved before anything was written.
     fn reindexInsert(self: *Buffer, line: usize, at: usize, text: []const u8, added: usize) void {
         const starts = &self.starts;
         // Line starts at exactly `at` do not move: text inserted there becomes
         // the beginning of that line rather than the end of the one before.
         const after = line + 1;
 
-        // One shift for all the new lines rather than one shift each, which
-        // would make pasting a large block quadratic in its line count.
+        // One shift for all the new lines: one each would make pasting a block
+        // quadratic in its line count.
         starts.items.len += added;
         std.mem.copyBackwards(
             usize,
@@ -703,10 +665,8 @@ const Buffer = struct {
         }
     }
 
-    /// A line start in `(at, at + count]` is one whose newline was inside the
-    /// deleted range, so it stops being a line; what is left after the range
-    /// shifts back by its length.
-    /// Answers how many lines stopped existing.
+    /// A line start in `(at, at + count]` had its newline deleted, so it stops
+    /// being a line; what follows shifts back. Answers how many were lost.
     fn reindexDelete(self: *Buffer, line: usize, at: usize, count: usize) usize {
         const starts = &self.starts;
         const first = line + 1;
