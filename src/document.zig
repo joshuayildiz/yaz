@@ -559,6 +559,14 @@ pub const Document = struct {
         self.buffer.deinit();
     }
 
+    /// One entry per line, made on the first frame rather than at init: nothing
+    /// needs the cache until something is drawn, and an unshown document should
+    /// not pay for one.
+    pub fn ensureLines(self: *Document) !void {
+        if (self.lines.items.len != 0) return;
+        try self.lines.appendNTimes(self.gpa, .{}, self.buffer.lineCount());
+    }
+
     pub fn insert(self: *Document, at: usize, text: []const u8) !Edit {
         const edit = try self.buffer.insert(at, text);
         try self.splice(edit);

@@ -53,8 +53,9 @@ const caret_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.caret
 const bar_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.scrollbar_colour };
 
 pub const TextView = struct {
-    gpa: std.mem.Allocator,
-    document: Document,
+    /// Shared: several views can be onto one of these, and an edit made through
+    /// any of them is an edit all of them are looking at.
+    document: *Document,
 
     /// Where the next character lands, as a byte offset into the document, and
     /// where the caret is drawn. One number rather than a line and a column:
@@ -89,18 +90,13 @@ pub const TextView = struct {
     /// can answer for all of them.
     dirty: bool = false,
 
-    /// The caret starts at the top: nothing scrolls yet, so a caret at the end
-    /// of a long file is one nobody can see.
-    pub fn init(gpa: std.mem.Allocator, text: []const u8) !TextView {
-        return .{
-            .gpa = gpa,
-            .document = try Document.init(gpa, text),
-            .cursor = 0,
-        };
-    }
-
-    pub fn deinit(self: *TextView) void {
-        self.document.deinit();
+    /// A view onto `document`, which it does not own: the caller keeps it, and
+    /// may hand the same one to several views.
+    ///
+    /// The caret starts at the top of it. Nothing scrolls yet, so a caret at the
+    /// end of a long file is one nobody can see.
+    pub fn init(document: *Document) TextView {
+        return .{ .document = document, .cursor = 0 };
     }
 
     pub fn insert(self: *TextView, text: []const u8) !void {
@@ -277,7 +273,7 @@ pub const TextView = struct {
         std.debug.assert(self.scroll == @round(self.scroll));
 
         const count = self.document.buffer.lineCount();
-        if (self.document.lines.items.len == 0) try self.document.lines.appendNTimes(self.gpa, .{}, count);
+        try self.document.ensureLines();
         // Anything else means an edit did not reach the cache and the entries
         // no longer line up with the lines they describe.
         std.debug.assert(self.document.lines.items.len == count);
@@ -366,9 +362,6 @@ pub const TextView = struct {
         self.cursor = self.document.buffer.lineStart(index) + caretOffset(entry.carets.items, point[0] - at[0]);
     }
 
-    pub fn invalidate(self: *TextView) void {
-        self.document.invalidate();
-    }
 };
 
 

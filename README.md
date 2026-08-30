@@ -697,7 +697,7 @@ the order to read it in:
 | `document.zig` | glyph_atlas |
 | `renderer.zig` | config, sdl, glyph_atlas |
 | `text_view.zig` | document, event, glyph_atlas |
-| `main.zig` | event, renderer, text_view, sdl |
+| `main.zig` | document, event, renderer, text_view, sdl |
 
 Where to start depends on what you are changing: what a keystroke does is
 `TextView.handle`; where text lands on screen is `TextView.layout`; what a glyph

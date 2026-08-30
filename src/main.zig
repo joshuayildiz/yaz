@@ -3,6 +3,7 @@ const std = @import("std");
 const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const TextView = @import("./text_view.zig").TextView;
+const Document = @import("./document.zig").Document;
 const Event = @import("./event.zig").Event;
 const Painter = @import("./painter.zig").Painter;
 const Rect = @import("./painter.zig").Rect;
@@ -66,8 +67,15 @@ pub fn main(init: std.process.Init) !void {
     };
     defer app.deinit();
 
+    try app.documents.ensureTotalCapacity(init.gpa, opened.items.len);
     try app.views.ensureTotalCapacity(init.gpa, opened.items.len);
-    for (opened.items) |file| app.views.appendAssumeCapacity(try TextView.init(init.gpa, file.text));
+    for (opened.items) |file| {
+        const document = try init.gpa.create(Document);
+        errdefer init.gpa.destroy(document);
+        document.* = try Document.init(init.gpa, file.text);
+        app.documents.appendAssumeCapacity(document);
+        app.views.appendAssumeCapacity(.init(document));
+    }
 
     if (!c.SDL_AddEventWatch(redrawWhileResizing, &app)) {
         std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
@@ -115,6 +123,10 @@ const App = struct {
     gpa: std.mem.Allocator,
     renderer: Renderer,
 
+    /// One per file, owned here and pointed at by the views. Heap-allocated so
+    /// that a view's pointer survives this list growing.
+    documents: std.ArrayList(*Document) = .empty,
+
     /// Left to right across the window, and never empty: a document nobody
     /// named is still a document.
     views: std.ArrayList(TextView) = .empty,
@@ -132,8 +144,12 @@ const App = struct {
     dirty: bool = true,
 
     fn deinit(self: *App) void {
-        for (self.views.items) |*view| view.deinit();
         self.views.deinit(self.gpa);
+        for (self.documents.items) |document| {
+            document.deinit();
+            self.gpa.destroy(document);
+        }
+        self.documents.deinit(self.gpa);
         self.painter.deinit();
         self.renderer.deinit();
     }
@@ -236,8 +252,10 @@ const App = struct {
         // scale changed, and dragging to another display happens inside the
         // modal loop, where only the watch below runs.
         const scale = displayScale(self.renderer.window);
+        // Per document rather than per view: two views of one file share a
+        // cache, and dropping it twice is dropping it once.
         if (try self.renderer.atlas.setScale(scale)) {
-            for (self.views.items) |*view| view.invalidate();
+            for (self.documents.items) |document| document.invalidate();
         }
 
         // The window rather than the swapchain, which is not acquired until
