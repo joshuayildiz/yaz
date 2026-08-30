@@ -179,6 +179,18 @@ would take it below anything there is to catch hold of.
 It is drawn by the pipeline that samples nothing; see [Drawing](#drawing) for why
 it cannot come from the atlas.
 
+**Dragging it scrolls.** The whole left gutter takes hold, not just the thumb's
+eight points — that is a small thing to ask anyone to hit — and a press on the
+track rather than the thumb takes hold of its middle, so the thumb jumps to the
+pointer and carries on from there. The scrollbar is asked before the text, so a
+press on it moves the view rather than the caret. The mouse is captured for the
+duration, so a drag that wanders out of the window keeps arriving.
+
+This is the one thing that looks at mouse motion. The loop ignores it otherwise,
+which is what [OPTIMIZATIONS.md](OPTIMIZATIONS.md) §2 measures; motion is read
+only while the pointer is holding the thumb, so an idle sweep across the window
+still costs nothing.
+
 ### Redrawing
 
 The render loop blocks in `SDL_WaitEvent` and draws only when something has

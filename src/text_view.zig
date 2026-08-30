@@ -131,6 +131,32 @@ pub const TextView = struct {
         return thumb(self.scroll, top + count * atlas.line_height, height, @round(bar_minimum * atlas.scale));
     }
 
+    /// Where on the thumb a press at `point` takes hold, or null when the press
+    /// was not on the scrollbar at all.
+    ///
+    /// The whole gutter answers, not just the thumb's own width: a bar eight
+    /// points wide is a small thing to ask anyone to hit. A press on the track
+    /// rather than the thumb takes hold of its middle, so the thumb jumps to the
+    /// pointer and carries on from there.
+    pub fn thumbGrab(self: *const TextView, atlas: *const GlyphAtlas, top: f32, height: f32, point: [2]f32) ?f32 {
+        if (point[0] < 0 or point[0] >= @round(bar_gutter * atlas.scale)) return null;
+
+        const t = self.scrollbar(atlas, top, height);
+        const offset = point[1] - t.y;
+        if (offset < 0 or offset >= t.height) return t.height / 2;
+        return offset;
+    }
+
+    /// Drags the thumb so that the point `grab` down it sits at `y`.
+    pub fn dragTo(self: *TextView, atlas: *const GlyphAtlas, top: f32, height: f32, y: f32, grab: f32) void {
+        if (height <= 0) return;
+        const count: f32 = @floatFromInt(self.document.lineCount());
+        // The inverse of the thumb, whose top is `scroll * height / content`.
+        const content = top + count * atlas.line_height;
+        self.pending = 0;
+        self.scrollTo(@round((y - grab) * content / height), atlas, top);
+    }
+
     /// Brings the caret's line into view, and clears the flag that asked for it.
     pub fn scrollToCaret(self: *TextView, atlas: *const GlyphAtlas, top: f32, height: f32) void {
         self.follow_caret = false;

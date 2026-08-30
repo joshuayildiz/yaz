@@ -57,6 +57,10 @@ Windows, four seconds of continuous mouse movement over the window:
 If macOS delivers something that gets marked dirty — or delivers exposure events
 continuously — the saving disappears.
 
+Motion is read in one case: while the pointer is holding the scrollbar's thumb,
+where a redraw per event is the point rather than the waste. Nothing else looks
+at it.
+
 **Check:** the counter patch in [Counting redraws](#counting-redraws), then move
 the mouse over the window for a few seconds. Expect a redraw count in the low
 single digits, not one per motion event.

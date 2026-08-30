@@ -140,14 +140,46 @@ pub fn main(init: std.process.Init) !void {
                         // scale: how many pixels a point is, not how large to
                         // draw.
                         const density = c.SDL_GetWindowPixelDensity(window);
+                        const at: [2]f32 = .{ event.button.x * density, event.button.y * density };
                         const origin = textOrigin(app.renderer.atlas.scale);
-                        try app.view.moveCaretTo(
+                        var pixels: c_int = 0;
+                        _ = c.SDL_GetWindowSizeInPixels(window, null, &pixels);
+                        const height: f32 = @floatFromInt(pixels);
+
+                        // The scrollbar is asked first, so a press on it moves
+                        // the view rather than the caret.
+                        if (app.view.thumbGrab(&app.renderer.atlas, origin[1], height, at)) |grab| {
+                            app.drag = grab;
+                            // So a drag that wanders off the window keeps
+                            // arriving rather than stopping where it left.
+                            _ = c.SDL_CaptureMouse(true);
+                            app.view.dragTo(&app.renderer.atlas, origin[1], height, at[1], grab);
+                        } else {
+                            try app.view.moveCaretTo(&app.renderer.atlas, origin[0], origin[1], at);
+                        }
+                        dirty = true;
+                    }
+                },
+                c.SDL_EVENT_MOUSE_MOTION => {
+                    if (app.drag) |grab| {
+                        const density = c.SDL_GetWindowPixelDensity(window);
+                        const origin = textOrigin(app.renderer.atlas.scale);
+                        var pixels: c_int = 0;
+                        _ = c.SDL_GetWindowSizeInPixels(window, null, &pixels);
+                        app.view.dragTo(
                             &app.renderer.atlas,
-                            origin[0],
                             origin[1],
-                            .{ event.button.x * density, event.button.y * density },
+                            @floatFromInt(pixels),
+                            event.motion.y * density,
+                            grab,
                         );
                         dirty = true;
+                    }
+                },
+                c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                    if (app.drag != null) {
+                        app.drag = null;
+                        _ = c.SDL_CaptureMouse(false);
                     }
                 },
                 // Exposure belongs to the watcher, which has already drawn by
@@ -176,6 +208,11 @@ fn wheelPixels(delta: f32, density: f32) f32 {
 const App = struct {
     renderer: Renderer,
     view: TextView,
+
+    /// Where on the thumb the pointer took hold, while it is holding it. The
+    /// only reason mouse motion is looked at: OPTIMIZATIONS.md 2 has the loop
+    /// ignoring it otherwise, and a redraw per motion event is what that buys.
+    drag: ?f32 = null,
 
     fn redraw(self: *App) !void {
         // Read rather than listened for: three window events can imply the
