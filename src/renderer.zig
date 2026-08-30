@@ -4,6 +4,8 @@ const builtin = @import("builtin");
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 
+const config = @import("./config.zig");
+
 const glyph_atlas = @import("./glyph_atlas.zig");
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const Sprite = glyph_atlas.Sprite;
@@ -30,6 +32,15 @@ const fragment_shader_code = @embedFile("quad.frag");
 const Frame = extern struct {
     viewport: [2]f32,
     atlas_size: [2]f32,
+};
+
+/// Matches the uniform block in quad.frag.glsl. One colour per draw, not per
+/// pushed rather than compiled in so that the theme stays in config.zig with the
+/// background it has to be readable against, rather than half of it living in a
+/// shader. A `vec4` is 16 bytes and 16-aligned in std140, which is what a lone
+/// one lays out as here too.
+const Ink = extern struct {
+    colour: [4]f32,
 };
 
 /// Sprites the buffer holds before it has to grow. A screenful at this font
@@ -133,10 +144,17 @@ pub const Renderer = struct {
         c.SDL_DestroyGPUDevice(self.gpu);
     }
 
-    /// Draws the sprites it is handed, and knows nothing else about them. What
+    /// Draws the quads it is handed, and knows nothing else about them. What
     /// they spell, which line each came from and what had to be shaped to
     /// produce them all belong to whoever laid them out.
-    pub fn present(self: *Renderer, sprites: []const Sprite) !void {
+    ///
+    /// `caret` says which of them is the caret. It is drawn by a second call so
+    /// that it can be a different colour from the text without every glyph
+    /// carrying a colour it shares with all the others: the alternative is four
+    /// more floats on a struct that is written and uploaded once per glyph per
+    /// frame, to say the same thing every time.
+    pub fn present(self: *Renderer, sprites: []const Sprite, caret: u32) !void {
+        std.debug.assert(sprites.len == 0 or caret < sprites.len);
         // Glyphs the atlas was missing arrive as a copy pass, and a copy pass
         // cannot be opened inside a render pass. Doing it here also keeps the
         // work out of the window between waiting for a frame and handing one
@@ -176,7 +194,12 @@ pub const Renderer = struct {
 
         const target = std.mem.zeroInit(c.SDL_GPUColorTargetInfo, .{
             .texture = swapchain,
-            .clear_color = c.SDL_FColor{ .r = 0.07, .g = 0.07, .b = 0.08, .a = 1.0 },
+            .clear_color = c.SDL_FColor{
+                .r = config.background[0],
+                .g = config.background[1],
+                .b = config.background[2],
+                .a = config.background[3],
+            },
             .load_op = c.SDL_GPU_LOADOP_CLEAR,
             .store_op = c.SDL_GPU_STOREOP_STORE,
         });
@@ -194,16 +217,29 @@ pub const Renderer = struct {
         const instances = [_]?*c.SDL_GPUBuffer{self.instances};
         c.SDL_BindGPUVertexStorageBuffers(pass, 0, &instances, 1);
 
-        // The whole frame, in one call: where each glyph goes was decided
-        // during layout and is in the buffer the shader reads, so nothing is
-        // left to say per glyph.
+        // Two calls for the frame, and the second draws one quad: where every
+        // glyph goes was decided during layout and is in the buffer the shader
+        // reads, so nothing is left to say per glyph. The split is the colour
+        // and nothing else -- same pipeline, same bindings, same buffer.
         if (count > 0) {
             const frame: Frame = .{
                 .viewport = .{ @floatFromInt(width), @floatFromInt(height) },
                 .atlas_size = glyph_atlas.size,
             };
             c.SDL_PushGPUVertexUniformData(cmd, 0, &frame, @sizeOf(Frame));
-            c.SDL_DrawGPUPrimitives(pass, 4, count, 0, 0);
+
+            // The caret is last, so the glyphs are everything before it. A
+            // frame with nothing but a caret in it draws no glyphs at all,
+            // which is what an empty document is.
+            if (caret > 0) {
+                const ink: Ink = .{ .colour = config.text_colour };
+                c.SDL_PushGPUFragmentUniformData(cmd, 0, &ink, @sizeOf(Ink));
+                c.SDL_DrawGPUPrimitives(pass, 4, caret, 0, 0);
+            }
+
+            const caret_ink: Ink = .{ .colour = config.caret_colour };
+            c.SDL_PushGPUFragmentUniformData(cmd, 0, &caret_ink, @sizeOf(Ink));
+            c.SDL_DrawGPUPrimitives(pass, 4, 1, 0, caret);
         }
 
         c.SDL_EndGPURenderPass(pass);
@@ -337,6 +373,7 @@ fn createPipeline(gpu: *c.SDL_GPUDevice, window: *c.SDL_Window) !*c.SDL_GPUGraph
 
     const fragment = try createShader(gpu, c.SDL_GPU_SHADERSTAGE_FRAGMENT, .{
         .samplers = 1,
+        .uniform_buffers = 1,
     }, fragment_shader_code);
     defer c.SDL_ReleaseGPUShader(gpu, fragment);
 
@@ -378,6 +415,11 @@ test "Sprite is laid out as the vertex shader reads it" {
     try std.testing.expectEqual(0, @offsetOf(Sprite, "dest"));
     try std.testing.expectEqual(8, @offsetOf(Sprite, "source"));
     try std.testing.expectEqual(16, @offsetOf(Sprite, "size"));
+}
+
+test "Ink is laid out as the fragment shader reads it" {
+    try std.testing.expectEqual(16, @sizeOf(Ink));
+    try std.testing.expectEqual(0, @offsetOf(Ink, "colour"));
 }
 
 test {

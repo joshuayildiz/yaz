@@ -167,9 +167,11 @@ Stated so they are not mistaken for finished work:
   every redraw. It does not show yet because there are three lines of text.
 - **The whole window redraws.** There is no damage tracking, so a one-character
   edit will repaint everything.
-- **Blending is done on sRGB-encoded values**, not in linear light, which makes
-  light-on-dark text render slightly heavier than it should. Universal, and
-  cheap to fix later.
+- **Blending is done on sRGB-encoded values**, not in linear light. With the
+  dark-on-light theme this makes text render slightly lighter than it should;
+  it was slightly heavier when the theme was the other way up, and the error
+  changes sign with the theme rather than going away. Universal, and cheap to
+  fix later.
 
 ## Measuring on macOS
 

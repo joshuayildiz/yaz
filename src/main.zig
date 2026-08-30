@@ -148,8 +148,8 @@ const App = struct {
         if (try self.renderer.atlas.setScale(scale)) self.view.invalidate();
 
         const origin = textOrigin(scale);
-        const sprites = try self.view.layout(&self.renderer.atlas, origin[0], origin[1]);
-        try self.renderer.present(sprites);
+        const frame = try self.view.layout(&self.renderer.atlas, origin[0], origin[1]);
+        try self.renderer.present(frame.quads, frame.caret);
     }
 };
 

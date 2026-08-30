@@ -354,18 +354,35 @@ from the atlas — and the same day will fix both.
 
 ### Drawing
 
-A frame is one draw call, whatever is on screen. The vertex shader builds each
-quad's four corners from `gl_VertexIndex` and reads everything that differs
-between glyphs — where it lands, where to sample it, how big it is — out of a
-storage buffer indexed by `gl_InstanceIndex`. There is no vertex buffer, and
-nothing is sent per glyph:
+A frame is two draw calls, whatever is on screen, and the second one draws a
+single quad. The vertex shader builds each quad's four corners from
+`gl_VertexIndex` and reads everything that differs between glyphs — where it
+lands, where to sample it, how big it is — out of a storage buffer indexed by
+`gl_InstanceIndex`. There is no vertex buffer, and nothing is sent per glyph:
 
 ```
-SDL_DrawGPUPrimitives(pass, 4, glyph_count, 0, 0);
+SDL_DrawGPUPrimitives(pass, 4, glyph_count, 0, 0);          // the text
+SDL_DrawGPUPrimitives(pass, 4, 1, 0, glyph_count);          // the caret
 ```
 
-What is left in the uniform block is what the whole frame shares: the viewport
-and the atlas size.
+The caret is a second call only so that it can be a different colour. It is the
+last quad in the same buffer, drawn by the same pipeline with the same bindings;
+what changes between the two calls is the fragment uniform and nothing else. The
+alternative is a colour on every sprite — four more floats on a struct written
+and uploaded once per glyph per frame, to repeat the same value every time.
+
+What is left in the vertex uniform block is what the whole frame shares: the
+viewport and the atlas size. The fragment stage has one of its own holding the
+colour to draw in, because the atlas stores coverage rather than colour — a
+glyph's bitmap says how much of each pixel is ink, and nothing about what ink is.
+That colour, the caret's, and the background they are cleared against are the
+theme, and all three live in `config.zig` rather than one of them living in a
+shader. It is black on white, caret included;
+`config.zig` names the softened pair it replaced, one edit away.
+
+The caret goes through this shader too, sampling a patch of the atlas that is
+opaque everywhere, so it needs no second pipeline and no shader that knows what a
+caret is.
 
 The sprite array is copied to the GPU exactly as `glyph_atlas.zig` built it, so
 the Zig struct and the one declared in the shader have to agree byte for byte.

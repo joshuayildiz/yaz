@@ -22,6 +22,19 @@ const Sprite = glyph_atlas.Sprite;
 /// Retina display is the hairline this is written to avoid.
 const caret_width = 2;
 
+/// What one frame draws: every quad on screen, and where the caret is among
+/// them. One array rather than two, because they go to the GPU as a single
+/// buffer and are drawn by index into it; the split is where the colour changes,
+/// not where the memory does.
+pub const Frame = struct {
+    quads: []const Sprite,
+
+    /// Where the caret sits in `quads`. Last, always -- it is appended after
+    /// every glyph so that it draws over the one it sits beside rather than
+    /// under it, and the renderer draws it separately to give it its own colour.
+    caret: u32,
+};
+
 pub const TextView = struct {
     gpa: std.mem.Allocator,
     document: Buffer,
@@ -85,7 +98,7 @@ pub const TextView = struct {
     /// read the document; a keystroke shapes the one line it landed in. What
     /// remains per frame is placing the cached glyphs, which has to happen
     /// anyway to fill the buffer the GPU reads.
-    pub fn layout(self: *TextView, atlas: *GlyphAtlas, x: f32, top: f32) ![]const Sprite {
+    pub fn layout(self: *TextView, atlas: *GlyphAtlas, x: f32, top: f32) !Frame {
         // Cached glyphs are placed by adding whole pixels. A fractional origin
         // would change which subpixel variant each one points at, and the cache
         // would be answering the wrong question.
@@ -132,10 +145,15 @@ pub const TextView = struct {
 
         // Every offset falls on a line, so the loop met the caret's.
         std.debug.assert(caret != null);
-        // Last, so it draws over the glyph it sits beside rather than under it.
+        // Last, so it draws over the glyph it sits beside rather than under it,
+        // and so that drawing it in its own colour is a second draw over the
+        // tail of the buffer rather than a colour carried per glyph.
         try self.sprites.append(self.gpa, caret.?);
 
-        return self.sprites.items;
+        return .{
+            .quads = self.sprites.items,
+            .caret = @intCast(self.sprites.items.len - 1),
+        };
     }
 
     /// Puts the caret where the window was clicked. `x` and `top` are the same
