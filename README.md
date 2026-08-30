@@ -112,8 +112,17 @@ created, so the layer is reached through the two window properties that say wher
 it is (`SDL.window.cocoa.window` and `SDL.window.cocoa.metal_view_tag`) and four
 Objective-C messages. `contentsGravity` is set to `kCAGravityTopLeft` instead,
 which leaves the old frame at its own size in the corner text is laid out from.
-That is in `sdl.zig`, beside the `@cImport` — the same kind of boundary, reached
-around in the same one place.
+
+Not stretching the old frame leaves a strip with nothing in it, and that strip
+has to be some colour until a redraw fills it. A `CALayer`'s background is unset
+by default and SDL marks the layer opaque, so it composites as black — against a
+light theme, a dark edge that trails the drag and snaps back. The layer is given
+`config.background` to show there instead, so the worst case is a moment of empty
+margin in the colour the margin is anyway. Measured by growing the window and
+suspending redraws: the strip is 100% black without it and 100% white with it.
+
+Both of those live in `sdl.zig`, beside the `@cImport` — the same kind of
+boundary, reached around in the same one place.
 
 The reasoning, the measurements, and what to re-check when porting are in
 [OPTIMIZATIONS.md](OPTIMIZATIONS.md). Known problems not yet acted on are in

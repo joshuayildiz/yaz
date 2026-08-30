@@ -89,9 +89,17 @@ instead, which SDL runs as events are pushed — from inside that modal loop.
 documented cross-platform answer, but that is reasoning rather than evidence.
 
 **Check:** drag a corner slowly outward and watch the area being revealed. Text
-and background should fill it as it grows. If it goes black or white until the
-mouse is released, the watch is not firing on macOS and this needs a different
-mechanism.
+should fill it as it grows. A strip of flat background trailing the edge is the
+layer's own colour showing through before a frame lands, which is expected and is
+6's business; a strip that stays empty until the mouse is released is not, and
+means the watch is not firing on macOS and this needs a different mechanism.
+
+On macOS the strip is flat background rather than stretched text because the
+layer's `contentsGravity` is `kCAGravityTopLeft`, and it is the theme's
+background rather than black because the layer is given a background colour to
+match. Both are set in `sdl.zig`. Before either, a resize stretched the previous
+frame over the new bounds instead, which on proportional text read as the glyphs
+changing width.
 
 **Also check:** the watch may run on a thread other than the one that owns the
 GPU work. See [FIXME.md](FIXME.md).

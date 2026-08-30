@@ -82,8 +82,11 @@ pub const Renderer = struct {
         errdefer c.SDL_ReleaseWindowFromGPUDevice(gpu, window);
 
         // The layer exists now and not before, and its default is to stretch
-        // whatever it last held over the window's new bounds.
+        // whatever it last held over the window's new bounds. Not stretching it
+        // leaves a gap while a window grows, so the layer is given the theme's
+        // background to show there rather than the black it comes with.
         sdl.anchorContentsTopLeft(window);
+        sdl.setLayerBackground(window, config.background);
 
         const device_name = c.SDL_GetStringProperty(
             c.SDL_GetGPUDeviceProperties(gpu),

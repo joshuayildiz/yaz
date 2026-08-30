@@ -36,19 +36,47 @@ pub fn lastError() []const u8 {
 /// does not exist until then.
 pub fn anchorContentsTopLeft(window: *c.SDL_Window) void {
     if (builtin.target.os.tag != .macos) return;
-
-    // SDL owns the view and does not hand it over, but it does say where to
-    // find it: the tag it gave the view, and the window it was added to.
-    const props = c.SDL_GetWindowProperties(window);
-    const ns_window = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null) orelse return;
-    const tag = c.SDL_GetNumberProperty(props, c.SDL_PROP_WINDOW_COCOA_METAL_VIEW_TAG_NUMBER, 0);
-    if (tag == 0) return;
-
-    const content_view = objc.call(.id, ns_window, "contentView", .{}) orelse return;
-    const metal_view = objc.call(.id, content_view, "viewWithTag:", .{@as(isize, @intCast(tag))}) orelse return;
-    const layer = objc.call(.id, metal_view, "layer", .{}) orelse return;
-
+    const layer = metalLayer(window) orelse return;
     _ = objc.call(.void, layer, "setContentsGravity:", .{kCAGravityTopLeft});
+}
+
+/// Paints the layer's own background, which is what shows in the strip a window
+/// has just grown into before a frame arrives to fill it. macOS only.
+///
+/// Only worth anything alongside `anchorContentsTopLeft`, and made necessary by
+/// it: stretching the old frame left no gap to fill, and not stretching it does.
+/// The layer's background is unset by default and SDL marks the layer opaque, so
+/// that gap composites as black — which against a light theme is the resize
+/// flashing dark at the edge and snapping back.
+///
+/// Must be called after the window has been claimed for a GPU device: the layer
+/// does not exist until then.
+pub fn setLayerBackground(window: *c.SDL_Window, colour: [4]f32) void {
+    if (builtin.target.os.tag != .macos) return;
+    const layer = metalLayer(window) orelse return;
+
+    // sRGB rather than a device space, so the number here is the number the
+    // shader's clear colour means; a colour created in a device space would be
+    // the same triple interpreted differently and would not quite match.
+    const cg_colour = CGColorCreateSRGB(colour[0], colour[1], colour[2], colour[3]) orelse return;
+    // The layer retains it; this reference has done its job either way.
+    defer CGColorRelease(cg_colour);
+
+    _ = objc.call(.void, layer, "setBackgroundColor:", .{cg_colour});
+}
+
+/// The `CAMetalLayer` SDL_GPU draws into. SDL owns the view and does not hand it
+/// over, but it does say where to find it: the tag it gave the view, and the
+/// window it was added to.
+fn metalLayer(window: *c.SDL_Window) ?*anyopaque {
+    const props = c.SDL_GetWindowProperties(window);
+    const ns_window = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null) orelse return null;
+    const tag = c.SDL_GetNumberProperty(props, c.SDL_PROP_WINDOW_COCOA_METAL_VIEW_TAG_NUMBER, 0);
+    if (tag == 0) return null;
+
+    const content_view = objc.call(.id, ns_window, "contentView", .{}) orelse return null;
+    const metal_view = objc.call(.id, content_view, "viewWithTag:", .{@as(isize, @intCast(tag))}) orelse return null;
+    return objc.call(.id, metal_view, "layer", .{});
 }
 
 /// QuartzCore's name for the top-left gravity. Linked rather than spelled out as
@@ -58,6 +86,11 @@ pub fn anchorContentsTopLeft(window: *c.SDL_Window) void {
 /// Reading `contentsGravity` back afterwards returns an equal string rather than
 /// this same pointer, so it is the value that matters, not the identity.
 extern var kCAGravityTopLeft: ?*anyopaque;
+
+/// A colour in sRGB, which is what `CALayer.backgroundColor` takes: a
+/// `CGColorRef`, not an object, so it is passed as the pointer it is.
+extern fn CGColorCreateSRGB(red: f64, green: f64, blue: f64, alpha: f64) ?*anyopaque;
+extern fn CGColorRelease(color: ?*anyopaque) void;
 
 /// Just enough of the Objective-C runtime to send four messages. Declared by
 /// hand rather than `@cImport`ed so that a build for any other target does not
