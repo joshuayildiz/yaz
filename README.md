@@ -641,20 +641,37 @@ change nothing, which is the opposite of what the event loop is for.
 
 ```
 src/
-  main.zig         # SDL setup, the window, the event loop
-  text_view.zig    # the document, the caret, the per-line layout cache
-  renderer.zig     # GPU device, pipeline, drawing
+  main.zig         # SDL setup, the window, the event loop, opening a file
+  text_view.zig    # scrolling, the caret, the per-line layout cache
+  document.zig     # the gap buffer and the line index
+  renderer.zig     # GPU device, the two pipelines, drawing
   glyph_atlas.zig  # shaping, rasterizing, atlas uploads
   sdl.zig          # the one @cImport of SDL
-  config.zig       # font file and size
+  config.zig       # font file, size, and the theme
 assets/
   DejaVuSans.ttf
   shaders/
 ```
 
-`config.zig` holds the settings changed while working on the editor: the font
-file, its size, and the theme. `build.zig` imports it too, so the font path is
-stated once and the build embeds the file it names.
+**Nothing imports upwards**, which is the shortest description of the design and
+the order to read it in:
+
+| | imports |
+| --- | --- |
+| `config.zig`, `sdl.zig`, `document.zig` | nothing of ours |
+| `glyph_atlas.zig` | config, sdl |
+| `renderer.zig` | config, sdl, glyph_atlas |
+| `text_view.zig` | document, glyph_atlas |
+| `main.zig` | renderer, text_view, sdl |
+
+Where to start depends on what you are changing: what a keystroke does is
+`main.zig`'s event loop; where text lands on screen is `TextView.layout`; what a
+glyph looks like is `glyph_atlas.zig`; how big or what colour anything is is
+`config.zig`.
+
+`document.zig` is the text and where its lines begin, and nothing above that. It
+does not know that text gets shaped, drawn or scrolled, which is why it can be
+read and tested on its own.
 
 `glyph_atlas.zig` keeps shaping and rasterizing together because neither can be
 asked without the other — shaping decides which glyphs exist, rasterizing decides
@@ -666,13 +683,16 @@ belongs to a view rather than to a font: one atlas serves every document, and
 each view caches its own lines. One struct is also what makes them impossible to
 get out of step.
 
-`renderer.zig` is handed a finished array of glyph positions and knows nothing
-else: not what they spell, not which line each came from, not that shaping
-happened.
+`renderer.zig` is handed a finished array of quads and knows nothing else: not
+what they spell, not which line each came from, not that shaping happened.
 
 `sdl.zig` is the one `@cImport` of SDL, and the one place SDL has to be reached
 around. Keeping it separate also keeps the imports acyclic: everything points at
 it and it points at nothing.
+
+`config.zig` holds the settings changed while working on the editor. `build.zig`
+imports it too, so the font path is stated once and the build embeds the file it
+names.
 
 ## Shaders
 
