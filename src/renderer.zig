@@ -82,7 +82,7 @@ pub const Renderer = struct {
         const pipeline = try createPipeline(gpu, window);
         errdefer c.SDL_ReleaseGPUGraphicsPipeline(gpu, pipeline);
 
-        var atlas = try GlyphAtlas.init(gpa, gpu);
+        var atlas = try GlyphAtlas.init(gpa, gpu, displayScale(window));
         errdefer atlas.deinit();
 
         // Nearest, not linear: quads are placed on whole pixels and sized to
@@ -258,6 +258,22 @@ pub const Renderer = struct {
         c.SDL_EndGPUCopyPass(pass);
     }
 };
+
+/// How much larger than nominal to draw everything in this window: the display's
+/// pixel density and the size the user asked content to be, in one number. SDL
+/// updates it when the window moves to another display or the setting changes.
+///
+/// Not the pixel density on its own. Windows at 150% on an ordinary panel has a
+/// density of one and a scale of one and a half; sizing text by density there
+/// renders it at the nominal size and ignores what the user asked for. Density
+/// is still the right number for turning a point into a pixel, which is a
+/// different question and belongs to whoever is holding a point.
+pub fn displayScale(window: *c.SDL_Window) f32 {
+    const scale = c.SDL_GetWindowDisplayScale(window);
+    // Zero is SDL's failure, and a font sized from it does not rasterise. There
+    // is nothing better to fall back to than the scale of a plain display.
+    return if (scale > 0) scale else 1;
+}
 
 fn createInstanceBuffer(gpu: *c.SDL_GPUDevice, capacity: u32) !*c.SDL_GPUBuffer {
     return c.SDL_CreateGPUBuffer(gpu, &std.mem.zeroInit(c.SDL_GPUBufferCreateInfo, .{

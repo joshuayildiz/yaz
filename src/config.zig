@@ -6,6 +6,7 @@
 /// the repository root.
 pub const font_path = "assets/DejaVuSans.ttf";
 
-/// Rasterisation size, in pixels. The atlas is built once at this size, so
-/// changing it is a rebuild rather than a runtime setting.
-pub const font_pixel_size = 32;
+/// Nominal font size. Not pixels: what reaches FreeType is this times the
+/// window's display scale, so the text is the same size to look at on a dense
+/// display as on a coarse one and only the number of pixels spent on it changes.
+pub const font_size = 32;

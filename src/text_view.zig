@@ -15,9 +15,11 @@ const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 const Sprite = glyph_atlas.Sprite;
 
-/// How wide the caret is drawn. Two pixels rather than one: a hairline is the
-/// first thing to disappear on a dense display, and the caret is the one mark
-/// on screen that has to be found without looking for it.
+/// How wide the caret is drawn, at a display scale of one. Two pixels rather
+/// than one: a hairline is the first thing to disappear on a dense display, and
+/// the caret is the one mark on screen that has to be found without looking for
+/// it. Scaled with the text for that same reason -- two device pixels on a
+/// Retina display is the hairline this is written to avoid.
 const caret_width = 2;
 
 pub const TextView = struct {
@@ -122,7 +124,7 @@ pub const TextView = struct {
                 caret = atlas.solidQuad(.{
                     x + @round(caretX(entry.carets.items, offset)),
                     origin[1] - @round(atlas.ascent),
-                }, .{ caret_width, @round(atlas.line_height) });
+                }, .{ @round(caret_width * atlas.scale), @round(atlas.line_height) });
             }
 
             baseline += atlas.line_height;
@@ -159,6 +161,22 @@ pub const TextView = struct {
         if (!entry.shaped) try atlas.shapeLine(try self.document.lineSlice(index), entry);
 
         self.cursor = self.document.lineStart(index) + caretOffset(entry.carets.items, point[0] - x);
+    }
+
+    /// Drops every shaped line without disturbing the document or the caret.
+    ///
+    /// For after the atlas has been rebuilt at a different display scale: a
+    /// cached line holds sprite positions and caret offsets in pixels of the
+    /// size it was shaped at, and points into an atlas whose slots have all
+    /// been given up. None of that survives, and none of it can be scaled into
+    /// place either -- shaping at the new size is not the old answer times a
+    /// constant, because hinting and rounding do not distribute over a scale.
+    ///
+    /// The entries stay, so the cache is still one per line and still in step
+    /// with the document. Only their contents are given up, and the arrays keep
+    /// their capacity for the reshaping that follows.
+    pub fn invalidate(self: *TextView) void {
+        for (self.lines.items) |*entry| entry.shaped = false;
     }
 
     fn splice(self: *TextView, edit: Edit) !void {

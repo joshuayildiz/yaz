@@ -125,9 +125,12 @@ comes out upside down.
 neighbour magnification, and compare it against the same text on Windows. Stems
 should be hard-edged, one or two columns wide, not a three-column gradient.
 
-**Also check:** the window is created without `SDL_WINDOW_HIGH_PIXEL_DENSITY`,
-so a Retina display is expected to scale a 1x backing store and undo all of the
-above. See [FIXME.md](FIXME.md).
+**Measured:** on an M2 Retina display, stems came back as a three-column
+gradient — the window was created without `SDL_WINDOW_HIGH_PIXEL_DENSITY`, so a
+1024x768 back buffer was being scaled onto 2048x1536 physical pixels and the
+alignment above was resampled away. With the flag, and the layout scaled to
+match, the same stems are hard-edged. Metal's origins agree with Vulkan's; the
+softness was the back buffer, not the shader.
 
 ## 7. Shader format fixed at build time
 

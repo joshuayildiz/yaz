@@ -56,6 +56,45 @@ a 500MB dependency, with no macOS build. Choosing GLSL and glslang instead keeps
 the toolchain at 28MB and portable on every host, at the cost of depending on the
 GPU vendor's Vulkan driver rather than on an API guaranteed present on Windows.
 
+### Display density
+
+**Inside the program there is one unit: the device pixel.** Window coordinates
+exist only at SDL's boundary and are converted the moment they cross it. There
+are exactly two places they get in — the size passed to `SDL_CreateWindow`, which
+nothing downstream reads, and the coordinates on a mouse event, which are
+multiplied by `SDL_GetWindowPixelDensity` before hit-testing. Nothing comes back
+out: the size `SDL_WaitAndAcquireGPUSwapchainTexture` reports is already pixels
+and goes straight to the viewport.
+
+The window is created with `SDL_WINDOW_HIGH_PIXEL_DENSITY`. Without it the
+platform hands back a back buffer at the window's size in window coordinates and
+scales the finished frame up to the display — which on a Retina Mac meant a
+1024×768 swapchain stretched onto 2048×1536 physical pixels, undoing the whole
+point of rasterizing glyphs at four subpixel offsets. It looked like soft text
+and nothing else; the pipeline was correct and the frame was resampled after it.
+
+SDL's documentation adds that macOS wants `NSHighResolutionCapable` in an
+Info.plist for this. It is not needed here: yaz is a bare executable with no
+bundle, and a bare executable on current macOS is high-resolution by default —
+measured, on an M2, as a density of 2.0 with the flag and 1.0 without it.
+
+How large to draw comes from `SDL_GetWindowDisplayScale`, not from the density.
+The two agree on macOS and differ where it counts: Windows at 150% on an ordinary
+panel reports a density of 1.0 and a scale of 1.5, and sizing text by density
+there would silently ignore what the user asked for. `config.font_size` is the
+nominal size, and the scale is what turns it into pixels — so a `32` means the
+same size to look at on every display, and only the number of pixels spent on it
+changes.
+
+The scale is read at the top of each redraw and compared, rather than listened
+for. Three window events can imply it changed, and one of the ways it changes —
+dragging the window to another display — happens inside the platform's modal
+loop, where the resize watch below is the only code that runs at all. A float
+compare on a path that only runs because something changed anyway cannot miss
+any of that. When it does change, the atlas is rebuilt in place: the texture
+survives, since its size does not depend on the scale, and what is given up is
+the packing state, the metrics, and every shaped line.
+
 ### Redrawing
 
 The render loop blocks in `SDL_WaitEvent` and draws only when something has
@@ -213,9 +252,19 @@ so interpolation has nothing left to do but soften what it touches.
 Four offsets rather than more: the atlas grows linearly in that number, and past
 a quarter of a pixel the difference stops being visible.
 
-The texture is 1024×1024 single-channel — a megabyte. The sample text's 46
-distinct glyphs occupy 82 of those rows, so the ceiling is somewhere near 500
-glyphs, and a CJK document reaches it long before a Latin one does.
+The texture is single-channel, so it costs its area in bytes: 1024×1024 and a
+megabyte, except on macOS, where it is 2048×2048 and four. Every Mac SDL runs on
+is Retina, so the glyphs there are rasterized at twice the size and take four
+times the area; doubling the texture at build time keeps the same ceiling. The
+size is chosen from the target rather than at runtime because it is a texture, not
+a knob, and the one platform where density is not a question is the one where it
+matters.
+
+At the density each is sized for, the sample text's 46 distinct glyphs occupy 82
+rows, so the ceiling is somewhere near 500 glyphs, and a CJK document reaches it
+long before a Latin one does. The ceiling is driven by density rather than by
+platform, though, so Windows on a 4K panel at 200% is as dense as a Mac and gets
+the smaller texture; see [FIXME.md](FIXME.md).
 
 Nothing is ever evicted, and **running out is fatal**: it panics, naming the
 glyph, its size, and how many glyphs were already in.

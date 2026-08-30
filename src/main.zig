@@ -1,13 +1,22 @@
 const std = @import("std");
 
 const Renderer = @import("./renderer.zig").Renderer;
+const displayScale = @import("./renderer.zig").displayScale;
 const TextView = @import("./text_view.zig").TextView;
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 
-/// Where the first line's top-left corner sits. Whole pixels, which the layout
-/// cache depends on; a margin is not a thing to scroll by fractions of one.
-const text_origin: [2]f32 = .{ 48, 48 };
+/// Where the first line's top-left corner sits, at a display scale of one.
+/// Scaled with the text, so the margin is the same size to look at whatever the
+/// display, rather than half of one on a dense display and twice on a coarse.
+const text_margin: [2]f32 = .{ 48, 48 };
+
+/// The margin in device pixels. Whole ones, which the layout cache depends on:
+/// a fractional origin would change which subpixel variant every cached glyph
+/// points at. A margin is not a thing to scroll by fractions of a pixel.
+fn textOrigin(scale: f32) [2]f32 {
+    return .{ @round(text_margin[0] * scale), @round(text_margin[1] * scale) };
+}
 
 pub fn main(init: std.process.Init) !void {
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
@@ -16,7 +25,14 @@ pub fn main(init: std.process.Init) !void {
     }
     defer c.SDL_Quit();
 
-    const window = c.SDL_CreateWindow("yaz", 1024, 768, c.SDL_WINDOW_RESIZABLE) orelse {
+    // The size is in window coordinates, which are not pixels on every display.
+    // Without `HIGH_PIXEL_DENSITY` the platform hands back a back buffer at the
+    // window's size in those coordinates and scales the finished frame up to the
+    // display, which is a blur no amount of care in the text pipeline survives.
+    // With it, the swapchain is the display's own pixels and every glyph is
+    // rasterised for the grid it lands on.
+    const flags = c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    const window = c.SDL_CreateWindow("yaz", 1024, 768, flags) orelse {
         std.log.err("SDL_CreateWindow: {s}", .{sdl.lastError()});
         return error.SdlCreateWindow;
     };
@@ -90,11 +106,18 @@ pub fn main(init: std.process.Init) !void {
                 // view answers it; nothing here knows how wide a character is.
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                     if (event.button.button == c.SDL_BUTTON_LEFT) {
+                        // One of the two places a window coordinate gets in.
+                        // Everything past here is in pixels, so it is converted
+                        // at the door rather than carried further. Density, not
+                        // display scale: this is asking how many pixels a point
+                        // is, not how large to draw.
+                        const density = c.SDL_GetWindowPixelDensity(window);
+                        const origin = textOrigin(app.renderer.atlas.scale);
                         try app.view.moveCaretTo(
                             &app.renderer.atlas,
-                            text_origin[0],
-                            text_origin[1],
-                            .{ event.button.x, event.button.y },
+                            origin[0],
+                            origin[1],
+                            .{ event.button.x * density, event.button.y * density },
                         );
                         dirty = true;
                     }
@@ -115,7 +138,17 @@ const App = struct {
     view: TextView,
 
     fn redraw(self: *App) !void {
-        const sprites = try self.view.layout(&self.renderer.atlas, text_origin[0], text_origin[1]);
+        // Read rather than listened for. Three window events can imply the scale
+        // has changed, and one of the ways it changes -- dragging the window to
+        // another display -- runs inside the platform's modal loop, where the
+        // event watch below is the only thing that gets called at all. Comparing
+        // the value cannot miss any of that, and it costs a load on a path that
+        // only runs because something changed anyway.
+        const scale = displayScale(self.renderer.window);
+        if (try self.renderer.atlas.setScale(scale)) self.view.invalidate();
+
+        const origin = textOrigin(scale);
+        const sprites = try self.view.layout(&self.renderer.atlas, origin[0], origin[1]);
         try self.renderer.present(sprites);
     }
 };

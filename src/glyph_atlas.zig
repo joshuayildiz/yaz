@@ -13,6 +13,7 @@
 //! text_view.zig.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
@@ -46,12 +47,27 @@ const subpixel_positions = 4;
 /// exists, and it can only be asked at the point the text is laid out.
 ///
 /// One texture, sized so the glyphs a document actually uses fit without paging.
-/// A megabyte of single-channel coverage. The sample text's 46 distinct glyphs
-/// reach 82 of these 1024 rows, which puts the ceiling somewhere near 500 -- far
-/// past what a page of English needs, and short of a CJK document, which will
-/// want eviction or a second page rather than a bigger number here.
-const atlas_width = 1024;
-const atlas_height = 1024;
+/// Single-channel coverage, so it costs its area in bytes.
+///
+/// What fits depends on the display: a glyph rasterised at twice the size takes
+/// four times the area, so a dense display spends the atlas four times as fast.
+/// macOS is the one target where that is not a question -- every Mac SDL runs on
+/// is Retina -- so it is sized for a scale of two at build time rather than
+/// guessed at. Elsewhere the scale is whatever the display reports at runtime,
+/// and 1024 is sized for the common case of one.
+///
+/// At the scale each is sized for, the sample text's 46 distinct glyphs reach 82
+/// rows, which puts the ceiling somewhere near 500 -- far past what a page of
+/// English needs, and short of a CJK document, which will want eviction or a
+/// second page rather than a bigger number here.
+///
+/// TODO: the ceiling is driven by the scale, not by the platform. Windows on a
+/// 4K panel at 200% is as dense as a Mac and gets the smaller atlas.
+const atlas_width = switch (builtin.target.os.tag) {
+    .macos, .ios, .tvos, .watchos => 2048,
+    else => 1024,
+};
+const atlas_height = atlas_width;
 
 /// A slot is an atlased glyph and its `subpixel_positions` variants. The cap
 /// exists so the metrics are one flat array rather than a growable one, and is
@@ -178,6 +194,11 @@ pub const GlyphAtlas = struct {
     ascent: f32,
     line_height: f32,
 
+    /// The display scale everything above was built at. Kept so a window that
+    /// has moved to a display of a different density can be noticed by
+    /// comparing a float rather than by catching the right event.
+    scale: f32,
+
     const Placed = struct { x: u16, y: u16 };
 
     const Upload = struct {
@@ -188,7 +209,7 @@ pub const GlyphAtlas = struct {
         offset: u32,
     };
 
-    pub fn init(gpa: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !GlyphAtlas {
+    pub fn init(gpa: std.mem.Allocator, gpu: *c.SDL_GPUDevice, scale: f32) !GlyphAtlas {
         var library: ft.FT_Library = null;
         if (ft.FT_Init_FreeType(&library) != 0) return error.FreetypeInit;
         errdefer _ = ft.FT_Done_FreeType(library);
@@ -200,7 +221,7 @@ pub const GlyphAtlas = struct {
         }
         errdefer _ = ft.FT_Done_Face(face);
 
-        if (ft.FT_Set_Pixel_Sizes(face, 0, config.font_pixel_size) != 0) {
+        if (ft.FT_Set_Pixel_Sizes(face, 0, pixelSize(scale)) != 0) {
             return error.FreetypeSetPixelSizes;
         }
 
@@ -211,7 +232,7 @@ pub const GlyphAtlas = struct {
         const glyphs = try gpa.alloc(Glyph, max_slots * subpixel_positions);
         errdefer gpa.free(glyphs);
 
-        var shaper = try Shaper.init();
+        var shaper = try Shaper.init(scale);
         errdefer shaper.deinit();
 
         var self: GlyphAtlas = .{
@@ -225,6 +246,7 @@ pub const GlyphAtlas = struct {
             .glyphs = glyphs,
             .ascent = fromFixed(face.*.size.*.metrics.ascender),
             .line_height = fromFixed(face.*.size.*.metrics.height),
+            .scale = scale,
         };
 
         // Reserved first, while the atlas is certainly empty. The errdefers
@@ -235,6 +257,44 @@ pub const GlyphAtlas = struct {
         try self.reserveSolid();
 
         return self;
+    }
+
+    /// Rebuilds the atlas at a new display scale, answering whether it had to.
+    /// A window dragged to a display of a different density lands here.
+    ///
+    /// The texture survives: its dimensions do not depend on the scale, so what
+    /// a rebuild costs is the packing state and the metrics rather than a GPU
+    /// resource. Everything in it is the wrong size now, so the packer goes back
+    /// to an empty atlas and every slot back to unrasterised; the next layout
+    /// refills it through the same path a first redraw uses.
+    ///
+    /// Anything already shaped is in pixels of the old size and does not
+    /// survive. Callers holding a line layout have to drop it -- `TextView`
+    /// does, on the way back from here.
+    pub fn setScale(self: *GlyphAtlas, scale: f32) !bool {
+        if (scale == self.scale) return false;
+
+        if (ft.FT_Set_Pixel_Sizes(self.face, 0, pixelSize(scale)) != 0) {
+            return error.FreetypeSetPixelSizes;
+        }
+        self.shaper.setScale(scale);
+        self.ascent = fromFixed(self.face.*.size.*.metrics.ascender);
+        self.line_height = fromFixed(self.face.*.size.*.metrics.height);
+        self.scale = scale;
+
+        @memset(self.slots, no_slot);
+        self.used = 0;
+        self.shelf_x = 0;
+        self.shelf_y = 0;
+        self.shelf_height = 0;
+
+        // Queued coverage is for positions the packer is about to hand out
+        // again. Uploading it would paint the old glyphs over the new ones.
+        self.staging.clearRetainingCapacity();
+        self.uploads.clearRetainingCapacity();
+
+        try self.reserveSolid();
+        return true;
     }
 
     /// Fills the solid patch. Square at the line height, because the tallest
@@ -570,7 +630,7 @@ const Shaper = struct {
     /// redraw, and this is the allocation it would otherwise make every time.
     buffer: *hb.hb_buffer_t,
 
-    fn init() !Shaper {
+    fn init(scale: f32) !Shaper {
         const blob = hb.hb_blob_create(
             font_data,
             font_data.len,
@@ -586,13 +646,26 @@ const Shaper = struct {
 
         const font = hb.hb_font_create(face) orelse return error.HarfbuzzCreateFont;
         errdefer hb.hb_font_destroy(font);
-        // Font units until told otherwise. Scaling by 64 asks for positions in
-        // 26.6 fixed point, which is what FreeType reports metrics in, so the
-        // two halves of the pipeline agree without a conversion between them.
-        hb.hb_font_set_scale(font, config.font_pixel_size * 64, config.font_pixel_size * 64);
+        setFontScale(font, scale);
 
         const buffer = hb.hb_buffer_create() orelse return error.HarfbuzzCreateBuffer;
         return .{ .font = font, .buffer = buffer };
+    }
+
+    /// Follows the face to a new size. Nothing is cached here -- the buffer is
+    /// reused but never read across calls -- so this is the whole of it.
+    fn setScale(self: *Shaper, scale: f32) void {
+        setFontScale(self.font, scale);
+    }
+
+    /// Font units until told otherwise. Scaling by 64 asks for positions in
+    /// 26.6 fixed point, which is what FreeType reports metrics in, so the two
+    /// halves of the pipeline agree without a conversion between them. Both
+    /// must be told the same size, or shaping would place glyphs at one size
+    /// and the atlas would draw them at another.
+    fn setFontScale(font: *hb.hb_font_t, scale: f32) void {
+        const px: c_int = @intCast(pixelSize(scale));
+        hb.hb_font_set_scale(font, px * 64, px * 64);
     }
 
     fn deinit(self: *Shaper) void {
@@ -644,7 +717,7 @@ fn shapedWidth(shaper: *Shaper, text: []const u8) f32 {
 }
 
 test "shaping kerns a pair that plain advances would set too far apart" {
-    var shaper = try Shaper.init();
+    var shaper = try Shaper.init(1);
     defer shaper.deinit();
 
     // A and V lean into each other, so the pair is narrower than the two
@@ -657,7 +730,7 @@ test "shaping kerns a pair that plain advances would set too far apart" {
 }
 
 test "shaping returns one glyph per character for unkerned Latin" {
-    var shaper = try Shaper.init();
+    var shaper = try Shaper.init(1);
     defer shaper.deinit();
 
     const text = "quick";
@@ -669,7 +742,7 @@ test "shaping returns one glyph per character for unkerned Latin" {
 }
 
 test "a ligature's characters share one cluster" {
-    var shaper = try Shaper.init();
+    var shaper = try Shaper.init(1);
     defer shaper.deinit();
 
     // "office" is six characters and four glyphs: f, f and i become one.
@@ -684,6 +757,44 @@ test "a ligature's characters share one cluster" {
     var clusters: [4]u32 = undefined;
     for (shaped.infos, &clusters) |info, *cluster| cluster.* = info.cluster;
     try std.testing.expectEqualSlices(u32, &.{ 0, 1, 4, 5 }, &clusters);
+}
+
+test "shaping follows a change of scale" {
+    var shaper = try Shaper.init(1);
+    defer shaper.deinit();
+
+    // The half of a rescale that is easy to leave out: the face is resized and
+    // the shaper is not, and then every pen position is computed at one size
+    // for glyphs rasterised at another. It looks like bad tracking rather than
+    // like a bug, so it is worth an assertion rather than an eye.
+    const single = shapedWidth(&shaper, "quick");
+    shaper.setScale(2);
+    const double = shapedWidth(&shaper, "quick");
+
+    // Not exactly twice over: advances land on 26.6 fixed point, so each glyph
+    // may round by a sixty-fourth. Far enough from equal to say the scale
+    // arrived, close enough to say nothing else changed with it.
+    try std.testing.expectApproxEqAbs(single * 2, double, 0.5);
+}
+
+/// What FreeType and HarfBuzz are both set to: the nominal size scaled for the
+/// display. Whole pixels, because that is the unit FreeType takes -- the
+/// fractional part of a *pen position* is what the subpixel variants are for,
+/// and that is a different question from how large to rasterise.
+fn pixelSize(scale: f32) u32 {
+    const px = @round(@as(f32, config.font_size) * scale);
+    // A scale of zero reaches here only if SDL was asked before it had an
+    // answer, and a zero-pixel face makes FreeType fail somewhere less obvious.
+    std.debug.assert(px >= 1);
+    return @intFromFloat(px);
+}
+
+test "pixelSize scales the nominal size and rounds to whole pixels" {
+    try std.testing.expectEqual(@as(u32, config.font_size), pixelSize(1));
+    try std.testing.expectEqual(@as(u32, config.font_size * 2), pixelSize(2));
+    try std.testing.expectEqual(@as(u32, 48), pixelSize(1.5));
+    // Windows offers this one; it is not a whole number of pixels.
+    try std.testing.expectEqual(@as(u32, 40), pixelSize(1.25));
 }
 
 /// FreeType reports most metrics in 26.6 fixed point: pixels times 64. So does
