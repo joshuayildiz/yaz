@@ -103,6 +103,18 @@ queued when the loop wakes are folded into one frame, and a resize draws from an
 event watch, because the platform's own modal loop will not hand control back
 until the drag ends.
 
+Redrawing during the drag is only half of it on macOS. A `CAMetalLayer` keeps
+`CALayer`'s default `contentsGravity` of `kCAGravityResize`, so between the
+window's bounds changing and the next frame arriving the compositor stretches the
+old frame to fit — which on a proportional layout reads as the glyphs themselves
+changing width. SDL sets that property nowhere, and does not hand out the view it
+created, so the layer is reached through the two window properties that say where
+it is (`SDL.window.cocoa.window` and `SDL.window.cocoa.metal_view_tag`) and four
+Objective-C messages. `contentsGravity` is set to `kCAGravityTopLeft` instead,
+which leaves the old frame at its own size in the corner text is laid out from.
+That is in `sdl.zig`, beside the `@cImport` — the same kind of boundary, reached
+around in the same one place.
+
 The reasoning, the measurements, and what to re-check when porting are in
 [OPTIMIZATIONS.md](OPTIMIZATIONS.md). Known problems not yet acted on are in
 [FIXME.md](FIXME.md).

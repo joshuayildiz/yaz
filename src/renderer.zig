@@ -67,7 +67,12 @@ pub const Renderer = struct {
             std.log.err("SDL_ClaimWindowForGPUDevice: {s}", .{sdl.lastError()});
             return error.SdlClaimWindow;
         }
+
         errdefer c.SDL_ReleaseWindowFromGPUDevice(gpu, window);
+
+        // The layer exists now and not before, and its default is to stretch
+        // whatever it last held over the window's new bounds.
+        sdl.anchorContentsTopLeft(window);
 
         const device_name = c.SDL_GetStringProperty(
             c.SDL_GetGPUDeviceProperties(gpu),
