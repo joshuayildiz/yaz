@@ -70,12 +70,11 @@ pub fn main(init: std.process.Init) !void {
 
     // Blocking wait, not a poll loop: idle costs nothing. Waking up is not a
     // reason to draw, though; only a change to what is on screen is.
-    var dirty = true;
     var event: c.SDL_Event = undefined;
     while (app.running) {
-        if (dirty) {
+        if (app.isDirty()) {
             try app.redraw();
-            dirty = false;
+            app.setDirty(false);
         }
 
         if (!c.SDL_WaitEvent(&event)) {
@@ -89,9 +88,7 @@ pub fn main(init: std.process.Init) !void {
         // swapchain, so each redundant one costs real latency, not just work.
         while (true) {
             const density = c.SDL_GetWindowPixelDensity(window);
-            if (Event.init(&event, density)) |what| {
-                if (try app.handle(what)) dirty = true;
-            }
+            if (Event.init(&event, density)) |what| try app.handle(what);
             if (!c.SDL_PollEvent(&event)) break;
         }
     }
@@ -103,21 +100,37 @@ const App = struct {
     view: TextView,
     running: bool = true,
 
-    /// Takes what belongs to the window and hands the rest down. Answers
-    /// whether anything changed that has to be drawn.
-    fn handle(self: *App, event: Event) !bool {
+    /// What has changed at this level, as against inside the view. True to
+    /// begin with: the first frame has never been drawn.
+    dirty: bool = true,
+
+    /// Answers for everything it holds, so the loop asks one thing.
+    fn isDirty(self: *const App) bool {
+        return self.dirty or self.view.isDirty();
+    }
+
+    fn setDirty(self: *App, value: bool) void {
+        self.dirty = value;
+        self.view.setDirty(value);
+    }
+
+    /// Takes what belongs to the window and hands the rest down. What changed
+    /// is not answered here; it is asked for afterwards, through `isDirty`.
+    fn handle(self: *App, event: Event) !void {
         switch (event) {
             .quit => {
                 self.running = false;
-                return false;
+                return;
             },
-            .resized => return true,
+            .resized => {
+                self.dirty = true;
+                return;
+            },
             else => {},
         }
 
         const response = try self.view.handle(event, &self.renderer.atlas);
         if (response.capture) |on| _ = c.SDL_CaptureMouse(on);
-        return response.dirty;
     }
 
     fn redraw(self: *App) !void {

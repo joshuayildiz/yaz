@@ -52,11 +52,9 @@ pub const Rect = struct {
     height: f32,
 };
 
-/// What a view did about an event, and what is left for the caller to do.
+/// What is left for the caller to do about an event. Whether anything changed
+/// is not here: that is state, and the view keeps it -- see `isDirty`.
 pub const Response = struct {
-    /// Something changed that has to be drawn.
-    dirty: bool = false,
-
     /// Set when the pointer takes hold of something, or lets go. The caller
     /// captures the mouse for the duration, so a drag that wanders out of the
     /// window keeps arriving rather than stopping where it left.
@@ -116,6 +114,11 @@ pub const TextView = struct {
     /// the rest of the time, which is also the answer to whether a drag is on.
     drag: ?f32 = null,
 
+    /// Something changed that has not been drawn yet. Read through `isDirty`
+    /// and cleared through `setDirty`, so that a view holding views of its own
+    /// can answer for all of them.
+    dirty: bool = false,
+
     /// The caret starts at the top: nothing scrolls yet, so a caret at the end
     /// of a long file is one nobody can see.
     pub fn init(gpa: std.mem.Allocator, text: []const u8) !TextView {
@@ -155,6 +158,15 @@ pub const TextView = struct {
         return true;
     }
 
+    /// Whether anything here has changed since it was last drawn.
+    pub fn isDirty(self: *const TextView) bool {
+        return self.dirty;
+    }
+
+    pub fn setDirty(self: *TextView, value: bool) void {
+        self.dirty = value;
+    }
+
     /// Hands the view the room it has. Called before anything is drawn or asked
     /// about, so nothing else has to be told the window's size.
     pub fn place(self: *TextView, rect: Rect) void {
@@ -168,16 +180,16 @@ pub const TextView = struct {
             .quit, .resized => return .{},
             .text => |typed| {
                 try self.insert(typed);
-                return .{ .dirty = true };
+                self.dirty = true;
             },
             .newline => {
                 try self.insert("\n");
-                return .{ .dirty = true };
+                self.dirty = true;
             },
-            .backspace => return .{ .dirty = try self.backspace() },
+            .backspace => self.dirty = try self.backspace() or self.dirty,
             .wheel => |pixels| {
                 self.scrollBy(pixels, atlas);
-                return .{ .dirty = true };
+                self.dirty = true;
             },
             .press => |at| {
                 // The scrollbar is asked first, so a press on it moves the view
@@ -185,10 +197,11 @@ pub const TextView = struct {
                 if (self.thumbGrab(atlas, at)) |grab| {
                     self.drag = grab;
                     self.dragTo(atlas, at[1], grab);
-                    return .{ .dirty = true, .capture = true };
+                    self.dirty = true;
+                    return .{ .capture = true };
                 }
                 try self.moveCaretTo(atlas, at);
-                return .{ .dirty = true };
+                self.dirty = true;
             },
             .move => |at| {
                 // The only reason motion is looked at at all: OPTIMIZATIONS.md 2
@@ -196,7 +209,7 @@ pub const TextView = struct {
                 // that buys.
                 const grab = self.drag orelse return .{};
                 self.dragTo(atlas, at[1], grab);
-                return .{ .dirty = true };
+                self.dirty = true;
             },
             .release => {
                 if (self.drag == null) return .{};
@@ -204,6 +217,7 @@ pub const TextView = struct {
                 return .{ .capture = false };
             },
         }
+        return .{};
     }
 
     /// Where the first line's top-left corner sits. Whole pixels, which the
