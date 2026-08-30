@@ -3,29 +3,30 @@
 What has been done for latency and resource usage, why, and — since each one
 leans on some assumption about the platform — how to check it still holds.
 
-Numbers come from Windows on an RTX 3090 unless stated otherwise. Nothing here
-has been measured on macOS. Two of these are expected to need work when it is;
-they are in [FIXME.md](FIXME.md).
+Numbers come from Windows on an RTX 3090 unless stated otherwise. macOS has run
+all of this on an M2, and one of them — 6 — has been checked there; the rest are
+still unmeasured on it. What is left to settle is in [FIXME.md](FIXME.md).
 
 ## Where each one stands
 
 | # | Optimization | Linux | Windows | macOS |
 | --- | --- | --- | --- | --- |
-| 1 | [Idle costs nothing](#1-idle-costs-nothing) | runs | measured | **unverified** |
-| 2 | [Redraw only on change](#2-redraw-only-on-change) | runs | measured | **unverified** |
-| 3 | [One frame per burst](#3-one-frame-per-burst) | runs | measured | **unverified** |
+| 1 | [Idle costs nothing](#1-idle-costs-nothing) | runs | measured | runs |
+| 2 | [Redraw only on change](#2-redraw-only-on-change) | runs | measured | runs |
+| 3 | [One frame per burst](#3-one-frame-per-burst) | runs | measured | runs |
 | 4 | [Drawing during a resize](#4-drawing-during-a-resize) | n/a | measured | **unverified** |
-| 5 | [Rasterise once, not per frame](#5-rasterise-once-not-per-frame) | runs | runs | **unverified** |
-| 6 | [Pixel-aligned quads](#6-pixel-aligned-quads-nearest-sampling) | runs | measured | **unverified** |
-| 7 | [Shader format fixed at build time](#7-shader-format-fixed-at-build-time) | runs | runs | **unverified** |
-| 8 | [No font discovery](#8-no-font-discovery) | runs | runs | **unverified** |
+| 5 | [Rasterise once, not per frame](#5-rasterise-once-not-per-frame) | runs | runs | runs |
+| 6 | [Pixel-aligned quads](#6-pixel-aligned-quads-nearest-sampling) | runs | measured | measured |
+| 7 | [Shader format fixed at build time](#7-shader-format-fixed-at-build-time) | runs | runs | runs |
+| 8 | [No font discovery](#8-no-font-discovery) | runs | runs | runs |
+| 9 | [One call for the text](#9-one-draw-call-for-the-text) | runs | runs | measured |
+| 10 | [Per-line layout cache](#10-per-line-layout-cache) | runs | runs | runs |
 
 "runs" means the build starts and draws, not that anything was measured.
 "measured" means the numbers below were taken on that platform.
 
-A binary built for macOS was run on an Apple Silicon Mac once, at the point
-where the program drew a single textured quad. Everything in this file landed
-afterwards, so macOS has never run any of it.
+Row 4 is unverified because the check for it is a live resize drag, which has to
+be done by hand; everything else here has at least been run on an M2.
 
 ## 1. Idle costs nothing
 
@@ -156,15 +157,50 @@ not touch the system font stack at all.
 **Check:** the startup log appears immediately. A pause before the window
 suggests something is scanning fonts, which would mean SDL is doing it, not us.
 
+## 9. One draw call for the text
+
+Every glyph in the frame is one instance of a four-vertex triangle strip, and the
+whole screenful is a single `SDL_DrawGPUPrimitives`. Nothing is sent per glyph:
+where each one lands, what to sample and how big it is all come out of a storage
+buffer the vertex shader indexes by `gl_InstanceIndex`.
+
+The caret is a second call over the last quad of the same buffer, drawn with the
+same pipeline and the same bindings, so that it can be a different colour from
+the text. The alternative is a colour on every sprite, which is four more floats
+written and uploaded once per glyph per frame to repeat one value.
+
+**Rests on:** `first_instance` reaching the shader as part of `gl_InstanceIndex`
+on Metal as it does on Vulkan. Metal's `[[instance_id]]` counts from zero
+whatever the base instance is, so the translation has to add it back. If it does
+not, the caret's draw addresses sprite zero and recolours the first glyph on
+screen while leaving the caret the colour of the text.
+
+**Check:** set `caret_colour` in `config.zig` to something loud — red will do —
+and look at the first character on the first line. Exactly the caret should
+change. Done this way on an M2: only the caret went red, and the leading `T`
+stayed black.
+
+## 10. Per-line layout cache
+
+Shaping is the expensive half of laying out a line and depends only on that
+line's bytes, so it is done once and kept. A keystroke reshapes the line it
+landed in; every other line is placed by adding an origin to coordinates it
+already had. A line that only moved down the screen is not shaped again.
+
+**Rests on:** nothing platform-specific. It does rest on the origin being whole
+pixels, which is 6's business: a fractional origin would change which subpixel
+variant each cached glyph points at, and the cache would be answering a question
+nobody asked.
+
+**Check:** `TextView.layout` asserts that its `x` is already rounded, and the
+cache asserts its own length against the document's line count on every frame. A
+Debug build is the one to run, since those are what catch a cache that has
+drifted out of step with the text it describes.
+
 ## Not optimizations yet
 
 Stated so they are not mistaken for finished work:
 
-- **One draw call per glyph.** Each glyph is a separate `SDL_DrawGPUPrimitives`
-  with its own uniform push. Instancing collapses this to one call per frame;
-  that is step 9.
-- **No layout cache.** Advances are recomputed for every glyph of every line on
-  every redraw. It does not show yet because there are three lines of text.
 - **The whole window redraws.** There is no damage tracking, so a one-character
   edit will repaint everything.
 - **Blending is done on sRGB-encoded values**, not in linear light. With the
@@ -185,14 +221,14 @@ var redraws: usize = 0;                     // near the imports
 
         if (dirty) {
             redraws += 1;                   // in the main loop
-            try renderer.present(&sample_text);
+            try app.redraw();
             dirty = false;
         }
 
         redraws += 1;                       // in redrawWhileResizing
-        renderer.present(&sample_text) catch {};
+        app.redraw() catch {};
 
-    std.log.info("redraws: {d}", .{redraws});   // last line of main
+    std.log.info("redraws: {d}", .{redraws});   // before the loop's last brace
 ```
 
 Then run it, exercise whatever is being measured, close the window, and read the
