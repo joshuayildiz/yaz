@@ -68,7 +68,7 @@ pub const Position = struct {
 /// the file again.
 pub const Retired = struct {
     document: Document,
-    path: ?[:0]u8,
+    path: ?[]u8,
     position: Position,
 };
 
@@ -77,10 +77,9 @@ pub const TextView = struct {
     document: Document,
 
     /// What this view is showing, as it was named, or null for a document
-    /// nobody named. Owned, and sentinel-terminated because it goes to SDL as a
-    /// window title. Kept so the finder can tell whether a file is already open
-    /// somewhere rather than opening a second copy of it.
-    path: ?[:0]u8 = null,
+    /// nobody named. Owned. Kept so the finder can tell whether a file is
+    /// already open somewhere rather than opening a second copy of it.
+    path: ?[]u8 = null,
 
     /// Where the next character lands, as a byte offset into the document, and
     /// where the caret is drawn. One number rather than a line and a column:
@@ -124,7 +123,7 @@ pub const TextView = struct {
         return .{
             .gpa = gpa,
             .document = document,
-            .path = if (path) |named| try gpa.dupeZ(u8, named) else null,
+            .path = if (path) |named| try gpa.dupe(u8, named) else null,
             .cursor = 0,
         };
     }
@@ -144,7 +143,7 @@ pub const TextView = struct {
         was: ?Position,
         atlas: *const GlyphAtlas,
     ) !Retired {
-        const named = try self.gpa.dupeZ(u8, path);
+        const named = try self.gpa.dupe(u8, path);
 
         const retired: Retired = .{
             .document = self.document,

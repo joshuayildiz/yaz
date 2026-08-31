@@ -389,9 +389,17 @@ fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack, p
     };
     defer app.deinit();
 
-    // Only a window with a file in it has anything to be called.
+    // Only a window with a file in it has anything to be called. SDL copies the
+    // string, so the sentinel it wants is borrowed for the length of the call
+    // rather than carried around by the view -- where it would be a path whose
+    // allocation is one byte longer than its length, and the parked documents
+    // are keyed by exactly that path.
     if (comptime Stack.has(Views)) {
-        if (app.stack.get(Views).get(TextView).path) |named| _ = c.SDL_SetWindowTitle(window, named.ptr);
+        if (app.stack.get(Views).get(TextView).path) |named| {
+            const title = try gpa.dupeZ(u8, named);
+            defer gpa.free(title);
+            _ = c.SDL_SetWindowTitle(window, title.ptr);
+        }
     }
 
     if (!c.SDL_AddEventWatch(App(Stack).redrawWhileResizing, &app)) {
