@@ -437,6 +437,9 @@ fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack) !
     }
     defer c.SDL_Quit();
 
+    // After `SDL_Init`, which is when the menu bar it takes this from is built.
+    sdl.unbindCloseShortcut();
+
     // The size is in window coordinates. Without `HIGH_PIXEL_DENSITY` the back
     // buffer is that size too and the finished frame is scaled up to the
     // display, which no amount of care in the text pipeline survives.

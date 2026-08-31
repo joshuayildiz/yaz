@@ -376,6 +376,13 @@ it.
 On a Mac none of that SDK machinery runs — Zig and SDL find the system SDK
 themselves. Building on macOS is exercised; so is cross-compiling to it.
 
+**cmd+W has to be taken back off the menu bar.** With no nib to load, SDL builds
+a default menu bar whose Window menu binds Close to it. SDL still delivers the
+key, so the tab closed *and* the window did — `sdl.unbindCloseShortcut` clears
+the item's key equivalent after `SDL_Init`, which leaves it working from the menu
+and stops it holding the shortcut. cmd+Q, cmd+M and cmd+F are on that menu too;
+only the ones yaz binds have to be freed.
+
 Apple's SDK is not ours to redistribute, and its licence contemplates use on
 Apple hardware. It is downloaded at build time from a third-party mirror rather
 than vendored, so nothing of Apple's enters the repository.

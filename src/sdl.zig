@@ -45,6 +45,28 @@ pub fn setLayerBackground(window: *c.SDL_Window, colour: [4]f32) void {
     _ = objc.call(.void, layer, "setBackgroundColor:", .{cg_colour});
 }
 
+/// Takes cmd+W back off the menu bar. macOS only, and only needed because SDL
+/// puts it there: with no nib to load it builds a default menu bar, whose Window
+/// menu has a Close item bound to it.
+///
+/// A menu's key equivalent is matched before the key reaches the application, so
+/// the window would close and nothing here would ever see the keystroke. The
+/// item is left in place and still closes the window when it is chosen; it just
+/// stops holding the shortcut.
+pub fn unbindCloseShortcut() void {
+    if (builtin.target.os.tag != .macos) return;
+
+    const class = objc.class("NSApplication") orelse return;
+    const app = objc.call(.id, class, "sharedApplication", .{}) orelse return;
+    const menu = objc.call(.id, app, "windowsMenu", .{}) orelse return;
+
+    const titled = objc.string("Close") orelse return;
+    const item = objc.call(.id, menu, "itemWithTitle:", .{titled}) orelse return;
+
+    const nothing = objc.string("") orelse return;
+    objc.call(.void, item, "setKeyEquivalent:", .{nothing});
+}
+
 /// The `CAMetalLayer` SDL_GPU draws into. SDL will not hand over the view it
 /// made, but it does publish where to find it.
 fn metalLayer(window: *c.SDL_Window) ?*anyopaque {
@@ -69,6 +91,16 @@ extern fn CGColorRelease(color: ?*anyopaque) void;
 /// resolve a file they never call into.
 const objc = struct {
     extern fn sel_registerName(name: [*:0]const u8) ?*anyopaque;
+    extern fn objc_getClass(name: [*:0]const u8) ?*anyopaque;
+
+    fn class(name: [*:0]const u8) ?*anyopaque {
+        return objc_getClass(name);
+    }
+
+    /// An NSString, which two of the selectors below want and neither will make.
+    fn string(text: [*:0]const u8) ?*anyopaque {
+        return call(.id, class("NSString") orelse return null, "stringWithUTF8String:", .{text});
+    }
 
     /// Every call casts this to the selector's own signature: arm64 has no
     /// variadic `objc_msgSend`, and the wrong prototype puts the arguments in
