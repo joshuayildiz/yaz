@@ -11,7 +11,9 @@
 const std = @import("std");
 
 const config = @import("../config.zig");
-const Event = @import("../event.zig").Event;
+const event_mod = @import("../event.zig");
+const Event = event_mod.Event;
+const Intent = event_mod.Intent;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
@@ -193,24 +195,23 @@ pub const Finder = struct {
 
     /// What the panel is showing, and what return would open.
     ///
-    /// Answers with a path when one was chosen, which the caller owns nothing
-    /// of -- it points into the listing, and is gone when the finder closes.
-    pub fn update(self: *Finder, event: Event) !?[]const u8 {
+    /// The path it answers with is copied out of the listing, which closing
+    /// frees, so whoever takes it owns it.
+    pub fn update(self: *Finder, event: Event, atlas: *GlyphAtlas) !Intent {
+        _ = atlas;
         self.dirty = true;
 
         switch (event) {
             .cancel, .find => {
                 self.close();
-                return null;
+                return .dismiss;
             },
             .newline => {
-                const picked = self.chosen() orelse return null;
+                const picked = self.chosen() orelse return .nothing;
 
-                // Copied before closing, because closing frees what it points
-                // into.
                 const path = try self.gpa.dupe(u8, picked);
                 self.close();
-                return path;
+                return .{ .open = path };
             },
             .up => {
                 if (self.selected > 0) self.selected -= 1;
@@ -225,7 +226,7 @@ pub const Finder = struct {
                 try self.rank();
             },
             .backspace => {
-                if (self.query.items.len == 0) return null;
+                if (self.query.items.len == 0) return .nothing;
                 // One byte at a time is wrong the moment the query is not
                 // ASCII, and `Buffer.stepBack` is where that is already solved;
                 // this is a query, not a document, and cannot reach it.
@@ -236,7 +237,7 @@ pub const Finder = struct {
             // dealt with above this.
             else => self.dirty = false,
         }
-        return null;
+        return .nothing;
     }
 
     fn chosen(self: *const Finder) ?[]const u8 {

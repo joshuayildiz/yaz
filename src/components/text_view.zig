@@ -9,7 +9,9 @@
 const std = @import("std");
 
 const config = @import("../config.zig");
-const Event = @import("../event.zig").Event;
+const event_mod = @import("../event.zig");
+const Event = event_mod.Event;
+const Intent = event_mod.Intent;
 const painter_mod = @import("../painter.zig");
 const Key = painter_mod.Key;
 const Painter = painter_mod.Painter;
@@ -216,7 +218,7 @@ pub const TextView = struct {
 
     /// Everything that happens inside the view. What belongs to the window has
     /// been dealt with before this is called.
-    pub fn update(self: *TextView, event: Event, atlas: *GlyphAtlas) !void {
+    pub fn update(self: *TextView, event: Event, atlas: *GlyphAtlas) !Intent {
         switch (event) {
             // The window's, or the finder's. Arrows and escape reach a view
             // only when nothing is over it, and there is no cursor movement to
@@ -242,7 +244,7 @@ pub const TextView = struct {
                     self.drag = grab;
                     self.dragTo(atlas, at[1], grab);
                     self.dirty = true;
-                    return;
+                    return .nothing;
                 }
                 try self.moveCaretTo(atlas, at);
                 self.dirty = true;
@@ -251,12 +253,13 @@ pub const TextView = struct {
                 // The only reason motion is looked at at all: OPTIMIZATIONS.md 2
                 // has the loop ignoring it, and a redraw per motion event is what
                 // that buys.
-                const grab = self.drag orelse return;
+                const grab = self.drag orelse return .nothing;
                 self.dragTo(atlas, at[1], grab);
                 self.dirty = true;
             },
             .release => self.drag = null,
         }
+        return .nothing;
     }
 
     /// Where the first line's top-left corner sits. Whole pixels, which the

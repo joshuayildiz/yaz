@@ -7,7 +7,9 @@ const Position = @import("./components/text_view.zig").Position;
 const Retired = @import("./components/text_view.zig").Retired;
 const Document = @import("./document.zig").Document;
 const GlyphAtlas = @import("./glyph_atlas.zig").GlyphAtlas;
-const Event = @import("./event.zig").Event;
+const event_mod = @import("./event.zig");
+const Event = event_mod.Event;
+const Intent = event_mod.Intent;
 const Painter = @import("./painter.zig").Painter;
 const Rect = @import("./painter.zig").Rect;
 const sdl = @import("./sdl.zig");
@@ -219,7 +221,7 @@ const Columns = struct {
         }
     }
 
-    fn update(self: *Columns, event: Event, atlas: *GlyphAtlas) !void {
+    fn update(self: *Columns, event: Event, atlas: *GlyphAtlas) !Intent {
         // A view holding the scrollbar keeps the pointer until it lets go,
         // wherever it wanders. Without this a drag crossing into the next view
         // would be handed over half way through.
@@ -228,7 +230,7 @@ const Columns = struct {
         // Otherwise a pointer goes to whatever it is over, focus or no focus:
         // the wheel turns the view under it, which is what one expects of it.
         if (pointer(event)) |at| {
-            const which = self.over(at) orelse return;
+            const which = self.over(at) orelse return .nothing;
 
             // A press, and only a press. A wheel or a pointer merely passing
             // over would move where typing lands without anyone asking it to.
@@ -243,7 +245,7 @@ const Columns = struct {
 
         // Everything left is typing, which goes to the focused view wherever
         // the pointer happens to be.
-        try self.views.items[self.focus].update(event, atlas);
+        return self.views.items[self.focus].update(event, atlas);
     }
 
     /// Which view has hold of the pointer through its scrollbar, if any.
@@ -402,10 +404,13 @@ const App = struct {
             else => {},
         }
 
-        // Nothing below the window works while a tool is missing.
-        if (self.health) |*health| return health.update(event);
-
         const atlas = &self.renderer.atlas;
+
+        // Nothing below the window works while a tool is missing.
+        if (self.health) |*health| {
+            _ = try health.update(event, atlas);
+            return;
+        }
 
         if (self.finder) |*finder| {
             if (event == .find and !finder.isOpen()) return finder.show();
@@ -413,16 +418,21 @@ const App = struct {
             // While it is up it has the keyboard entirely, and the pointer is
             // not routed to it at all -- clicking a view behind it would be a
             // way to type into something the panel is covering.
-            if (finder.isOpen()) {
-                if (try finder.update(event)) |path| {
-                    defer self.gpa.free(path);
-                    try self.columns.reveal(path, atlas);
-                }
-                return;
-            }
+            if (finder.isOpen()) return self.act(try finder.update(event, atlas));
         }
 
-        try self.columns.update(event, atlas);
+        _ = try self.columns.update(event, atlas);
+    }
+
+    /// Does what a component asked for, which it could not do itself.
+    fn act(self: *App, intent: Intent) !void {
+        switch (intent) {
+            .nothing, .dismiss => {},
+            .open => |path| {
+                defer self.gpa.free(path);
+                try self.columns.reveal(path, &self.renderer.atlas);
+            },
+        }
     }
 
     /// Every quad the frame is made of, from everything it holds.

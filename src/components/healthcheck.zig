@@ -11,7 +11,9 @@
 const std = @import("std");
 
 const config = @import("../config.zig");
-const Event = @import("../event.zig").Event;
+const event_mod = @import("../event.zig");
+const Event = event_mod.Event;
+const Intent = event_mod.Intent;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
@@ -158,9 +160,11 @@ pub const Healthcheck = struct {
     /// Nothing here reacts to anything. Quit and resize belong to the window and
     /// have been dealt with above; every other event is for an editor that is
     /// not running.
-    pub fn update(self: *Healthcheck, event: Event) void {
+    pub fn update(self: *Healthcheck, event: Event, atlas: *GlyphAtlas) !Intent {
         _ = self;
         _ = event;
+        _ = atlas;
+        return .nothing;
     }
 
     pub fn isDirty(self: *const Healthcheck) bool {

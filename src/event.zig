@@ -4,6 +4,17 @@ const std = @import("std");
 
 const c = @import("./sdl.zig").c;
 
+/// What a component wants done that it cannot do itself, answered to whatever
+/// is holding it -- the only thing that knows what else there is.
+pub const Intent = union(enum) {
+    /// Dealt with, or not mine. Nothing for anyone above to do.
+    nothing,
+    /// I am done being in front. Put me back where I was.
+    dismiss,
+    /// Put this file in front of the reader. Whoever takes it owns the path.
+    open: []u8,
+};
+
 /// Already in pixels by the time one of these is made, so nothing that handles
 /// one has to know what a display scale is, and nothing that handles one has to
 /// know what SDL calls things.
