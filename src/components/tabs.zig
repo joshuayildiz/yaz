@@ -131,6 +131,24 @@ pub const Tabs = struct {
         return self.paths.items[which];
     }
 
+    /// Takes `path` off the bar. Whether the file is still open anywhere is not
+    /// the bar's business: whoever calls this has decided it is not.
+    pub fn close(self: *Tabs, path: []const u8) void {
+        for (self.paths.items, 0..) |listed, which| {
+            if (!std.mem.eql(u8, listed, path)) continue;
+
+            self.gpa.free(listed);
+            _ = self.paths.orderedRemove(which);
+            var name = self.names.orderedRemove(which);
+            name.deinit(self.gpa);
+            _ = self.unsaved.orderedRemove(which);
+            _ = self.rects.orderedRemove(which);
+
+            self.dirty = true;
+            return;
+        }
+    }
+
     /// Whether `path` has been changed since it was read. A file the bar has
     /// never heard of is not an error: it is one nobody has opened.
     pub fn mark(self: *Tabs, path: []const u8, unsaved: bool) void {

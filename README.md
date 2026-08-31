@@ -96,6 +96,14 @@ and either works on any platform). A file already in a column is focused rather
 than opened twice, so on a window that is showing three files the bindings move
 the keyboard between the columns.
 
+**cmd+W** closes the file the focused column is showing: its tab goes, its
+document goes, and the column falls back to the first file nothing else is
+showing — or to an empty document when there is none, which is where a window
+with no file named starts. It closes what that column has, so a file sitting in
+another column is reached with cmd+N or a press before it can be closed. **There
+is no save and nothing asks**, so closing a file with a mark on its tab throws
+the edit away.
+
 A tab carries a **mark to the left of its name when the file has been changed and
 not saved**, which is every file that has been typed into, since there is still
 no way to save. The mark's room is reserved whether it is drawn or not, so typing

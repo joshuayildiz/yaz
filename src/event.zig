@@ -30,6 +30,8 @@ pub const Event = union(enum) {
     find,
     /// Show the nth file open in the window, counted from zero: cmd+1 to cmd+9.
     tab: u8,
+    /// Take the file in front off the bar and out of memory: cmd+W.
+    close,
     /// Move a selection, not a caret: nothing in a document reads these yet.
     up,
     down,
@@ -77,6 +79,7 @@ pub const Event = union(enum) {
                 // The digits are contiguous and in order, so the key is its own
                 // index. Nine of them because a tenth would be cmd+0, which is
                 // not next to cmd+9 on the keyboard or in the bar.
+                c.SDLK_W => if (commanded(event.key.mod)) .close else null,
                 c.SDLK_1...c.SDLK_9 => if (commanded(event.key.mod))
                     .{ .tab = @intCast(event.key.key - c.SDLK_1) }
                 else

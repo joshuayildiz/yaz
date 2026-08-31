@@ -24,7 +24,9 @@ front of the reader the whole time -- which is the half of this that was worth
 fixing before saving existed, since the flag it needed is the one saving will
 clear.
 
-What is left is the loss itself, and nothing warns about it on the way out.
+What is left is the loss itself, and nothing warns about it on the way out --
+now including cmd+W, which closes a file and frees its document whether or not
+the tab says it has been changed.
 
 **Left alone because** the answer is saving, not a better warning about not
 saving. `Document.modified` is now set by every edit and read by the bar, so the

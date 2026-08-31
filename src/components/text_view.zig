@@ -139,11 +139,11 @@ pub const TextView = struct {
     pub fn swap(
         self: *TextView,
         document: Document,
-        path: []const u8,
+        path: ?[]const u8,
         was: ?Position,
         atlas: *const GlyphAtlas,
     ) !Retired {
-        const named = try self.gpa.dupe(u8, path);
+        const named = if (path) |called| try self.gpa.dupe(u8, called) else null;
 
         const retired: Retired = .{
             .document = self.document,
@@ -227,7 +227,7 @@ pub const TextView = struct {
             // The window's, or the finder's. Arrows and escape reach a view
             // only when nothing is over it, and there is no cursor movement to
             // give them to yet.
-            .quit, .resized, .find, .tab, .up, .down, .cancel => {},
+            .quit, .resized, .find, .tab, .close, .up, .down, .cancel => {},
             .text => |typed| {
                 try self.insert(typed);
                 self.dirty = true;
