@@ -65,10 +65,6 @@ pub const Tabs = struct {
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     dirty: bool = true,
 
-    /// A press here picks a file; it does not move the keyboard out of the
-    /// document and into the bar.
-    pub const takes_focus = false;
-
     pub fn init(gpa: std.mem.Allocator) Tabs {
         return .{ .gpa = gpa };
     }

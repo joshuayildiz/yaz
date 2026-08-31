@@ -25,13 +25,6 @@ const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
-/// Whether a press on a member should move the keyboard to it. A bar of tabs or
-/// a status line is pressed for what it does, not to be typed into, and says so
-/// with `pub const takes_focus = false;`. Anything that says nothing takes it.
-fn takesFocus(comptime T: type) bool {
-    return !@hasDecl(T, "takes_focus") or T.takes_focus;
-}
-
 /// `members` are listed top to bottom. Each answers `height` with what it wants,
 /// or null to take a share of whatever is left over.
 pub fn VTuple(comptime members: []const type) type {
@@ -82,6 +75,13 @@ pub fn VTuple(comptime members: []const type) type {
                 }
             }
             return null;
+        }
+
+        /// Hands the keyboard to `T`, for whoever knows something the column
+        /// does not -- that choosing a file in one member is a request to type
+        /// into another.
+        pub fn focusOn(self: *Self, comptime T: type) void {
+            self.focus = comptime indexOf(T);
         }
 
         fn indexOf(comptime T: type) usize {
@@ -141,12 +141,8 @@ pub fn VTuple(comptime members: []const type) type {
             switch (event) {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
+                    self.focus = which;
                     self.holding = which;
-                    inline for (0..count) |i| {
-                        if (comptime takesFocus(members[i])) {
-                            if (which == i) self.focus = i;
-                        }
-                    }
                     return self.tell(which, event, atlas);
                 },
                 .move => |at| return self.tell(self.holding orelse self.over(at) orelse return .nothing, event, atlas),

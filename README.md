@@ -871,10 +871,9 @@ and will be written when something needs them.
 
 **The window is `ZTuple(&.{ Finder, Workspace })`**, and the workspace is
 `VTuple(&.{ Tabs, HList(TextView) })`: a bar that says how tall it is over a row
-of columns that takes the rest. A press on the bar picks a file without moving
-the keyboard into it, because `Tabs` declares `pub const takes_focus = false;` —
-a bar is pressed for what it does, not to be typed into, and the containers check
-that at compile time before moving focus to a member.
+of columns that takes the rest. Choosing a file — from the bar or from the finder
+— hands the keyboard to the column the file landed in, so a tab press ends with
+the document ready to be typed into rather than with the bar holding it.
 
 `Tabs` lays its own tabs out rather than being an `HList`, because a row of equal
 shares is the wrong shape for a row of words: each tab is as wide as the name in

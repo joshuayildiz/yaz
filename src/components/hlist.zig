@@ -25,13 +25,6 @@ const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
-/// Whether a press on a member should move the keyboard to it. A bar of tabs or
-/// a status line is pressed for what it does, not to be typed into, and says so
-/// with `pub const takes_focus = false;`. Anything that says nothing takes it.
-fn takesFocus(comptime T: type) bool {
-    return !@hasDecl(T, "takes_focus") or T.takes_focus;
-}
-
 pub fn HList(comptime Member: type) type {
     return struct {
         const Self = @This();
@@ -126,7 +119,7 @@ pub fn HList(comptime Member: type) type {
             switch (event) {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
-                    if (comptime takesFocus(Member)) self.focus = which;
+                    self.focus = which;
                     self.holding = which;
                     return self.items.items[which].update(event, atlas);
                 },

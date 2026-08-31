@@ -212,7 +212,16 @@ fn App(comptime Stack: type) type {
                     }
 
                     self.dirty = true;
-                    if (comptime Stack.has(Workspace)) try self.reveal(path);
+                    if (comptime Stack.has(Workspace)) {
+                        const workspace = self.stack.get(Workspace);
+                        try self.reveal(path);
+
+                        // Choosing a file is choosing to read it, so the
+                        // keyboard follows it into the column it landed in --
+                        // whether the choice came from the bar or from the
+                        // finder, and wherever the press that made it happened.
+                        workspace.focusOn(Views);
+                    }
                 },
             }
         }
