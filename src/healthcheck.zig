@@ -16,7 +16,6 @@ const Event = @import("./event.zig").Event;
 const glyph_atlas = @import("./glyph_atlas.zig");
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
-const Sprite = glyph_atlas.Sprite;
 
 const painter_mod = @import("./painter.zig");
 const Key = painter_mod.Key;
@@ -25,18 +24,23 @@ const Rect = painter_mod.Rect;
 
 const tools = @import("./tools.zig");
 
-/// The card is behind everything, the chip behind the words on it, the text on
-/// top of both. Nothing within a layer overlaps.
+/// The card is behind everything, the accent and the chip on it, the text on top
+/// of both. Nothing within a layer overlaps.
 const card_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.panel_colour };
-const rule_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.rule_colour };
+const accent_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.bad_colour };
 const chip_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.chip_colour };
 const text_layer = 2;
 
 /// In points, scaled like the font. Multiples of a common step, so the spacing
 /// reads as deliberate rather than as whatever fitted.
-const pad = 30;
-const gap = 12;
+const pad = 36;
+const gap = 14;
 const chip_pad = 8;
+
+/// The one strong mark on the card, in its own gutter down the left of the
+/// heading. It is what a border, a rule and a dot per tool were doing between
+/// them before.
+const accent = 3;
 
 /// A run of text placed on its own.
 ///
@@ -74,10 +78,10 @@ const Piece = struct {
     }
 };
 
-/// One tool, across the row: a dot, its name, whether it runs, and where it was
-/// looked for.
+/// One tool across the row: its name, whether it runs, and where it was looked
+/// for. The status is a word and a colour together, so neither is carrying it
+/// alone and neither needs a mark of its own beside it.
 const Row = struct {
-    dot: Piece,
     name: Piece,
     status: Piece,
     where: Piece,
@@ -87,7 +91,6 @@ pub const Healthcheck = struct {
     gpa: std.mem.Allocator,
 
     heading: Piece,
-    body: Piece,
     rows: [tools.Tool.all.len]Row,
 
     /// The last line, in three pieces so the command can sit in a chip.
@@ -108,7 +111,6 @@ pub const Healthcheck = struct {
         var made: usize = 0;
         var rows: [tools.Tool.all.len]Row = undefined;
         errdefer for (rows[0..made]) |*row| {
-            row.dot.deinit(gpa);
             row.name.deinit(gpa);
             row.status.deinit(gpa);
             row.where.deinit(gpa);
@@ -120,7 +122,6 @@ pub const Healthcheck = struct {
             errdefer gpa.free(where);
 
             row.* = .{
-                .dot = try piece(gpa, "\u{25CF}", if (absent) config.bad_colour else config.good_colour),
                 .name = try piece(gpa, tool.title(), config.text_colour),
                 .status = try piece(
                     gpa,
@@ -135,7 +136,6 @@ pub const Healthcheck = struct {
         return .{
             .gpa = gpa,
             .heading = try piece(gpa, "yaz can't start", config.text_colour),
-            .body = try piece(gpa, "It needs both of these:", config.muted_colour),
             .rows = rows,
             .run = try piece(gpa, "Run", config.muted_colour),
             .command = try piece(gpa, "yaz setup", config.text_colour),
@@ -149,9 +149,7 @@ pub const Healthcheck = struct {
 
     pub fn deinit(self: *Healthcheck) void {
         self.heading.deinit(self.gpa);
-        self.body.deinit(self.gpa);
         for (&self.rows) |*row| {
-            row.dot.deinit(self.gpa);
             row.name.deinit(self.gpa);
             row.status.deinit(self.gpa);
             row.where.deinit(self.gpa);
@@ -190,18 +188,16 @@ pub const Healthcheck = struct {
         self.dirty = true;
     }
 
-    const piece_count = 5 + tools.Tool.all.len * 4;
+    const piece_count = 4 + tools.Tool.all.len * 3;
 
     /// Every piece there is, so that shaping and dropping cannot disagree about
     /// what the view is made of.
     fn pieces(self: *Healthcheck, out: *[piece_count]*Piece) void {
         var at: usize = 0;
-        for ([_]*Piece{ &self.heading, &self.body }) |target| {
-            out[at] = target;
-            at += 1;
-        }
+        out[at] = &self.heading;
+        at += 1;
         for (&self.rows) |*row| {
-            for ([_]*Piece{ &row.dot, &row.name, &row.status, &row.where }) |target| {
+            for ([_]*Piece{ &row.name, &row.status, &row.where }) |target| {
                 out[at] = target;
                 at += 1;
             }
@@ -217,8 +213,7 @@ pub const Healthcheck = struct {
     /// rather than as pixel constants so the rhythm stays a multiple of the line
     /// height whatever the font size is.
     const heading_row = 0;
-    const body_row = 2;
-    const first_tool_row = 4;
+    const first_tool_row = 2;
     const footer_row = first_tool_row + tools.Tool.all.len + 1;
     const row_count = footer_row + 1;
 
@@ -240,11 +235,9 @@ pub const Healthcheck = struct {
         const spacing = @round(gap * scale);
 
         // The tool table's columns are as wide as their widest cell.
-        var dot_column: f32 = 0;
         var name_column: f32 = 0;
         var status_column: f32 = 0;
         for (&self.rows) |*row| {
-            dot_column = @max(dot_column, row.dot.width());
             name_column = @max(name_column, row.name.width());
             status_column = @max(status_column, row.status.width());
         }
@@ -252,10 +245,9 @@ pub const Healthcheck = struct {
         const chip_width = self.command.width() + 2 * @round(chip_pad * scale);
         const footer_width = self.run.width() + spacing + chip_width + spacing + self.tail.width();
 
-        var widest = @max(self.heading.width(), @max(self.body.width(), footer_width));
+        var widest = @max(self.heading.width(), footer_width);
         for (&self.rows) |*row| {
-            widest = @max(widest, dot_column + spacing + name_column + spacing +
-                status_column + spacing + row.where.width());
+            widest = @max(widest, name_column + spacing + status_column + spacing + row.where.width());
         }
 
         const card: Rect = .{
@@ -274,14 +266,6 @@ pub const Healthcheck = struct {
 
         try painter.add(card_key, .solid(.{ left, top }, .{ card.width, card.height }));
 
-        // A hairline round it. The fill is barely off the background, which is
-        // what keeps it quiet, and an edge is what then keeps it a shape.
-        const edge = @max(1, @round(scale));
-        try painter.add(rule_key, .solid(.{ left, top }, .{ card.width, edge }));
-        try painter.add(rule_key, .solid(.{ left, top + card.height - edge }, .{ card.width, edge }));
-        try painter.add(rule_key, .solid(.{ left, top }, .{ edge, card.height }));
-        try painter.add(rule_key, .solid(.{ left + card.width - edge, top }, .{ edge, card.height }));
-
         const text_left = left + padding;
         const baseline = struct {
             fn at(t: f32, p: f32, s: f32, ascent: f32, row: f32) f32 {
@@ -289,22 +273,24 @@ pub const Healthcheck = struct {
             }
         }.at;
 
-        try self.heading.draw(painter, .{ text_left, baseline(top, padding, step, atlas.ascent, heading_row) });
+        const heading_y = baseline(top, padding, step, atlas.ascent, heading_row);
+        try self.heading.draw(painter, .{ text_left, heading_y });
 
-        // A rule under the heading, in the blank row that follows it.
-        const rule_y = @round(top + padding + (heading_row + 1.5) * step);
-        try painter.add(rule_key, .solid(
-            .{ text_left, rule_y },
-            .{ widest, edge },
+        // Beside the heading only, and as tall as it: down the whole card it
+        // would be a border again rather than a mark.
+        //
+        // It hangs in the left padding rather than in a gutter of its own, so
+        // that the words start where the padding says and the card stays even
+        // on both sides.
+        const mark = @round(accent * scale);
+        try painter.add(accent_key, .solid(
+            .{ text_left - spacing - mark, @round(heading_y - atlas.ascent) },
+            .{ mark, step },
         ));
-
-        try self.body.draw(painter, .{ text_left, baseline(top, padding, step, atlas.ascent, body_row) });
 
         for (&self.rows, 0..) |*row, index| {
             const y = baseline(top, padding, step, atlas.ascent, @floatFromInt(first_tool_row + index));
             var x = text_left;
-            try row.dot.draw(painter, .{ x, y });
-            x += dot_column + spacing;
             try row.name.draw(painter, .{ x, y });
             x += name_column + spacing;
             try row.status.draw(painter, .{ x, y });

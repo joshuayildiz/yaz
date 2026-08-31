@@ -24,7 +24,6 @@ pub const scrollbar_colour: [4]f32 = .{ 0, 0, 0, 0.28 };
 // The healthcheck, the only thing yaz draws that is not a document.
 
 pub const panel_colour: [4]f32 = .{ 0.965, 0.965, 0.975, 1 };
-pub const rule_colour: [4]f32 = .{ 0, 0, 0, 0.12 };
 pub const chip_colour: [4]f32 = .{ 0.855, 0.855, 0.875, 1 };
 
 /// Paths and anything else said quietly.
