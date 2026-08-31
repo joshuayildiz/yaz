@@ -26,7 +26,8 @@ clear.
 
 What is left is the loss itself, and nothing warns about it on the way out --
 now including cmd+W, which closes a file and frees its document whether or not
-the tab says it has been changed.
+the tab says it has been changed, and which closes the window once the bar is
+empty.
 
 **Left alone because** the answer is saving, not a better warning about not
 saving. `Document.modified` is now set by every edit and read by the bar, so the

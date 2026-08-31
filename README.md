@@ -100,9 +100,14 @@ the keyboard between the columns.
 document goes, and the column falls back to the first file nothing else is
 showing — or to an empty document when there is none, which is where a window
 with no file named starts. It closes what that column has, so a file sitting in
-another column is reached with cmd+N or a press before it can be closed. **There
-is no save and nothing asks**, so closing a file with a mark on its tab throws
-the edit away.
+another column is reached with cmd+N or a press before it can be closed.
+
+**With nothing left on the bar, cmd+W closes the window.** That is also how a
+window that was never given a file ends, so `yaz` on its own is not a thing you
+have to reach for the mouse to be rid of.
+
+**There is no save and nothing asks**, so closing a file with a mark on its tab
+throws the edit away — and the last cmd+W throws away every file still open.
 
 A tab carries a **mark to the left of its name when the file has been changed and
 not saved**, which is every file that has been typed into, since there is still

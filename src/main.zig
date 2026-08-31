@@ -282,7 +282,8 @@ fn App(comptime Stack: type) type {
         }
 
         /// Takes the file the focused column is showing off the bar and out of
-        /// memory, and puts something else in the column.
+        /// memory, and puts something else in the column. With nothing left on
+        /// the bar the window goes too.
         ///
         /// The column takes the first file nothing is showing, so closing walks
         /// back through what is open; when there is nothing left it goes empty,
@@ -292,40 +293,48 @@ fn App(comptime Stack: type) type {
             const views = workspace.get(Views);
             const tabs = workspace.get(Tabs);
 
-            const view = views.focused() orelse return;
-            // A document nobody named has no tab, so there is nothing to close.
-            const closing = view.path orelse return;
+            // A document nobody named has no tab and so nothing to close, which
+            // is not the same as nothing to do: the window still goes if that
+            // leaves the bar empty.
+            close: {
+                const view = views.focused() orelse break :close;
+                const closing = view.path orelse break :close;
 
-            var next: ?Parked.Map.KV = null;
-            for (tabs.paths.items) |listed| {
-                if (self.parked.fetchRemove(listed)) |entry| {
-                    next = entry;
-                    break;
+                var next: ?Parked.Map.KV = null;
+                for (tabs.paths.items) |listed| {
+                    if (self.parked.fetchRemove(listed)) |entry| {
+                        next = entry;
+                        break;
+                    }
                 }
+
+                tabs.close(closing);
+
+                var document: Document = undefined;
+                var was: ?Position = null;
+                var path: ?[]const u8 = null;
+                if (next) |entry| {
+                    document = entry.value.document;
+                    was = entry.value.position;
+                    path = entry.key;
+                } else {
+                    document = try Document.init(self.gpa, "");
+                }
+                errdefer document.deinit();
+
+                var retired = try view.swap(document, path, was, &self.renderer.atlas);
+                if (next) |entry| self.gpa.free(entry.key);
+
+                // Not parked: closing is the one thing that means a document is
+                // finished with.
+                if (retired.path) |named| self.gpa.free(named);
+                retired.document.deinit();
             }
 
-            tabs.close(closing);
-
-            var document: Document = undefined;
-            var was: ?Position = null;
-            var path: ?[]const u8 = null;
-            if (next) |entry| {
-                document = entry.value.document;
-                was = entry.value.position;
-                path = entry.key;
-            } else {
-                document = try Document.init(self.gpa, "");
-            }
-            errdefer document.deinit();
-
-            var retired = try view.swap(document, path, was, &self.renderer.atlas);
-            if (next) |entry| self.gpa.free(entry.key);
-
-            // Not parked: closing is the one thing that means a document is
-            // finished with.
-            if (retired.path) |named| self.gpa.free(named);
-            retired.document.deinit();
-
+            // Nothing open is nothing to come back to. It is also where a window
+            // that was never given a file starts, so cmd+W on one of those is a
+            // way out rather than a keystroke that does nothing.
+            if (tabs.paths.items.len == 0) self.running = false;
             self.dirty = true;
         }
 
