@@ -21,12 +21,12 @@
 const std = @import("std");
 
 const config = @import("../config.zig");
-const event_mod = @import("../event.zig");
-const Event = event_mod.Event;
-const Intent = event_mod.Intent;
+const message_mod = @import("../message.zig");
+const Message = message_mod.Message;
+const Intent = message_mod.Intent;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
-const Context = @import("../context.zig").Context;
+const Model = @import("../model.zig").Model;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 
@@ -104,32 +104,32 @@ const Query = struct {
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    pub fn deinit(self: *Query, cx: *Context) void {
-        self.typed.deinit(cx.allocator);
-        self.layout.deinit(cx.allocator);
-        self.count.deinit(cx.allocator);
+    pub fn deinit(self: *Query, model: *Model) void {
+        self.typed.deinit(model.allocator);
+        self.layout.deinit(model.allocator);
+        self.count.deinit(model.allocator);
     }
 
     /// One line of text and the air round it, plus the gap that separates this
     /// surface from the list. Stated here rather than by the panel because the
     /// panel cannot know that this is a line of text.
-    pub fn height(self: *const Query, cx: *Context) ?f32 {
+    pub fn height(self: *const Query, model: *Model) ?f32 {
         _ = self;
-        return @round(cx.atlas.line_height + 2 * @round(pad * cx.atlas.scale) + @round(split * cx.atlas.scale));
+        return @round(model.atlas.line_height + 2 * @round(pad * model.atlas.scale) + @round(split * model.atlas.scale));
     }
 
     /// The box itself, which is shorter than the band by the gap below it.
-    fn box(self: *const Query, cx: *Context) Rect {
+    fn box(self: *const Query, model: *Model) Rect {
         return .{
             .x = self.rect.x,
             .y = self.rect.y,
             .width = self.rect.width,
-            .height = @round(cx.atlas.line_height + 2 * @round(pad * cx.atlas.scale)),
+            .height = @round(model.atlas.line_height + 2 * @round(pad * model.atlas.scale)),
         };
     }
 
-    pub fn place(self: *Query, cx: *Context, rect: Rect) void {
-        _ = cx.atlas;
+    pub fn place(self: *Query, model: *Model, rect: Rect) void {
+        _ = model.atlas;
         self.rect = rect;
     }
 
@@ -146,17 +146,17 @@ const Query = struct {
     }
 
     /// What the finder found, for the far end of the line.
-    pub fn counted(self: *Query, cx: *Context, shown: usize, total: usize) void {
+    pub fn counted(self: *Query, model: *Model, shown: usize, total: usize) void {
         self.shown = shown;
         self.total = total;
         self.count.shaped = false;
-        cx.changed();
+        model.changed();
     }
 
-    pub fn update(self: *Query, cx: *Context, event: Event) !Intent {
-        _ = cx.atlas;
-        switch (event) {
-            .text => |what| try self.typed.appendSlice(cx.allocator, what),
+    pub fn update(self: *Query, model: *Model, message: Message) !Intent {
+        _ = model.atlas;
+        switch (message) {
+            .text => |what| try self.typed.appendSlice(model.allocator, what),
             .backspace => {
                 if (self.typed.items.len == 0) return .nothing;
                 // One byte at a time is wrong the moment the query is not
@@ -172,25 +172,25 @@ const Query = struct {
         // opened -- and every character typed after goes on the panel without
         // appearing on it.
         self.layout.shaped = false;
-        cx.changed();
+        model.changed();
         return .nothing;
     }
 
-    pub fn draw(self: *Query, cx: *Context, painter: *Painter) !void {
-        const inset = @round(pad * cx.atlas.scale);
-        const field = self.box(cx);
-        try surface(painter, cx.atlas, field);
+    pub fn draw(self: *Query, model: *Model, painter: *Painter) !void {
+        const inset = @round(pad * model.atlas.scale);
+        const field = self.box(model);
+        try surface(painter, model.atlas, field);
 
         const left = field.x + inset;
         const right = field.x + field.width - inset;
-        const baseline = @round(field.y + inset + cx.atlas.ascent);
+        const baseline = @round(field.y + inset + model.atlas.ascent);
 
-        if (!self.layout.shaped) try cx.atlas.shapeLine(self.typed.items, &self.layout);
+        if (!self.layout.shaped) try model.atlas.shapeLine(self.typed.items, &self.layout);
         try drawLine(painter, text_key, &self.layout, .{ left, baseline });
 
         try painter.add(caret_key, .solid(
-            .{ @round(left + advance(&self.layout)), @round(baseline - cx.atlas.ascent) },
-            .{ hairline(cx.atlas), cx.atlas.line_height },
+            .{ @round(left + advance(&self.layout)), @round(baseline - model.atlas.ascent) },
+            .{ hairline(model.atlas), model.atlas.line_height },
         ));
 
         if (!self.count.shaped) {
@@ -201,7 +201,7 @@ const Query = struct {
                 try std.fmt.bufPrint(&buffer, "{d}", .{self.total})
             else
                 try std.fmt.bufPrint(&buffer, "{d} of {d}", .{ self.shown, self.total });
-            try cx.atlas.shapeLine(label, &self.count);
+            try model.atlas.shapeLine(label, &self.count);
         }
         try drawLine(painter, faint_key, &self.count, .{ @round(right - advance(&self.count)), baseline });
     }
@@ -236,22 +236,22 @@ const Results = struct {
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    pub fn deinit(self: *Results, cx: *Context) void {
-        for (&self.rows) |*row| row.deinit(cx.allocator);
+    pub fn deinit(self: *Results, model: *Model) void {
+        for (&self.rows) |*row| row.deinit(model.allocator);
     }
 
     /// As many rows as there are, and nothing at all when there are none: an
     /// empty box under an empty query would be a promise of something that is
     /// not there.
-    pub fn height(self: *const Results, cx: *Context) ?f32 {
+    pub fn height(self: *const Results, model: *Model) ?f32 {
         const shown = @min(self.matches.len, visible_rows);
         if (shown == 0) return 0;
-        const step = @round(cx.atlas.line_height * leading);
-        return @round(@as(f32, @floatFromInt(shown)) * step + 2 * @round(pad * cx.atlas.scale));
+        const step = @round(model.atlas.line_height * leading);
+        return @round(@as(f32, @floatFromInt(shown)) * step + 2 * @round(pad * model.atlas.scale));
     }
 
-    pub fn place(self: *Results, cx: *Context, rect: Rect) void {
-        _ = cx.atlas;
+    pub fn place(self: *Results, model: *Model, rect: Rect) void {
+        _ = model.atlas;
         self.rect = rect;
     }
 
@@ -260,12 +260,12 @@ const Results = struct {
     }
 
     /// Points at a new set of matches and goes back to the top of it.
-    pub fn show(self: *Results, cx: *Context, matches: []const []const u8) void {
+    pub fn show(self: *Results, model: *Model, matches: []const []const u8) void {
         self.matches = matches;
         self.selected = 0;
         self.top_row = 0;
         self.laid_out = false;
-        cx.changed();
+        model.changed();
     }
 
     /// What return would open.
@@ -274,9 +274,9 @@ const Results = struct {
         return self.matches[self.selected];
     }
 
-    pub fn update(self: *Results, cx: *Context, event: Event) !Intent {
-        _ = cx.atlas;
-        switch (event) {
+    pub fn update(self: *Results, model: *Model, message: Message) !Intent {
+        _ = model.atlas;
+        switch (message) {
             .up => if (self.selected > 0) {
                 self.selected -= 1;
             },
@@ -292,7 +292,7 @@ const Results = struct {
             self.top_row = self.selected + 1 - visible_rows;
         }
         self.laid_out = false;
-        cx.changed();
+        model.changed();
         return .nothing;
     }
 
@@ -319,15 +319,15 @@ const Results = struct {
         self.laid_out = true;
     }
 
-    pub fn draw(self: *Results, cx: *Context, painter: *Painter) !void {
+    pub fn draw(self: *Results, model: *Model, painter: *Painter) !void {
         if (self.matches.len == 0) return;
-        try self.layOut(cx.atlas);
+        try self.layOut(model.atlas);
 
-        try surface(painter, cx.atlas, self.rect);
+        try surface(painter, model.atlas, self.rect);
 
-        const line = hairline(cx.atlas);
-        const inset = @round(pad * cx.atlas.scale);
-        const step = @round(cx.atlas.line_height * leading);
+        const line = hairline(model.atlas);
+        const inset = @round(pad * model.atlas.scale);
+        const step = @round(model.atlas.line_height * leading);
         const left = self.rect.x + inset;
         const right = self.rect.x + self.rect.width - inset;
 
@@ -337,7 +337,7 @@ const Results = struct {
 
             const is_chosen = which == self.selected;
             const top = @round(self.rect.y + inset + @as(f32, @floatFromInt(index)) * step);
-            const baseline = @round(top + (step - cx.atlas.line_height) / 2 + cx.atlas.ascent);
+            const baseline = @round(top + (step - model.atlas.line_height) / 2 + model.atlas.ascent);
 
             // Edge to edge inside the border, so the tint reads as the row
             // rather than as another box inside the one it is already in.
@@ -391,44 +391,44 @@ pub const Finder = struct {
         };
     }
 
-    pub fn deinit(self: *Finder, cx: *Context) void {
-        self.close(cx);
-        self.all.deinit(cx.allocator);
-        self.matches.deinit(cx.allocator);
-        self.panel.deinit(cx);
+    pub fn deinit(self: *Finder, model: *Model) void {
+        self.close(model);
+        self.all.deinit(model.allocator);
+        self.matches.deinit(model.allocator);
+        self.panel.deinit(model);
 
-        cx.allocator.free(self.rg);
-        cx.allocator.free(self.fzf);
+        model.allocator.free(self.rg);
+        model.allocator.free(self.fzf);
     }
 
     /// Everything that only exists while it is open. The listing is the one
     /// thing here that grows with the repository, so it does not outlive a
     /// closed finder.
-    fn close(self: *Finder, cx: *Context) void {
+    fn close(self: *Finder, model: *Model) void {
         self.showing = false;
 
         // Before the bytes go, since the rows point into them.
-        self.panel.get(Results).show(cx, &.{});
+        self.panel.get(Results).show(model, &.{});
         self.panel.get(Query).clear();
 
         self.all.clearRetainingCapacity();
         self.matches.clearRetainingCapacity();
 
-        cx.allocator.free(self.listing);
+        model.allocator.free(self.listing);
         self.listing = &.{};
-        cx.allocator.free(self.ranked);
+        model.allocator.free(self.ranked);
         self.ranked = &.{};
     }
 
     /// A measure down the middle, hanging a short way from the top of the
     /// window. Its height is whatever the two surfaces asked for, since neither
     /// of them wants what is left over.
-    pub fn place(self: *Finder, cx: *Context, rect: Rect) void {
+    pub fn place(self: *Finder, model: *Model, rect: Rect) void {
         self.rect = rect;
 
         const column = @round(rect.width * column_share);
-        const top = @round(rect.y + @round(drop * cx.atlas.scale));
-        self.panel.place(cx, .{
+        const top = @round(rect.y + @round(drop * model.atlas.scale));
+        self.panel.place(model, .{
             .x = @round(rect.x + (rect.width - column) / 2),
             .y = top,
             .width = column,
@@ -441,48 +441,48 @@ pub const Finder = struct {
     }
 
     /// Reads what there is to choose between and shows the panel.
-    pub fn show(self: *Finder, cx: *Context) !void {
-        self.close(cx);
+    pub fn show(self: *Finder, model: *Model) !void {
+        self.close(model);
         self.showing = true;
-        cx.changed();
+        model.changed();
 
-        const result = try std.process.run(cx.allocator, cx.io, .{
+        const result = try std.process.run(model.allocator, model.io, .{
             .argv = &.{ self.rg, "--files" },
             .stdout_limit = .limited(16 << 20),
         });
-        defer cx.allocator.free(result.stderr);
-        errdefer cx.allocator.free(result.stdout);
+        defer model.allocator.free(result.stderr);
+        errdefer model.allocator.free(result.stdout);
 
         self.listing = result.stdout;
         var lines = std.mem.splitScalar(u8, self.listing, '\n');
         while (lines.next()) |line| {
-            if (line.len != 0) try self.all.append(cx.allocator, line);
+            if (line.len != 0) try self.all.append(model.allocator, line);
         }
 
-        try self.rank(cx);
+        try self.rank(model);
     }
 
     /// The path it answers with is copied out of the listing, which closing
     /// frees, so whoever takes it owns it.
-    pub fn update(self: *Finder, cx: *Context, event: Event) !Intent {
-        switch (event) {
+    pub fn update(self: *Finder, model: *Model, message: Message) !Intent {
+        switch (message) {
             .cancel, .find => {
-                self.close(cx);
+                self.close(model);
                 return .dismiss;
             },
             .newline => {
                 const picked = self.panel.get(Results).chosen() orelse return .nothing;
-                const path = try cx.allocator.dupe(u8, picked);
-                self.close(cx);
+                const path = try model.allocator.dupe(u8, picked);
+                self.close(model);
                 return .{ .open = path };
             },
             // The selection is the list's, and the characters are the query's.
             // Both are in the panel; only the arrows are not for the one with
             // the keyboard, so they are handed over by name.
-            .up, .down => return self.panel.get(Results).update(cx, event),
+            .up, .down => return self.panel.get(Results).update(model, message),
             .text, .backspace => {
-                _ = try self.panel.update(cx, event);
-                try self.rank(cx);
+                _ = try self.panel.update(model, message);
+                try self.rank(model);
                 return .nothing;
             },
             else => return .nothing,
@@ -492,25 +492,25 @@ pub const Finder = struct {
     /// Re-ranks against the query. Nothing typed is nothing offered: the whole
     /// repository is not an answer, and shaping a screenful of it would be work
     /// done on the way to being thrown away.
-    fn rank(self: *Finder, cx: *Context) !void {
+    fn rank(self: *Finder, model: *Model) !void {
         self.matches.clearRetainingCapacity();
-        self.panel.get(Results).show(cx, &.{});
+        self.panel.get(Results).show(model, &.{});
 
-        cx.allocator.free(self.ranked);
+        model.allocator.free(self.ranked);
         self.ranked = &.{};
 
         const query = self.panel.get(Query).typed.items;
         if (query.len != 0) {
-            const filter = try std.fmt.allocPrint(cx.allocator, "--filter={s}", .{query});
-            defer cx.allocator.free(filter);
+            const filter = try std.fmt.allocPrint(model.allocator, "--filter={s}", .{query});
+            defer model.allocator.free(filter);
 
-            var child = try std.process.spawn(cx.io, .{
+            var child = try std.process.spawn(model.io, .{
                 .argv = &.{ self.fzf, filter },
                 .stdin = .pipe,
                 .stdout = .pipe,
                 .stderr = .ignore,
             });
-            errdefer child.kill(cx.io);
+            errdefer child.kill(model.io);
 
             // Everything in, then the pipe closed, then everything out. Safe in
             // that order because `--filter` has to score every candidate before
@@ -518,30 +518,30 @@ pub const Finder = struct {
             // measured at 8.6MB each way without wedging.
             {
                 var buffer: [64 * 1024]u8 = undefined;
-                var writer = child.stdin.?.writer(cx.io, &buffer);
+                var writer = child.stdin.?.writer(model.io, &buffer);
                 try writer.interface.writeAll(self.listing);
                 try writer.interface.flush();
             }
-            child.stdin.?.close(cx.io);
+            child.stdin.?.close(model.io);
             child.stdin = null;
 
             var buffer: [64 * 1024]u8 = undefined;
-            var reader = child.stdout.?.reader(cx.io, &buffer);
-            self.ranked = try reader.interface.allocRemaining(cx.allocator, .limited(16 << 20));
+            var reader = child.stdout.?.reader(model.io, &buffer);
+            self.ranked = try reader.interface.allocRemaining(model.allocator, .limited(16 << 20));
 
-            _ = try child.wait(cx.io);
+            _ = try child.wait(model.io);
 
             var lines = std.mem.splitScalar(u8, self.ranked, '\n');
             while (lines.next()) |line| {
-                if (line.len != 0) try self.matches.append(cx.allocator, line);
+                if (line.len != 0) try self.matches.append(model.allocator, line);
             }
         }
 
-        self.panel.get(Results).show(cx, self.matches.items);
-        self.panel.get(Query).counted(cx, self.matches.items.len, self.all.items.len);
+        self.panel.get(Results).show(model, self.matches.items);
+        self.panel.get(Query).counted(model, self.matches.items.len, self.all.items.len);
     }
 
-    pub fn draw(self: *Finder, cx: *Context, painter: *Painter) !void {
+    pub fn draw(self: *Finder, model: *Model, painter: *Painter) !void {
         if (!self.showing) return;
 
         painter.clipTo(self.rect);
@@ -549,6 +549,6 @@ pub const Finder = struct {
 
         // Nothing is laid over the file: the panel is two opaque surfaces
         // and the code either side of them is not dimmed at all.
-        try self.panel.draw(cx, painter);
+        try self.panel.draw(model, painter);
     }
 };

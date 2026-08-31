@@ -2,9 +2,9 @@ const std = @import("std");
 
 const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
-const Context = @import("./context.zig").Context;
-const event_mod = @import("./event.zig");
-const Event = event_mod.Event;
+const Model = @import("./model.zig").Model;
+const message_mod = @import("./message.zig");
+const Message = message_mod.Message;
 const Painter = @import("./painter.zig").Painter;
 const sdl = @import("./sdl.zig");
 const tools = @import("./tools.zig");
@@ -30,32 +30,32 @@ pub fn main(init: std.process.Init) !void {
 
     // Built once, and the whole of what the window is showing. Everything
     // below reads its state out of this and writes changes back into it.
-    var cx: Context = .init(init);
-    defer cx.deinit();
+    var model: Model = .init(init);
+    defer model.deinit();
 
     // The tools before anything else: with either of them missing nothing but
     // the healthcheck runs, and reading a file first would report the wrong
     // problem when the path is also bad.
-    const absent = try tools.missing(cx.allocator, cx.io, init.minimal.environ);
+    const absent = try tools.missing(model.allocator, model.io, init.minimal.environ);
     if (absent.any()) {
-        const stopped = try Healthcheck.init(cx.allocator, init.minimal.environ, absent);
-        return run(&cx, Healthcheck, stopped, null);
+        const stopped = try Healthcheck.init(model.allocator, init.minimal.environ, absent);
+        return run(&model, Healthcheck, stopped, null);
     }
 
     // Read out here rather than inside `run`, so a file that cannot be opened
     // fails before a window has appeared and gone again. Nothing a component is
     // built from needs a window.
-    try cx.openNamed(init);
+    try model.openNamed(init);
 
     // A column per file named, left to right in the order they were named.
-    try cx.columns.appendSlice(cx.allocator, cx.files.items);
+    try model.columns.appendSlice(model.allocator, model.files.items);
 
     // Borrowed rather than copied: `run` hands it to SDL, which copies it, and
     // the context outlives the call.
-    const title = cx.files.items[0].path;
+    const title = model.files.items[0].path;
 
-    const finder = try Finder.init(cx.allocator, init.minimal.environ);
-    return run(&cx, Editing, .init(.{ finder, .init(.{}, .{}) }), title);
+    const finder = try Finder.init(model.allocator, init.minimal.environ);
+    return run(&model, Editing, .init(.{ finder, .init(.{}, .{}) }), title);
 }
 
 /// The window, and the one component `main` put in it.
@@ -68,28 +68,28 @@ fn App(comptime Component: type) type {
     return struct {
         const Self = @This();
 
-        cx: *Context,
+        model: *Model,
         renderer: Renderer,
         painter: Painter,
         component: Component,
 
         fn deinit(self: *Self) void {
-            self.component.deinit(self.cx);
+            self.component.deinit(self.model);
             self.painter.deinit();
             self.renderer.deinit();
         }
 
         /// Two events belong to the window itself and the rest belong to what
         /// is in it. What changed is not answered here; it is asked for
-        /// afterwards, through `Context.dirty`.
-        fn update(self: *Self, event: Event) !void {
+        /// afterwards, through `Model.dirty`.
+        fn update(self: *Self, event: Message) !void {
             switch (event) {
                 .quit => {
-                    self.cx.running = false;
+                    self.model.running = false;
                     return;
                 },
                 .resized => {
-                    self.cx.changed();
+                    self.model.changed();
                     return;
                 },
                 else => {},
@@ -97,8 +97,8 @@ fn App(comptime Component: type) type {
 
             // What nobody in the tree took. A path belongs to whoever takes it,
             // so one that comes all the way back out is this to free.
-            switch (try self.component.update(self.cx, event)) {
-                .open, .only => |path| self.cx.allocator.free(path),
+            switch (try self.component.update(self.model, event)) {
+                .open, .only => |path| self.model.allocator.free(path),
                 else => {},
             }
         }
@@ -109,7 +109,7 @@ fn App(comptime Component: type) type {
             // modal loop, where only the watch below runs.
             const scale = displayScale(self.renderer.window);
             if (try self.renderer.atlas.setScale(scale)) {
-                self.cx.invalidate();
+                self.model.invalidate();
                 self.component.invalidate();
             }
 
@@ -123,7 +123,7 @@ fn App(comptime Component: type) type {
             // Everything gets the whole window. A component that divides it --
             // the columns -- does that itself; one that lies over it -- the
             // finder -- wants all of it.
-            self.component.place(self.cx, .{
+            self.component.place(self.model, .{
                 .x = 0,
                 .y = 0,
                 .width = @floatFromInt(width),
@@ -131,7 +131,7 @@ fn App(comptime Component: type) type {
             });
 
             self.painter.clear();
-            try self.component.draw(self.cx, &self.painter);
+            try self.component.draw(self.model, &self.painter);
             try self.renderer.present(&self.painter);
         }
 
@@ -154,7 +154,7 @@ fn App(comptime Component: type) type {
 }
 
 /// Puts a window up and runs `component` in it until it is closed.
-fn run(cx: *Context, comptime Component: type, component: Component, title: ?[]const u8) !void {
+fn run(model: *Model, comptime Component: type, component: Component, title: ?[]const u8) !void {
     // macOS makes inertial scroll events of its own and SDL turns them off
     // unless asked. Asking costs nothing while nothing is moving: momentum is
     // more wheel events, and they stop arriving when it stops. Before
@@ -193,16 +193,16 @@ fn run(cx: *Context, comptime Component: type, component: Component, title: ?[]c
     defer _ = c.SDL_StopTextInput(window);
 
     var app: App(Component) = .{
-        .cx = cx,
-        .renderer = try Renderer.init(cx.allocator, window),
-        .painter = .init(cx.allocator),
+        .model = model,
+        .renderer = try Renderer.init(model.allocator, window),
+        .painter = .init(model.allocator),
         .component = component,
     };
     defer app.deinit();
 
     // The last thing the context was missing: the renderer owns the atlas, and
     // the renderer needs a window. Nothing has placed, drawn or measured yet.
-    cx.attach(&app.renderer.atlas);
+    model.attach(&app.renderer.atlas);
 
     // Only a window with a file in it has anything to be called. SDL copies the
     // string, so the sentinel it wants is borrowed for the length of the call
@@ -210,8 +210,8 @@ fn run(cx: *Context, comptime Component: type, component: Component, title: ?[]c
     // allocation is one byte longer than its length, and the parked documents
     // are keyed by exactly that path.
     if (title) |named| {
-        const owned = try cx.allocator.dupeZ(u8, named);
-        defer cx.allocator.free(owned);
+        const owned = try model.allocator.dupeZ(u8, named);
+        defer model.allocator.free(owned);
         _ = c.SDL_SetWindowTitle(window, owned.ptr);
     }
 
@@ -224,10 +224,10 @@ fn run(cx: *Context, comptime Component: type, component: Component, title: ?[]c
     // Blocking wait, not a poll loop: idle costs nothing. Waking up is not a
     // reason to draw, though; only a change to what is on screen is.
     var event: c.SDL_Event = undefined;
-    while (cx.running) {
-        if (cx.dirty) {
+    while (model.running) {
+        if (model.dirty) {
             try app.redraw();
-            cx.dirty = false;
+            model.dirty = false;
         }
 
         if (!c.SDL_WaitEvent(&event)) {
@@ -241,7 +241,7 @@ fn run(cx: *Context, comptime Component: type, component: Component, title: ?[]c
         // swapchain, so each redundant one costs real latency, not just work.
         while (true) {
             const density = c.SDL_GetWindowPixelDensity(window);
-            if (Event.init(&event, density)) |what| try app.update(what);
+            if (Message.init(&event, density)) |what| try app.update(what);
             if (!c.SDL_PollEvent(&event)) break;
         }
     }
@@ -309,8 +309,8 @@ test {
     // same as collecting its tests, and tools.zig's had never run.
     _ = &main;
     _ = @import("./tools.zig");
-    _ = @import("./context.zig");
-    _ = @import("./event.zig");
+    _ = @import("./model.zig");
+    _ = @import("./message.zig");
     _ = @import("./renderer.zig");
     _ = @import("./components/text_view.zig");
     _ = @import("./components/ztuple.zig");

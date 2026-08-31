@@ -1,10 +1,14 @@
-//! What every component is given.
+//! The state the window is showing, and the only thing that outlives a frame.
 //!
 //! Handed to `place`, `update` and `draw` as the first argument rather than
 //! stored: a component that kept a copy of the allocator would have a second
-//! one to keep in step with this, which is the thing this is here to stop. The
-//! atlas is here for the same reason -- it was threaded through every one of
-//! those calls by hand.
+//! one to keep in step with this, which is the thing this is here to stop, and
+//! the atlas was threaded through every one of those calls by hand.
+//!
+//! What a component keeps is where it drew things. What files are open, which
+//! are on screen, where each caret is and whether the window is still up are
+//! all here, so drawing is a matter of reading this rather than of asking
+//! around.
 
 const std = @import("std");
 
@@ -16,7 +20,7 @@ const OpenFile = @import("./open_file.zig").OpenFile;
 /// entry for each of them, and the line index behind it.
 const file_limit = 1 << 20;
 
-pub const Context = struct {
+pub const Model = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
 
@@ -68,7 +72,7 @@ pub const Context = struct {
     /// Nothing is open yet and there is no atlas yet: the first needs the
     /// command line to have been read, the second needs a window. Both arrive
     /// through the two calls below, and nothing draws in between.
-    pub fn init(process: std.process.Init) Context {
+    pub fn init(process: std.process.Init) Model {
         return .{ .allocator = process.gpa, .io = process.io };
     }
 
@@ -79,7 +83,7 @@ pub const Context = struct {
     /// Apart from `init` because the tool check comes between them: with
     /// ripgrep or fzf missing nothing but the healthcheck runs, and reading a
     /// file first would report the wrong problem when the path is also bad.
-    pub fn openNamed(self: *Context, process: std.process.Init) !void {
+    pub fn openNamed(self: *Model, process: std.process.Init) !void {
         var args = try std.process.Args.Iterator.initAllocator(process.minimal.args, self.allocator);
         defer args.deinit();
         _ = args.skip(); // The program itself.
@@ -94,26 +98,26 @@ pub const Context = struct {
 
     /// The atlas, once there is a window to have made one. Called once, before
     /// anything is placed or drawn.
-    pub fn attach(self: *Context, atlas: *GlyphAtlas) void {
+    pub fn attach(self: *Model, atlas: *GlyphAtlas) void {
         self.atlas = atlas;
     }
 
     /// Says the model has moved on and the window has to be drawn again.
-    pub fn changed(self: *Context) void {
+    pub fn changed(self: *Model) void {
         self.dirty = true;
     }
 
     /// What the column with the keyboard is showing, or none before there is a
     /// column. Asked rather than stored: it is `columns` and `focus`, and two
     /// facts that agree by construction cannot drift.
-    pub fn showing(self: *const Context) ?*OpenFile {
+    pub fn showing(self: *const Model) ?*OpenFile {
         if (self.focus >= self.columns.items.len) return null;
         return self.columns.items[self.focus];
     }
 
     /// Whether a column is showing `file`. The bar asks this of every file it
     /// lists, which is few enough that a walk is the whole of it.
-    pub fn onScreen(self: *const Context, file: *const OpenFile) bool {
+    pub fn onScreen(self: *const Model, file: *const OpenFile) bool {
         for (self.columns.items) |shown| {
             if (shown == file) return true;
         }
@@ -121,14 +125,14 @@ pub const Context = struct {
     }
 
     /// Which column is showing `file`, if one is.
-    pub fn columnOf(self: *const Context, file: *const OpenFile) ?usize {
+    pub fn columnOf(self: *const Model, file: *const OpenFile) ?usize {
         for (self.columns.items, 0..) |shown, which| {
             if (shown == file) return which;
         }
         return null;
     }
 
-    pub fn deinit(self: *Context) void {
+    pub fn deinit(self: *Model) void {
         self.columns.deinit(self.allocator);
         for (self.files.items) |file| {
             file.deinit();
@@ -141,7 +145,7 @@ pub const Context = struct {
     ///
     /// Asking twice gives the same file back, which is what stops two columns
     /// showing two copies of one file that drift apart.
-    pub fn open(self: *Context, path: []const u8) !*OpenFile {
+    pub fn open(self: *Model, path: []const u8) !*OpenFile {
         if (self.find(path)) |already| return already;
 
         const text = try self.read(path);
@@ -150,11 +154,11 @@ pub const Context = struct {
     }
 
     /// A file nobody named, which is what a window with nothing to show has.
-    pub fn blank(self: *Context) !*OpenFile {
+    pub fn blank(self: *Model) !*OpenFile {
         return self.hold("", null);
     }
 
-    pub fn find(self: *Context, path: []const u8) ?*OpenFile {
+    pub fn find(self: *Model, path: []const u8) ?*OpenFile {
         for (self.files.items) |file| {
             const named = file.path orelse continue;
             if (std.mem.eql(u8, named, path)) return file;
@@ -162,7 +166,7 @@ pub const Context = struct {
         return null;
     }
 
-    pub fn indexOf(self: *Context, file: *const OpenFile) ?usize {
+    pub fn indexOf(self: *Model, file: *const OpenFile) ?usize {
         for (self.files.items, 0..) |listed, which| {
             if (listed == file) return which;
         }
@@ -171,7 +175,7 @@ pub const Context = struct {
 
     /// Out of the window and out of memory. Closing is the one thing that means
     /// a file is finished with.
-    pub fn close(self: *Context, file: *OpenFile) void {
+    pub fn close(self: *Model, file: *OpenFile) void {
         const which = self.indexOf(file) orelse return;
         _ = self.files.orderedRemove(which);
         file.deinit();
@@ -182,11 +186,11 @@ pub const Context = struct {
     /// at a different scale. Asked of the context rather than of the components
     /// because a file nothing is showing has a tab, and its name is glyphs of
     /// the old size too.
-    pub fn invalidate(self: *Context) void {
+    pub fn invalidate(self: *Model) void {
         for (self.files.items) |file| file.invalidate();
     }
 
-    fn hold(self: *Context, text: []const u8, path: ?[]const u8) !*OpenFile {
+    fn hold(self: *Model, text: []const u8, path: ?[]const u8) !*OpenFile {
         const file = try self.allocator.create(OpenFile);
         errdefer self.allocator.destroy(file);
 
@@ -197,7 +201,7 @@ pub const Context = struct {
         return file;
     }
 
-    fn read(self: *Context, named: []const u8) ![]u8 {
+    fn read(self: *Model, named: []const u8) ![]u8 {
         const allocator = self.allocator;
         const path = try allocator.dupeZ(u8, named);
         defer allocator.free(path);

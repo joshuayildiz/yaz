@@ -11,12 +11,12 @@
 const std = @import("std");
 
 const config = @import("../config.zig");
-const event_mod = @import("../event.zig");
-const Event = event_mod.Event;
-const Intent = event_mod.Intent;
+const message_mod = @import("../message.zig");
+const Message = message_mod.Message;
+const Intent = message_mod.Intent;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
-const Context = @import("../context.zig").Context;
+const Model = @import("../model.zig").Model;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 
@@ -136,30 +136,30 @@ pub const Healthcheck = struct {
         return .{ .text = try allocator.dupe(u8, text), .colour = colour };
     }
 
-    pub fn deinit(self: *Healthcheck, cx: *Context) void {
-        self.heading.deinit(cx.allocator);
+    pub fn deinit(self: *Healthcheck, model: *Model) void {
+        self.heading.deinit(model.allocator);
         for (&self.rows) |*row| {
-            row.name.deinit(cx.allocator);
-            row.status.deinit(cx.allocator);
-            row.where.deinit(cx.allocator);
+            row.name.deinit(model.allocator);
+            row.status.deinit(model.allocator);
+            row.where.deinit(model.allocator);
         }
-        self.run.deinit(cx.allocator);
-        self.command.deinit(cx.allocator);
-        self.tail.deinit(cx.allocator);
+        self.run.deinit(model.allocator);
+        self.command.deinit(model.allocator);
+        self.tail.deinit(model.allocator);
     }
 
-    pub fn place(self: *Healthcheck, cx: *Context, rect: Rect) void {
-        _ = cx.atlas;
+    pub fn place(self: *Healthcheck, model: *Model, rect: Rect) void {
+        _ = model.atlas;
         self.rect = rect;
     }
 
     /// Nothing here reacts to anything. Quit and resize belong to the window and
-    /// have been dealt with above; every other event is for an editor that is
+    /// have been dealt with above; every other message is for an editor that is
     /// not running.
-    pub fn update(self: *Healthcheck, cx: *Context, event: Event) !Intent {
+    pub fn update(self: *Healthcheck, model: *Model, message: Message) !Intent {
         _ = self;
-        _ = event;
-        _ = cx.atlas;
+        _ = message;
+        _ = model.atlas;
         return .nothing;
     }
 
@@ -200,7 +200,7 @@ pub const Healthcheck = struct {
     const footer_row = first_tool_row + tools.Tool.all.len + 1;
     const row_count = footer_row + 1;
 
-    pub fn draw(self: *Healthcheck, cx: *Context, painter: *Painter) !void {
+    pub fn draw(self: *Healthcheck, model: *Model, painter: *Painter) !void {
         painter.clipTo(self.rect);
         defer painter.clipTo(null);
 
@@ -209,11 +209,11 @@ pub const Healthcheck = struct {
         var all: [piece_count]*Piece = undefined;
         self.pieces(&all);
         for (all) |target| {
-            if (!target.layout.shaped) try cx.atlas.shapeLine(target.text, &target.layout);
+            if (!target.layout.shaped) try model.atlas.shapeLine(target.text, &target.layout);
         }
 
-        const scale = cx.atlas.scale;
-        const step = cx.atlas.line_height;
+        const scale = model.atlas.scale;
+        const step = model.atlas.line_height;
         const padding = @round(pad * scale);
         const spacing = @round(gap * scale);
 
@@ -256,7 +256,7 @@ pub const Healthcheck = struct {
             }
         }.at;
 
-        const heading_y = baseline(top, padding, step, cx.atlas.ascent, heading_row);
+        const heading_y = baseline(top, padding, step, model.atlas.ascent, heading_row);
         try self.heading.draw(painter, .{ text_left, heading_y });
 
         // Beside the heading only, and as tall as it: down the whole card it
@@ -267,12 +267,12 @@ pub const Healthcheck = struct {
         // on both sides.
         const mark = @round(accent * scale);
         try painter.add(accent_key, .solid(
-            .{ text_left - spacing - mark, @round(heading_y - cx.atlas.ascent) },
+            .{ text_left - spacing - mark, @round(heading_y - model.atlas.ascent) },
             .{ mark, step },
         ));
 
         for (&self.rows, 0..) |*row, index| {
-            const y = baseline(top, padding, step, cx.atlas.ascent, @floatFromInt(first_tool_row + index));
+            const y = baseline(top, padding, step, model.atlas.ascent, @floatFromInt(first_tool_row + index));
             var x = text_left;
             try row.name.draw(painter, .{ x, y });
             x += name_column + spacing;
@@ -281,12 +281,12 @@ pub const Healthcheck = struct {
             try row.where.draw(painter, .{ x, y });
         }
 
-        const footer_y = baseline(top, padding, step, cx.atlas.ascent, footer_row);
+        const footer_y = baseline(top, padding, step, model.atlas.ascent, footer_row);
         try self.run.draw(painter, .{ text_left, footer_y });
 
         const chip_x = text_left + self.run.width() + spacing;
         try painter.add(chip_key, .solid(
-            .{ chip_x, @round(footer_y - cx.atlas.ascent) },
+            .{ chip_x, @round(footer_y - model.atlas.ascent) },
             .{ chip_width, step },
         ));
         try self.command.draw(painter, .{ chip_x + @round(chip_pad * scale), footer_y });

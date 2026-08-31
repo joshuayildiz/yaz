@@ -15,12 +15,12 @@
 
 const std = @import("std");
 
-const event_mod = @import("../event.zig");
-const Event = event_mod.Event;
-const Intent = event_mod.Intent;
+const message_mod = @import("../message.zig");
+const Message = message_mod.Message;
+const Intent = message_mod.Intent;
 
 const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
-const Context = @import("../context.zig").Context;
+const Model = @import("../model.zig").Model;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -53,8 +53,8 @@ pub fn VTuple(comptime members: []const type) type {
             return .{ .items = items };
         }
 
-        pub fn deinit(self: *Self, cx: *Context) void {
-            inline for (0..count) |i| self.items[i].deinit(cx);
+        pub fn deinit(self: *Self, model: *Model) void {
+            inline for (0..count) |i| self.items[i].deinit(model);
         }
 
         pub fn has(comptime T: type) bool {
@@ -94,12 +94,12 @@ pub fn VTuple(comptime members: []const type) type {
 
         /// Asks every member how tall it wants to be, hands what is left to the
         /// ones that did not say, and places them from the top.
-        pub fn place(self: *Self, cx: *Context, rect: Rect) void {
+        pub fn place(self: *Self, model: *Model, rect: Rect) void {
             var asked: [count]?f32 = undefined;
             var spoken: f32 = 0;
             var quiet: usize = 0;
             inline for (0..count) |i| {
-                asked[i] = self.items[i].height(cx);
+                asked[i] = self.items[i].height(model);
                 if (asked[i]) |want| spoken += want else quiet += 1;
             }
 
@@ -114,7 +114,7 @@ pub fn VTuple(comptime members: []const type) type {
                 const y = @round(top);
                 const bottom = @round(top + want);
                 self.rects[i] = .{ .x = rect.x, .y = y, .width = rect.width, .height = bottom - y };
-                self.items[i].place(cx, self.rects[i]);
+                self.items[i].place(model, self.rects[i]);
                 top += want;
             }
         }
@@ -123,26 +123,26 @@ pub fn VTuple(comptime members: []const type) type {
             inline for (0..count) |i| self.items[i].invalidate();
         }
 
-        pub fn draw(self: *Self, cx: *Context, painter: *Painter) !void {
-            inline for (0..count) |i| try self.items[i].draw(cx, painter);
+        pub fn draw(self: *Self, model: *Model, painter: *Painter) !void {
+            inline for (0..count) |i| try self.items[i].draw(model, painter);
         }
 
-        pub fn update(self: *Self, cx: *Context, event: Event) !Intent {
-            switch (event) {
+        pub fn update(self: *Self, model: *Model, message: Message) !Intent {
+            switch (message) {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
                     self.focus = which;
                     self.holding = which;
-                    return self.tell(cx, which, event);
+                    return self.tell(model, which, message);
                 },
-                .move => |at| return self.tell(cx, self.holding orelse self.over(at) orelse return .nothing, event),
+                .move => |at| return self.tell(model, self.holding orelse self.over(at) orelse return .nothing, message),
                 .release => {
                     const which = self.holding orelse return .nothing;
                     self.holding = null;
-                    return self.tell(cx, which, event);
+                    return self.tell(model, which, message);
                 },
-                .wheel => |wheel| return self.tell(cx, self.over(wheel.at) orelse return .nothing, event),
-                else => return self.tell(cx, self.focus, event),
+                .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .nothing, message),
+                else => return self.tell(model, self.focus, message),
             }
         }
 
@@ -155,9 +155,9 @@ pub fn VTuple(comptime members: []const type) type {
             return null;
         }
 
-        fn tell(self: *Self, cx: *Context, which: usize, event: Event) !Intent {
+        fn tell(self: *Self, model: *Model, which: usize, message: Message) !Intent {
             inline for (0..count) |i| {
-                if (which == i) return self.items[i].update(cx, event);
+                if (which == i) return self.items[i].update(model, message);
             }
             unreachable;
         }
@@ -171,20 +171,20 @@ fn Band(comptime tag: u8, comptime wants: ?f32) type {
         told: *std.ArrayList(u8),
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-        pub fn deinit(_: *Self, _: *Context) void {}
+        pub fn deinit(_: *Self, _: *Model) void {}
         pub fn invalidate(_: *Self) void {}
-        pub fn draw(_: *Self, _: *Context, _: *Painter) !void {}
+        pub fn draw(_: *Self, _: *Model, _: *Painter) !void {}
 
-        pub fn height(_: *const Self, _: *Context) ?f32 {
+        pub fn height(_: *const Self, _: *Model) ?f32 {
             return wants;
         }
 
-        pub fn place(self: *Self, _: *Context, rect: Rect) void {
+        pub fn place(self: *Self, _: *Model, rect: Rect) void {
             self.rect = rect;
         }
 
-        pub fn update(self: *Self, cx: *Context, _: Event) !Intent {
-            try self.told.append(cx.allocator, tag);
+        pub fn update(self: *Self, model: *Model, _: Message) !Intent {
+            try self.told.append(model.allocator, tag);
             return .nothing;
         }
     };
@@ -194,13 +194,13 @@ const Heading = Band('h', 20);
 const List = Band('l', null);
 const Footer = Band('f', 10);
 
-fn testContext(allocator: std.mem.Allocator) Context {
+fn testModel(allocator: std.mem.Allocator) Model {
     return .{ .allocator = allocator, .io = undefined };
 }
 
 test "a member that says nothing takes what is left" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
@@ -209,7 +209,7 @@ test "a member that says nothing takes what is left" {
         .{ .told = &told },
         .{ .told = &told },
     });
-    column.place(&cx, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
+    column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
 
     try std.testing.expectEqual(@as(f32, 0), column.items[0].rect.y);
     try std.testing.expectEqual(@as(f32, 20), column.items[0].rect.height);
@@ -222,7 +222,7 @@ test "a member that says nothing takes what is left" {
 
 test "the bands meet exactly, whatever the fractions" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
@@ -232,7 +232,7 @@ test "the bands meet exactly, whatever the fractions" {
         .{ .told = &told },
         .{ .told = &told },
     });
-    column.place(&cx, .{ .x = 0, .y = 5, .width = 100, .height = 100 });
+    column.place(&model, .{ .x = 0, .y = 5, .width = 100, .height = 100 });
 
     // No seam and no overlap: each band starts where the one above it ended.
     for (column.rects[1..], column.rects[0 .. column.rects.len - 1]) |below, above| {
@@ -245,7 +245,7 @@ test "the bands meet exactly, whatever the fractions" {
 
 test "a column with nothing spare does not stretch anyone" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
@@ -253,7 +253,7 @@ test "a column with nothing spare does not stretch anyone" {
         .{ .told = &told },
         .{ .told = &told },
     });
-    column.place(&cx, .{ .x = 0, .y = 0, .width = 100, .height = 500 });
+    column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 500 });
 
     try std.testing.expectEqual(@as(f32, 20), column.items[0].rect.height);
     try std.testing.expectEqual(@as(f32, 10), column.items[1].rect.height);
@@ -261,7 +261,7 @@ test "a column with nothing spare does not stretch anyone" {
 
 test "asking for more than there is leaves nothing spare rather than a negative band" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
@@ -269,14 +269,14 @@ test "asking for more than there is leaves nothing spare rather than a negative 
         .{ .told = &told },
         .{ .told = &told },
     });
-    column.place(&cx, .{ .x = 0, .y = 0, .width = 100, .height = 8 });
+    column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 8 });
 
     try std.testing.expectEqual(@as(f32, 0), column.items[1].rect.height);
 }
 
 test "a press moves the keyboard down the column and typing follows it" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
@@ -284,11 +284,11 @@ test "a press moves the keyboard down the column and typing follows it" {
         .{ .told = &told },
         .{ .told = &told },
     });
-    column.place(&cx, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
+    column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
 
-    _ = try column.update(&cx, .{ .text = "a" });
-    _ = try column.update(&cx, .{ .press = .{ 10, 50 } });
-    _ = try column.update(&cx, .{ .text = "b" });
+    _ = try column.update(&model, .{ .text = "a" });
+    _ = try column.update(&model, .{ .press = .{ 10, 50 } });
+    _ = try column.update(&model, .{ .text = "b" });
 
     try std.testing.expectEqualStrings("hll", told.items);
     try std.testing.expectEqual(@as(usize, 1), column.focus);

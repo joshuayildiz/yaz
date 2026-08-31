@@ -16,12 +16,12 @@
 
 const std = @import("std");
 
-const event_mod = @import("../event.zig");
-const Event = event_mod.Event;
-const Intent = event_mod.Intent;
+const message_mod = @import("../message.zig");
+const Message = message_mod.Message;
+const Intent = message_mod.Intent;
 
 const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
-const Context = @import("../context.zig").Context;
+const Model = @import("../model.zig").Model;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -46,8 +46,8 @@ pub fn ZTuple(comptime members: []const type) type {
             return .{ .items = items };
         }
 
-        pub fn deinit(self: *Self, cx: *Context) void {
-            inline for (0..count) |i| self.items[i].deinit(cx);
+        pub fn deinit(self: *Self, model: *Model) void {
+            inline for (0..count) |i| self.items[i].deinit(model);
         }
 
         pub fn get(self: *Self, comptime T: type) *T {
@@ -60,24 +60,24 @@ pub fn ZTuple(comptime members: []const type) type {
         }
 
         /// Brings `T` to the front. What was above it moves back one.
-        pub fn raise(self: *Self, cx: *Context, comptime T: type) void {
-            self.raiseAt(cx, comptime indexOf(T));
+        pub fn raise(self: *Self, model: *Model, comptime T: type) void {
+            self.raiseAt(model, comptime indexOf(T));
         }
 
-        fn raiseAt(self: *Self, cx: *Context, which: usize) void {
+        fn raiseAt(self: *Self, model: *Model, which: usize) void {
             const at = std.mem.indexOfScalar(usize, &self.order, which).?;
             std.mem.copyForwards(usize, self.order[at..], self.order[at + 1 ..]);
             self.order[count - 1] = which;
-            cx.changed();
+            model.changed();
         }
 
         /// Sends whatever is in front all the way back, which is where a panel
         /// goes when it is done. A stack of one has no front to give up.
-        pub fn lowerFront(self: *Self, cx: *Context) void {
+        pub fn lowerFront(self: *Self, model: *Model) void {
             const front = self.order[count - 1];
             std.mem.copyBackwards(usize, self.order[1..], self.order[0 .. count - 1]);
             self.order[0] = front;
-            cx.changed();
+            model.changed();
         }
 
         fn indexOf(comptime T: type) usize {
@@ -87,8 +87,8 @@ pub fn ZTuple(comptime members: []const type) type {
             @compileError(@typeName(T) ++ " is not in this stack");
         }
 
-        pub fn place(self: *Self, cx: *Context, rect: Rect) void {
-            inline for (0..count) |i| self.items[i].place(cx, rect);
+        pub fn place(self: *Self, model: *Model, rect: Rect) void {
+            inline for (0..count) |i| self.items[i].place(model, rect);
         }
 
         pub fn invalidate(self: *Self) void {
@@ -97,10 +97,10 @@ pub fn ZTuple(comptime members: []const type) type {
 
         /// Back to front. The order is a runtime value and the members are of
         /// different types, so the loop over it selects rather than indexes.
-        pub fn draw(self: *Self, cx: *Context, painter: *Painter) !void {
+        pub fn draw(self: *Self, model: *Model, painter: *Painter) !void {
             for (self.order) |which| {
                 inline for (0..count) |i| {
-                    if (which == i) try self.items[i].draw(cx, painter);
+                    if (which == i) try self.items[i].draw(model, painter);
                 }
             }
         }
@@ -114,13 +114,13 @@ pub fn ZTuple(comptime members: []const type) type {
         /// reaches the panel from anywhere in the order. Pressed while the
         /// panel is already in front it falls through to the panel itself,
         /// which asks to be put away exactly as escape makes it.
-        pub fn update(self: *Self, cx: *Context, event: Event) !Intent {
-            switch (event) {
+        pub fn update(self: *Self, model: *Model, message: Message) !Intent {
+            switch (message) {
                 .find => inline for (0..count) |i| {
                     if (comptime @hasDecl(members[i], "show")) {
                         if (self.order[count - 1] != i) {
-                            try self.items[i].show(cx);
-                            self.raiseAt(cx, i);
+                            try self.items[i].show(model);
+                            self.raiseAt(model, i);
                             return .nothing;
                         }
                     }
@@ -131,9 +131,9 @@ pub fn ZTuple(comptime members: []const type) type {
             const front = self.order[count - 1];
             var asked: Intent = .nothing;
             inline for (0..count) |i| {
-                if (front == i) asked = try self.items[i].update(cx, event);
+                if (front == i) asked = try self.items[i].update(model, message);
             }
-            return self.pass(cx, asked);
+            return self.pass(model, asked);
         }
 
         /// What the front asked for, offered to the ones behind it in turn
@@ -148,14 +148,14 @@ pub fn ZTuple(comptime members: []const type) type {
         ///
         /// What comes back is what nobody took, and whatever it carries is
         /// still the caller's to free.
-        fn pass(self: *Self, cx: *Context, asked: Intent) !Intent {
+        fn pass(self: *Self, model: *Model, asked: Intent) !Intent {
             var intent = asked;
             var behind = count - 1;
             while (behind > 0) : (behind -= 1) {
                 switch (intent) {
                     .nothing => return .nothing,
                     .dismiss => {
-                        self.lowerFront(cx);
+                        self.lowerFront(model);
                         return .nothing;
                     },
                     else => {},
@@ -164,7 +164,7 @@ pub fn ZTuple(comptime members: []const type) type {
                 const which = self.order[behind - 1];
                 inline for (0..count) |i| {
                     if (comptime @hasDecl(members[i], "offer")) {
-                        if (which == i) intent = try self.items[i].offer(cx, intent);
+                        if (which == i) intent = try self.items[i].offer(model, intent);
                     }
                 }
             }
@@ -172,7 +172,7 @@ pub fn ZTuple(comptime members: []const type) type {
             switch (intent) {
                 .nothing => return .nothing,
                 .dismiss => {
-                    self.lowerFront(cx);
+                    self.lowerFront(model);
                     return .nothing;
                 },
                 else => return intent,
@@ -189,16 +189,16 @@ fn Spy(comptime tag: u8) type {
         drawn: *std.ArrayList(u8),
         told: *std.ArrayList(u8),
 
-        pub fn deinit(_: *Self, _: *Context) void {}
-        pub fn place(_: *Self, _: *Context, _: Rect) void {}
+        pub fn deinit(_: *Self, _: *Model) void {}
+        pub fn place(_: *Self, _: *Model, _: Rect) void {}
         pub fn invalidate(_: *Self) void {}
 
-        pub fn draw(self: *Self, cx: *Context, _: *Painter) !void {
-            try self.drawn.append(cx.allocator, tag);
+        pub fn draw(self: *Self, model: *Model, _: *Painter) !void {
+            try self.drawn.append(model.allocator, tag);
         }
 
-        pub fn update(self: *Self, cx: *Context, _: Event) !Intent {
-            try self.told.append(cx.allocator, tag);
+        pub fn update(self: *Self, model: *Model, _: Message) !Intent {
+            try self.told.append(model.allocator, tag);
             return .nothing;
         }
     };
@@ -209,16 +209,16 @@ const Panel = struct {
     shown: usize = 0,
     asks: Intent = .nothing,
 
-    pub fn deinit(_: *Panel, _: *Context) void {}
-    pub fn place(_: *Panel, _: *Context, _: Rect) void {}
-    pub fn draw(_: *Panel, _: *Context, _: *Painter) !void {}
+    pub fn deinit(_: *Panel, _: *Model) void {}
+    pub fn place(_: *Panel, _: *Model, _: Rect) void {}
+    pub fn draw(_: *Panel, _: *Model, _: *Painter) !void {}
     pub fn invalidate(_: *Panel) void {}
 
-    pub fn show(self: *Panel, _: *Context) !void {
+    pub fn show(self: *Panel, _: *Model) !void {
         self.shown += 1;
     }
 
-    pub fn update(self: *Panel, _: *Context, _: Event) !Intent {
+    pub fn update(self: *Panel, _: *Model, _: Message) !Intent {
         return self.asks;
     }
 };
@@ -227,16 +227,16 @@ const Panel = struct {
 const Taker = struct {
     took: ?[]u8 = null,
 
-    pub fn deinit(_: *Taker, _: *Context) void {}
-    pub fn place(_: *Taker, _: *Context, _: Rect) void {}
-    pub fn draw(_: *Taker, _: *Context, _: *Painter) !void {}
+    pub fn deinit(_: *Taker, _: *Model) void {}
+    pub fn place(_: *Taker, _: *Model, _: Rect) void {}
+    pub fn draw(_: *Taker, _: *Model, _: *Painter) !void {}
     pub fn invalidate(_: *Taker) void {}
 
-    pub fn update(_: *Taker, _: *Context, _: Event) !Intent {
+    pub fn update(_: *Taker, _: *Model, _: Message) !Intent {
         return .nothing;
     }
 
-    pub fn offer(self: *Taker, _: *Context, intent: Intent) !Intent {
+    pub fn offer(self: *Taker, _: *Model, intent: Intent) !Intent {
         switch (intent) {
             .open => |path| {
                 self.took = path;
@@ -247,13 +247,13 @@ const Taker = struct {
     }
 };
 
-fn testContext(allocator: std.mem.Allocator) Context {
+fn testModel(allocator: std.mem.Allocator) Model {
     return .{ .allocator = allocator, .io = undefined };
 }
 
 test "everything draws back to front, and only the front is told" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var drawn: std.ArrayList(u8) = .empty;
     defer drawn.deinit(allocator);
     var told: std.ArrayList(u8) = .empty;
@@ -267,30 +267,30 @@ test "everything draws back to front, and only the front is told" {
     });
 
     // Declared back to front, so the last one starts in front.
-    try stack.draw(&cx, undefined);
-    _ = try stack.update(&cx, .cancel);
+    try stack.draw(&model, undefined);
+    _ = try stack.update(&model, .cancel);
     try std.testing.expectEqualStrings("bf", drawn.items);
     try std.testing.expectEqualStrings("f", told.items);
 
     // Raising the back one turns the drawing order round and moves the keyboard
     // with it.
-    stack.raise(&cx, Back);
-    try stack.draw(&cx, undefined);
-    _ = try stack.update(&cx, .cancel);
+    stack.raise(&model, Back);
+    try stack.draw(&model, undefined);
+    _ = try stack.update(&model, .cancel);
     try std.testing.expectEqualStrings("bffb", drawn.items);
     try std.testing.expectEqualStrings("fb", told.items);
 
     // And putting it away returns both to where they were.
-    stack.lowerFront(&cx);
-    try stack.draw(&cx, undefined);
-    _ = try stack.update(&cx, .cancel);
+    stack.lowerFront(&model);
+    try stack.draw(&model, undefined);
+    _ = try stack.update(&model, .cancel);
     try std.testing.expectEqualStrings("bffbbf", drawn.items);
     try std.testing.expectEqualStrings("fbf", told.items);
 }
 
 test "a change of order is a change to what is on screen" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     const Back = Spy('b');
     const Front = Spy('f');
     var stack: ZTuple(&.{ Back, Front }) = .init(.{
@@ -300,41 +300,41 @@ test "a change of order is a change to what is on screen" {
 
     // Nothing inside a member moved, so the order is the only thing that can
     // have asked for a frame.
-    cx.dirty = false;
-    stack.raise(&cx, Back);
-    try std.testing.expect(cx.dirty);
+    model.dirty = false;
+    stack.raise(&model, Back);
+    try std.testing.expect(model.dirty);
 
-    cx.dirty = false;
-    stack.lowerFront(&cx);
-    try std.testing.expect(cx.dirty);
+    model.dirty = false;
+    stack.lowerFront(&model);
+    try std.testing.expect(model.dirty);
 }
 
 test "the keystroke that shows a panel finds it wherever it is" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var stack: ZTuple(&.{ Taker, Panel }) = .init(.{ .{}, .{} });
 
     // In front to begin with, so cmd+P is the panel's own to answer -- which is
     // what makes pressing it again close the panel rather than reopen it.
-    _ = try stack.update(&cx, .find);
+    _ = try stack.update(&model, .find);
     try std.testing.expectEqual(@as(usize, 0), stack.get(Panel).shown);
 
-    stack.lowerFront(&cx);
-    _ = try stack.update(&cx, .find);
+    stack.lowerFront(&model);
+    _ = try stack.update(&model, .find);
     try std.testing.expectEqual(@as(usize, 1), stack.get(Panel).shown);
     try std.testing.expect(stack.inFront(Panel));
 }
 
 test "what the front asks for is offered to what is behind it" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var stack: ZTuple(&.{ Taker, Panel }) = .init(.{ .{}, .{} });
 
     const path = try allocator.dupe(u8, "src/main.zig");
     defer allocator.free(path);
     stack.get(Panel).asks = .{ .open = path };
 
-    const left = try stack.update(&cx, .newline);
+    const left = try stack.update(&model, .newline);
 
     // Taken, so nothing comes back out -- and taking it put the panel away,
     // which is the whole of what opening a file from one looks like.
@@ -345,7 +345,7 @@ test "what the front asks for is offered to what is behind it" {
 
 test "what nobody takes comes back out" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var stack: ZTuple(&.{ Panel, Panel }) = .init(.{ .{}, .{} });
 
     const path = try allocator.dupe(u8, "src/main.zig");
@@ -353,13 +353,13 @@ test "what nobody takes comes back out" {
     stack.items[1].asks = .{ .open = path };
 
     // Nothing behind it can take a path, so it is still the caller's to free.
-    const left = try stack.update(&cx, .newline);
+    const left = try stack.update(&model, .newline);
     try std.testing.expectEqualStrings("src/main.zig", left.open);
 }
 
 test "a stack of one has no front to give up" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var drawn: std.ArrayList(u8) = .empty;
     defer drawn.deinit(allocator);
     var told: std.ArrayList(u8) = .empty;
@@ -368,9 +368,9 @@ test "a stack of one has no front to give up" {
     const Only = Spy('o');
     var stack: ZTuple(&.{Only}) = .init(.{.{ .drawn = &drawn, .told = &told }});
 
-    stack.lowerFront(&cx);
-    stack.raise(&cx, Only);
-    try stack.draw(&cx, undefined);
+    stack.lowerFront(&model);
+    stack.raise(&model, Only);
+    try stack.draw(&model, undefined);
     try std.testing.expectEqualStrings("o", drawn.items);
     try std.testing.expect(stack.inFront(Only));
 }

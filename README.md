@@ -803,7 +803,7 @@ change nothing, which is the opposite of what the event loop is for.
 ```
 src/
   main.zig         # SDL setup, the window, the event loop, the command line
-  context.zig      # what every component is given, and reading a file
+  model.zig        # the state the window is showing, and reading a file
   components/      # anything that is given a rect and draws in it
     ztuple.zig     #   the components of a window, back to front
     htuple.zig     #   the components of a window, left to right
@@ -817,7 +817,7 @@ src/
   painter.zig      # what a frame is made of, before the GPU hears about it
   text.zig         # placing a shaped line, and how wide one is
   tools.zig        # the pinned binaries, and installing them
-  event.zig        # what happened, in our words rather than SDL's
+  message.zig      # what happened, in our words rather than SDL's
   open_file.zig    # the gap buffer, the line index, the layout cache, the caret
   renderer.zig     # GPU device, the two pipelines, drawing
   glyph_atlas.zig  # shaping, rasterizing, atlas uploads
@@ -834,21 +834,21 @@ the order to read it in:
 | | imports |
 | --- | --- |
 | `config.zig`, `sdl.zig` | nothing of ours |
-| `event.zig` | sdl |
+| `message.zig` | sdl |
 | `glyph_atlas.zig` | config, sdl |
 | `open_file.zig` | glyph_atlas |
 | `painter.zig` | glyph_atlas |
 | `text.zig` | glyph_atlas, painter |
 | `renderer.zig` | config, sdl, glyph_atlas, painter |
 | `tools.zig` | nothing of ours |
-| `context.zig` | glyph_atlas, open_file |
-| `components/ztuple.zig`, `components/htuple.zig`, `components/vtuple.zig` | context, event, painter |
-| `components/hlist.zig` | context, event, painter |
-| `components/tabs.zig` | config, context, event, glyph_atlas, open_file, painter, text |
-| `components/text_view.zig` | config, context, event, glyph_atlas, open_file, painter, text |
-| `components/healthcheck.zig` | config, context, event, glyph_atlas, painter, text, tools |
-| `components/finder.zig` | config, context, event, glyph_atlas, painter, text, tools, vtuple |
-| `components/workbench.zig` | context, event, open_file, painter, hlist, tabs, text_view, vtuple |
+| `model.zig` | glyph_atlas, open_file |
+| `components/ztuple.zig`, `components/htuple.zig`, `components/vtuple.zig` | model, message, painter |
+| `components/hlist.zig` | model, message, painter |
+| `components/tabs.zig` | config, model, message, glyph_atlas, open_file, painter, text |
+| `components/text_view.zig` | config, model, message, glyph_atlas, open_file, painter, text |
+| `components/healthcheck.zig` | config, model, message, glyph_atlas, painter, text, tools |
+| `components/finder.zig` | config, model, message, glyph_atlas, painter, text, tools, vtuple |
+| `components/workbench.zig` | model, message, open_file, painter, hlist, tabs, text_view, vtuple |
 | `main.zig` | all of the above |
 
 **The only components that import another are the ones whose whole job is
@@ -857,7 +857,7 @@ workbench is a bar over a row of columns and the finder is a query over a list
 of results. Nothing else knows another component exists: each is given a rect,
 told what happened in it and asked for its quads.
 
-**Every one of those calls takes a `Context` first.** It carries the allocator,
+**Every one of those calls takes a `Model` first.** It carries the allocator,
 `std.Io`, the glyph atlas, the files that are open but not on screen, and
 whether the window is still up. Nothing stores it -- a component that kept a
 copy of the allocator would have a second one to keep in step with the first,
@@ -868,7 +868,7 @@ Where to start depends on what you are changing: what a keystroke does is
 looks like is `glyph_atlas.zig`; how big or what colour anything is is
 `config.zig`.
 
-**SDL stops at the event loop.** `Event.init` turns what SDL sends into what
+**SDL stops at the event loop.** `Message.init` turns what SDL sends into what
 happened — quit, resized, typed text, a key, a wheel delta, a press, a move, a
 release — and answers null for the rest, which is most of it. Window coordinates
 become pixels there, once, so nothing downstream knows what a display scale is.
@@ -885,7 +885,7 @@ parent calls them on its children, so the tree is the type system rather than a
 vtable.
 
 **Nothing answers for whether it has changed.** There is one flag, on the
-Context, and anything that changes the model says so through `cx.changed()`.
+Model, and anything that changes it says so through `model.changed()`.
 The loop draws when it is set and clears it after. That is not damage tracking
 — the whole window is redrawn — but presenting blocks on the swapchain, so the
 question worth asking is only ever *whether* to draw.
@@ -963,7 +963,7 @@ reached either way says the same thing.
 **`VTuple` is the third of the tuples, and the only one whose members are not
 all the same size.** A ZTuple gives every member the whole rect and an HTuple
 divides it evenly; here each member is asked how tall it wants to be, and one
-that does not say takes what is left. That is what the atlas in the `Context` is
+that does not say takes what is left. That is what the atlas in the `Model` is
 for during `place`: a height is nearly always a number of lines, and what a line
 is worth belongs to the font at the display's scale rather than to the layout.
 
@@ -974,7 +974,7 @@ longer computes a single baseline: it owns the two processes and the bytes they
 produce, and hands the matches to the list.
 
 The view therefore names no SDL type and makes no SDL call. It does reach
-`sdl.zig` through `event.zig`, so the separation is one of vocabulary rather than
+`sdl.zig` through `message.zig`, so the separation is one of vocabulary rather than
 of linkage.
 
 `open_file.zig` is one file the window has open: the text, where its lines

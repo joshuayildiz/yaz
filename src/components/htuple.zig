@@ -12,12 +12,12 @@
 
 const std = @import("std");
 
-const event_mod = @import("../event.zig");
-const Event = event_mod.Event;
-const Intent = event_mod.Intent;
+const message_mod = @import("../message.zig");
+const Message = message_mod.Message;
+const Intent = message_mod.Intent;
 
 const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
-const Context = @import("../context.zig").Context;
+const Model = @import("../model.zig").Model;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -52,8 +52,8 @@ pub fn HTuple(comptime members: []const type) type {
             return .{ .items = items };
         }
 
-        pub fn deinit(self: *Self, cx: *Context) void {
-            inline for (0..count) |i| self.items[i].deinit(cx);
+        pub fn deinit(self: *Self, model: *Model) void {
+            inline for (0..count) |i| self.items[i].deinit(model);
         }
 
         /// Whether `T` is a member, answered at compile time so the branch it
@@ -90,7 +90,7 @@ pub fn HTuple(comptime members: []const type) type {
         }
 
         /// Equal columns, left to right.
-        pub fn place(self: *Self, cx: *Context, rect: Rect) void {
+        pub fn place(self: *Self, model: *Model, rect: Rect) void {
             var left = rect.x;
             inline for (0..count) |i| {
                 // Each edge from the full width rather than by adding widths up,
@@ -98,7 +98,7 @@ pub fn HTuple(comptime members: []const type) type {
                 // of the last one.
                 const right = @round(rect.x + rect.width * @as(f32, i + 1) / @as(f32, count));
                 self.rects[i] = .{ .x = left, .y = rect.y, .width = right - left, .height = rect.height };
-                self.items[i].place(cx, self.rects[i]);
+                self.items[i].place(model, self.rects[i]);
                 left = right;
             }
         }
@@ -108,12 +108,12 @@ pub fn HTuple(comptime members: []const type) type {
         }
 
         /// All of them: side by side, none covers another.
-        pub fn draw(self: *Self, cx: *Context, painter: *Painter) !void {
-            inline for (0..count) |i| try self.items[i].draw(cx, painter);
+        pub fn draw(self: *Self, model: *Model, painter: *Painter) !void {
+            inline for (0..count) |i| try self.items[i].draw(model, painter);
         }
 
-        pub fn update(self: *Self, cx: *Context, event: Event) !Intent {
-            switch (event) {
+        pub fn update(self: *Self, model: *Model, message: Message) !Intent {
+            switch (message) {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
 
@@ -123,23 +123,23 @@ pub fn HTuple(comptime members: []const type) type {
                     // that frame is being put together.
                     self.focus = which;
                     self.holding = which;
-                    return self.tell(cx, which, event);
+                    return self.tell(model, which, message);
                 },
                 // Whoever took the press keeps the drag, wherever it wanders.
                 // Without this a drag crossing into the next member would be
                 // handed over half way through.
-                .move => |at| return self.tell(cx, self.holding orelse self.over(at) orelse return .nothing, event),
+                .move => |at| return self.tell(model, self.holding orelse self.over(at) orelse return .nothing, message),
                 .release => {
                     const which = self.holding orelse return .nothing;
                     self.holding = null;
-                    return self.tell(cx, which, event);
+                    return self.tell(model, which, message);
                 },
                 // The wheel turns whatever it is over, which is what one expects
                 // of it, and does not decide where typing lands.
-                .wheel => |wheel| return self.tell(cx, self.over(wheel.at) orelse return .nothing, event),
+                .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .nothing, message),
                 // Everything left is typing, which goes to the focused member
                 // wherever the pointer happens to be -- including mid-drag.
-                else => return self.tell(cx, self.focus, event),
+                else => return self.tell(model, self.focus, message),
             }
         }
 
@@ -154,9 +154,9 @@ pub fn HTuple(comptime members: []const type) type {
 
         /// The members are of different types and `which` is a runtime value, so
         /// reaching one is a selection rather than an index.
-        fn tell(self: *Self, cx: *Context, which: usize, event: Event) !Intent {
+        fn tell(self: *Self, model: *Model, which: usize, message: Message) !Intent {
             inline for (0..count) |i| {
-                if (which == i) return self.items[i].update(cx, event);
+                if (which == i) return self.items[i].update(model, message);
             }
             unreachable;
         }
@@ -171,16 +171,16 @@ fn Spy(comptime tag: u8) type {
         told: *std.ArrayList(u8),
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-        pub fn deinit(_: *Self, _: *Context) void {}
+        pub fn deinit(_: *Self, _: *Model) void {}
         pub fn invalidate(_: *Self) void {}
-        pub fn draw(_: *Self, _: *Context, _: *Painter) !void {}
+        pub fn draw(_: *Self, _: *Model, _: *Painter) !void {}
 
-        pub fn place(self: *Self, _: *Context, rect: Rect) void {
+        pub fn place(self: *Self, _: *Model, rect: Rect) void {
             self.rect = rect;
         }
 
-        pub fn update(self: *Self, cx: *Context, _: Event) !Intent {
-            try self.told.append(cx.allocator, tag);
+        pub fn update(self: *Self, model: *Model, _: Message) !Intent {
+            try self.told.append(model.allocator, tag);
             return .nothing;
         }
     };
@@ -190,26 +190,26 @@ const Left = Spy('l');
 const Right = Spy('r');
 const Row = HTuple(&.{ Left, Right });
 
-fn testRow(cx: *Context, told: *std.ArrayList(u8)) Row {
+fn testRow(model: *Model, told: *std.ArrayList(u8)) Row {
     var row: Row = .init(.{
         .{ .told = told },
         .{ .told = told },
     });
-    row.place(cx, .{ .x = 0, .y = 0, .width = 100, .height = 50 });
+    row.place(model, .{ .x = 0, .y = 0, .width = 100, .height = 50 });
     return row;
 }
 
-fn testContext(allocator: std.mem.Allocator) Context {
+fn testModel(allocator: std.mem.Allocator) Model {
     return .{ .allocator = allocator, .io = undefined };
 }
 
 test "the room is divided evenly, left to right" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    const row = testRow(&cx, &told);
+    const row = testRow(&model, &told);
     try std.testing.expectEqual(@as(f32, 0), row.items[0].rect.x);
     try std.testing.expectEqual(@as(f32, 50), row.items[0].rect.width);
     // The second starts exactly where the first ends: no seam, no overlap.
@@ -219,14 +219,14 @@ test "the room is divided evenly, left to right" {
 
 test "a press moves the keyboard and typing follows it" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var row = testRow(&cx, &told);
-    _ = try row.update(&cx, .{ .text = "a" });
-    _ = try row.update(&cx, .{ .press = .{ 75, 10 } });
-    _ = try row.update(&cx, .{ .text = "b" });
+    var row = testRow(&model, &told);
+    _ = try row.update(&model, .{ .text = "a" });
+    _ = try row.update(&model, .{ .press = .{ 75, 10 } });
+    _ = try row.update(&model, .{ .text = "b" });
 
     // Typed left, pressed right, typed right.
     try std.testing.expectEqualStrings("lrr", told.items);
@@ -235,13 +235,13 @@ test "a press moves the keyboard and typing follows it" {
 
 test "the wheel turns what it is over without moving the keyboard" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var row = testRow(&cx, &told);
-    _ = try row.update(&cx, .{ .wheel = .{ .delta = 3, .at = .{ 75, 10 } } });
-    _ = try row.update(&cx, .{ .text = "a" });
+    var row = testRow(&model, &told);
+    _ = try row.update(&model, .{ .wheel = .{ .delta = 3, .at = .{ 75, 10 } } });
+    _ = try row.update(&model, .{ .text = "a" });
 
     try std.testing.expectEqualStrings("rl", told.items);
     try std.testing.expectEqual(@as(usize, 0), row.focus);
@@ -249,39 +249,39 @@ test "the wheel turns what it is over without moving the keyboard" {
 
 test "a drag stays with the member it began in" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var row = testRow(&cx, &told);
-    _ = try row.update(&cx, .{ .press = .{ 10, 10 } });
+    var row = testRow(&model, &told);
+    _ = try row.update(&model, .{ .press = .{ 10, 10 } });
     // Wandered into the right-hand member, and out of the row entirely.
-    _ = try row.update(&cx, .{ .move = .{ 75, 10 } });
-    _ = try row.update(&cx, .{ .move = .{ 400, 10 } });
+    _ = try row.update(&model, .{ .move = .{ 75, 10 } });
+    _ = try row.update(&model, .{ .move = .{ 400, 10 } });
     // The release goes to it as well, so it can let go of whatever it took hold
     // of; only then does the next move go to whatever it is over.
-    _ = try row.update(&cx, .release);
-    _ = try row.update(&cx, .{ .move = .{ 75, 10 } });
+    _ = try row.update(&model, .release);
+    _ = try row.update(&model, .{ .move = .{ 75, 10 } });
 
     try std.testing.expectEqualStrings("llllr", told.items);
 }
 
 test "typing during a drag goes to the keyboard, not to the drag" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var row = testRow(&cx, &told);
+    var row = testRow(&model, &told);
     // Focus the right-hand member, then start a drag in the left-hand one.
-    _ = try row.update(&cx, .{ .press = .{ 75, 10 } });
+    _ = try row.update(&model, .{ .press = .{ 75, 10 } });
     row.focus = 1;
-    _ = try row.update(&cx, .{ .press = .{ 10, 10 } });
+    _ = try row.update(&model, .{ .press = .{ 10, 10 } });
     row.focus = 1;
     told.clearRetainingCapacity();
 
-    _ = try row.update(&cx, .{ .move = .{ 10, 20 } });
-    _ = try row.update(&cx, .{ .text = "a" });
+    _ = try row.update(&model, .{ .move = .{ 10, 20 } });
+    _ = try row.update(&model, .{ .text = "a" });
 
     // The move went to the drag, the character to the keyboard.
     try std.testing.expectEqualStrings("lr", told.items);
@@ -289,12 +289,12 @@ test "typing during a drag goes to the keyboard, not to the drag" {
 
 test "a point outside every member is nobody's" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var row = testRow(&cx, &told);
-    _ = try row.update(&cx, .{ .press = .{ 400, 10 } });
-    _ = try row.update(&cx, .{ .wheel = .{ .delta = 3, .at = .{ 400, 10 } } });
+    var row = testRow(&model, &told);
+    _ = try row.update(&model, .{ .press = .{ 400, 10 } });
+    _ = try row.update(&model, .{ .wheel = .{ .delta = 3, .at = .{ 400, 10 } } });
     try std.testing.expectEqualStrings("", told.items);
 }

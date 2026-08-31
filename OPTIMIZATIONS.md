@@ -271,7 +271,7 @@ per-tool path lookup is back.
 
 Switching files used to free the file and read it again on the way back, which
 threw away a gap buffer, a line index, and every line already shaped, to buy
-nothing. The context owns every open file instead, and a column only points at
+nothing. The model owns every open file instead, and a column only points at
 one, so looking away from a file gives nothing up.
 
 Measured on an M2: a first visit is **1240us**, a return **95us**, and the

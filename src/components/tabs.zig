@@ -16,12 +16,12 @@
 const std = @import("std");
 
 const config = @import("../config.zig");
-const event_mod = @import("../event.zig");
-const Event = event_mod.Event;
-const Intent = event_mod.Intent;
+const message_mod = @import("../message.zig");
+const Message = message_mod.Message;
+const Intent = message_mod.Intent;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
-const Context = @import("../context.zig").Context;
+const Model = @import("../model.zig").Model;
 const OpenFile = @import("../open_file.zig").OpenFile;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
@@ -83,15 +83,15 @@ pub const Tabs = struct {
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    pub fn deinit(self: *Tabs, cx: *Context) void {
-        self.rects.deinit(cx.allocator);
-        self.bullet.deinit(cx.allocator);
+    pub fn deinit(self: *Tabs, model: *Model) void {
+        self.rects.deinit(model.allocator);
+        self.bullet.deinit(model.allocator);
     }
 
     /// The nth file on the bar, or none when the bar is shorter than that.
-    pub fn nth(_: *const Tabs, cx: *Context, which: usize) ?*OpenFile {
+    pub fn nth(_: *const Tabs, model: *Model, which: usize) ?*OpenFile {
         var counted: usize = 0;
-        for (cx.files.items) |file| {
+        for (model.files.items) |file| {
             if (file.path == null) continue;
             if (counted == which) return file;
             counted += 1;
@@ -101,12 +101,12 @@ pub const Tabs = struct {
 
     /// Nothing at all when no file has been named: a strip with no tabs on it
     /// is a promise of something that is not there.
-    pub fn height(_: *const Tabs, cx: *Context) ?f32 {
-        if (listed(cx) == 0) return 0;
-        return @round(cx.atlas.line_height + 2 * @round(down * cx.atlas.scale));
+    pub fn height(_: *const Tabs, model: *Model) ?f32 {
+        if (listed(model) == 0) return 0;
+        return @round(model.atlas.line_height + 2 * @round(down * model.atlas.scale));
     }
 
-    pub fn place(self: *Tabs, _: *Context, rect: Rect) void {
+    pub fn place(self: *Tabs, _: *Model, rect: Rect) void {
         self.rect = rect;
     }
 
@@ -116,37 +116,37 @@ pub const Tabs = struct {
         self.bullet.shaped = false;
     }
 
-    pub fn update(self: *Tabs, cx: *Context, event: Event) !Intent {
-        const at = switch (event) {
+    pub fn update(self: *Tabs, model: *Model, message: Message) !Intent {
+        const at = switch (message) {
             .press => |where| where,
             else => return .nothing,
         };
 
         for (self.rects.items, 0..) |rect, which| {
             if (!rect.contains(at)) continue;
-            const file = self.nth(cx, which) orelse return .nothing;
+            const file = self.nth(model, which) orelse return .nothing;
             const path = file.path orelse return .nothing;
             // Pressing a tab is choosing that file over the others, which is
             // what cmd+N means too. The finder answers `open` instead: picking
             // a file there is not a statement about the ones already on screen.
-            return .{ .only = try cx.allocator.dupe(u8, path) };
+            return .{ .only = try model.allocator.dupe(u8, path) };
         }
         return .nothing;
     }
 
-    pub fn draw(self: *Tabs, cx: *Context, painter: *Painter) !void {
-        const count = listed(cx);
+    pub fn draw(self: *Tabs, model: *Model, painter: *Painter) !void {
+        const count = listed(model);
         if (count == 0) return;
 
         // One per tab, sized here rather than as files are opened: the bar is
         // told nothing when one is.
-        try self.rects.resize(cx.allocator, count);
+        try self.rects.resize(model.allocator, count);
 
-        const line = @max(1, @round(cx.atlas.scale));
-        const inset = @round(across * cx.atlas.scale);
-        const gap = @round(beside * cx.atlas.scale);
+        const line = @max(1, @round(model.atlas.scale));
+        const inset = @round(across * model.atlas.scale);
+        const gap = @round(beside * model.atlas.scale);
 
-        if (!self.bullet.shaped) try cx.atlas.shapeLine(unsaved_mark, &self.bullet);
+        if (!self.bullet.shaped) try model.atlas.shapeLine(unsaved_mark, &self.bullet);
 
         // What the mark draws, not what it advances. A bullet carries wide side
         // bearings, and reserving them twice over would be paying for space
@@ -169,12 +169,12 @@ pub const Tabs = struct {
 
         var left = self.rect.x;
         var which: usize = 0;
-        for (cx.files.items) |file| {
+        for (model.files.items) |file| {
             const path = file.path orelse continue;
             defer which += 1;
 
             const name = &file.name;
-            if (!name.shaped) try cx.atlas.shapeLine(std.fs.path.basename(path), name);
+            if (!name.shaped) try model.atlas.shapeLine(std.fs.path.basename(path), name);
 
             const width = @round(advance(name) + 2 * (ink.wide + gap) + 2 * inset);
             self.rects.items[which] = .{
@@ -191,7 +191,7 @@ pub const Tabs = struct {
             // split they have different answers: the ground says whether the
             // file is on screen at all, and the name's colour says whether it is
             // the one being typed into.
-            const on_screen = cx.onScreen(file);
+            const on_screen = model.onScreen(file);
             if (on_screen) try painter.add(shown_key, .solid(
                 .{ left, self.rect.y },
                 .{ width, @max(0, self.rect.height - line) },
@@ -204,8 +204,8 @@ pub const Tabs = struct {
                 .{ line, @max(0, self.rect.height - line) },
             ));
 
-            const key = if (cx.showing() == file) name_key else other_key;
-            const baseline = @round(self.rect.y + @round(down * cx.atlas.scale) + cx.atlas.ascent);
+            const key = if (model.showing() == file) name_key else other_key;
+            const baseline = @round(self.rect.y + @round(down * model.atlas.scale) + model.atlas.ascent);
 
             // The mark's room is taken whether or not it is drawn, so a file
             // being typed into does not push the rest of the bar along; the
@@ -224,9 +224,9 @@ pub const Tabs = struct {
     /// How many files have a name, which is how many tabs there are: a file
     /// nobody named has nothing to write on one, and a window showing one has
     /// no bar at all.
-    fn listed(cx: *Context) usize {
+    fn listed(model: *Model) usize {
         var count: usize = 0;
-        for (cx.files.items) |file| {
+        for (model.files.items) |file| {
             if (file.path != null) count += 1;
         }
         return count;

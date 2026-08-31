@@ -15,12 +15,12 @@
 
 const std = @import("std");
 
-const event_mod = @import("../event.zig");
-const Event = event_mod.Event;
-const Intent = event_mod.Intent;
+const message_mod = @import("../message.zig");
+const Message = message_mod.Message;
+const Intent = message_mod.Intent;
 
 const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
-const Context = @import("../context.zig").Context;
+const Model = @import("../model.zig").Model;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -43,19 +43,19 @@ pub fn HList(comptime Member: type) type {
         /// with the list as it grows.
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-        pub fn deinit(self: *Self, cx: *Context) void {
-            for (self.items.items) |*member| member.deinit(cx);
-            self.items.deinit(cx.allocator);
+        pub fn deinit(self: *Self, model: *Model) void {
+            for (self.items.items) |*member| member.deinit(model);
+            self.items.deinit(model.allocator);
         }
 
-        pub fn append(self: *Self, cx: *Context, member: Member) !void {
-            try self.items.append(cx.allocator, member);
+        pub fn append(self: *Self, model: *Model, member: Member) !void {
+            try self.items.append(model.allocator, member);
         }
 
         /// Puts `member` at `which`, moving the rest along. Order is what a row
         /// is, so there is no cheaper unordered version of this.
-        pub fn insert(self: *Self, cx: *Context, which: usize, member: Member) !void {
-            try self.items.insert(cx.allocator, which, member);
+        pub fn insert(self: *Self, model: *Model, which: usize, member: Member) !void {
+            try self.items.insert(model.allocator, which, member);
             if (self.focus >= which) self.focus += 1;
             self.holding = null;
         }
@@ -89,19 +89,19 @@ pub fn HList(comptime Member: type) type {
         /// Whatever it is given. How wide the columns are is a row's business;
         /// how tall they are is not, so it never asks for a height of its own.
         /// Only meaningful where a row is a member of a column.
-        pub fn height(self: *const Self, cx: *Context) ?f32 {
+        pub fn height(self: *const Self, model: *Model) ?f32 {
             _ = self;
-            _ = cx.atlas;
+            _ = model.atlas;
             return null;
         }
 
-        pub fn place(self: *Self, cx: *Context, rect: Rect) void {
+        pub fn place(self: *Self, model: *Model, rect: Rect) void {
             self.rect = rect;
 
             var left = rect.x;
             for (self.items.items, 1..) |*member, nth| {
                 const right = self.edge(nth);
-                member.place(cx, .{
+                member.place(model, .{
                     .x = left,
                     .y = rect.y,
                     .width = right - left,
@@ -115,34 +115,34 @@ pub fn HList(comptime Member: type) type {
             for (self.items.items) |*member| member.invalidate();
         }
 
-        pub fn draw(self: *Self, cx: *Context, painter: *Painter) !void {
-            for (self.items.items) |*member| try member.draw(cx, painter);
+        pub fn draw(self: *Self, model: *Model, painter: *Painter) !void {
+            for (self.items.items) |*member| try member.draw(model, painter);
         }
 
-        pub fn update(self: *Self, cx: *Context, event: Event) !Intent {
-            switch (event) {
+        pub fn update(self: *Self, model: *Model, message: Message) !Intent {
+            switch (message) {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
                     self.focus = which;
                     self.holding = which;
-                    return self.items.items[which].update(cx, event);
+                    return self.items.items[which].update(model, message);
                 },
                 .move => |at| {
                     const which = self.holding orelse self.over(at) orelse return .nothing;
-                    return self.items.items[which].update(cx, event);
+                    return self.items.items[which].update(model, message);
                 },
                 .release => {
                     const which = self.holding orelse return .nothing;
                     self.holding = null;
-                    return self.items.items[which].update(cx, event);
+                    return self.items.items[which].update(model, message);
                 },
                 .wheel => |wheel| {
                     const which = self.over(wheel.at) orelse return .nothing;
-                    return self.items.items[which].update(cx, event);
+                    return self.items.items[which].update(model, message);
                 },
                 else => {
                     const member = self.focused() orelse return .nothing;
-                    return member.update(cx, event);
+                    return member.update(model, message);
                 },
             }
         }
@@ -167,40 +167,40 @@ const Spy = struct {
     tag: u8,
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    pub fn deinit(_: *Spy, _: *Context) void {}
+    pub fn deinit(_: *Spy, _: *Model) void {}
     pub fn invalidate(_: *Spy) void {}
-    pub fn draw(_: *Spy, _: *Context, _: *Painter) !void {}
+    pub fn draw(_: *Spy, _: *Model, _: *Painter) !void {}
 
-    pub fn place(self: *Spy, _: *Context, rect: Rect) void {
+    pub fn place(self: *Spy, _: *Model, rect: Rect) void {
         self.rect = rect;
     }
 
-    pub fn update(self: *Spy, cx: *Context, _: Event) !Intent {
-        try self.told.append(cx.allocator, self.tag);
+    pub fn update(self: *Spy, model: *Model, _: Message) !Intent {
+        try self.told.append(model.allocator, self.tag);
         return .nothing;
     }
 };
 
-fn testRow(cx: *Context, told: *std.ArrayList(u8), tags: []const u8) !HList(Spy) {
+fn testRow(model: *Model, told: *std.ArrayList(u8), tags: []const u8) !HList(Spy) {
     var row: HList(Spy) = .{};
-    errdefer row.deinit(cx);
-    for (tags) |tag| try row.append(cx, .{ .told = told, .tag = tag });
-    row.place(cx, .{ .x = 0, .y = 0, .width = 100, .height = 50 });
+    errdefer row.deinit(model);
+    for (tags) |tag| try row.append(model, .{ .told = told, .tag = tag });
+    row.place(model, .{ .x = 0, .y = 0, .width = 100, .height = 50 });
     return row;
 }
 
-fn testContext(allocator: std.mem.Allocator) Context {
+fn testModel(allocator: std.mem.Allocator) Model {
     return .{ .allocator = allocator, .io = undefined };
 }
 
 test "however many there are, they divide the room evenly" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var three = try testRow(&cx, &told, "abc");
-    defer three.deinit(&cx);
+    var three = try testRow(&model, &told, "abc");
+    defer three.deinit(&model);
 
     // No seam and no overlap, and the last one ends where the row does.
     for (three.items.items[1..], three.items.items[0..2]) |right, left| {
@@ -212,58 +212,58 @@ test "however many there are, they divide the room evenly" {
 
 test "a point lands in the column it is over, at any count" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var three = try testRow(&cx, &told, "abc");
-    defer three.deinit(&cx);
+    var three = try testRow(&model, &told, "abc");
+    defer three.deinit(&model);
 
-    _ = try three.update(&cx, .{ .press = .{ 10, 10 } });
-    _ = try three.update(&cx, .{ .press = .{ 50, 10 } });
-    _ = try three.update(&cx, .{ .press = .{ 90, 10 } });
+    _ = try three.update(&model, .{ .press = .{ 10, 10 } });
+    _ = try three.update(&model, .{ .press = .{ 50, 10 } });
+    _ = try three.update(&model, .{ .press = .{ 90, 10 } });
     // The first edge lands on 33, and a boundary belongs to the column on its
     // right: 32 is the last pixel of the first column, 33 the first of the next.
-    _ = try three.update(&cx, .{ .press = .{ 32, 10 } });
-    _ = try three.update(&cx, .{ .press = .{ 33, 10 } });
+    _ = try three.update(&model, .{ .press = .{ 32, 10 } });
+    _ = try three.update(&model, .{ .press = .{ 33, 10 } });
     try std.testing.expectEqualStrings("abcab", told.items);
 }
 
 test "a press moves the keyboard and typing follows it" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var two = try testRow(&cx, &told, "lr");
-    defer two.deinit(&cx);
+    var two = try testRow(&model, &told, "lr");
+    defer two.deinit(&model);
 
-    _ = try two.update(&cx, .{ .text = "x" });
-    _ = try two.update(&cx, .{ .press = .{ 75, 10 } });
-    _ = try two.update(&cx, .{ .text = "x" });
+    _ = try two.update(&model, .{ .text = "x" });
+    _ = try two.update(&model, .{ .press = .{ 75, 10 } });
+    _ = try two.update(&model, .{ .text = "x" });
     try std.testing.expectEqualStrings("lrr", told.items);
     try std.testing.expectEqual(@as(usize, 1), two.focus);
 }
 
 test "a drag stays with the column it began in, and typing does not" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var two = try testRow(&cx, &told, "lr");
-    defer two.deinit(&cx);
+    var two = try testRow(&model, &told, "lr");
+    defer two.deinit(&model);
 
     // Keyboard on the right, drag started on the left.
-    _ = try two.update(&cx, .{ .press = .{ 75, 10 } });
-    _ = try two.update(&cx, .{ .press = .{ 10, 10 } });
+    _ = try two.update(&model, .{ .press = .{ 75, 10 } });
+    _ = try two.update(&model, .{ .press = .{ 10, 10 } });
     two.focus = 1;
     told.clearRetainingCapacity();
 
-    _ = try two.update(&cx, .{ .move = .{ 75, 10 } });
-    _ = try two.update(&cx, .{ .text = "x" });
-    _ = try two.update(&cx, .release);
-    _ = try two.update(&cx, .{ .move = .{ 75, 10 } });
+    _ = try two.update(&model, .{ .move = .{ 75, 10 } });
+    _ = try two.update(&model, .{ .text = "x" });
+    _ = try two.update(&model, .release);
+    _ = try two.update(&model, .{ .move = .{ 75, 10 } });
 
     // Move to the drag, character to the keyboard, release to the drag, and the
     // next move to whatever it is over.
@@ -272,30 +272,30 @@ test "a drag stays with the column it began in, and typing does not" {
 
 test "an empty row has nothing to be over and nothing to type into" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var none = try testRow(&cx, &told, "");
-    defer none.deinit(&cx);
+    var none = try testRow(&model, &told, "");
+    defer none.deinit(&model);
 
-    _ = try none.update(&cx, .{ .press = .{ 10, 10 } });
-    _ = try none.update(&cx, .{ .text = "x" });
+    _ = try none.update(&model, .{ .press = .{ 10, 10 } });
+    _ = try none.update(&model, .{ .text = "x" });
     try std.testing.expectEqualStrings("", told.items);
     try std.testing.expect(none.focused() == null);
 }
 
 test "a point outside the row is nobody's" {
     const allocator = std.testing.allocator;
-    var cx = testContext(allocator);
+    var model = testModel(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var two = try testRow(&cx, &told, "lr");
-    defer two.deinit(&cx);
+    var two = try testRow(&model, &told, "lr");
+    defer two.deinit(&model);
 
-    _ = try two.update(&cx, .{ .press = .{ 400, 10 } });
-    _ = try two.update(&cx, .{ .press = .{ -5, 10 } });
-    _ = try two.update(&cx, .{ .press = .{ 50, 400 } });
+    _ = try two.update(&model, .{ .press = .{ 400, 10 } });
+    _ = try two.update(&model, .{ .press = .{ -5, 10 } });
+    _ = try two.update(&model, .{ .press = .{ 50, 400 } });
     try std.testing.expectEqualStrings("", told.items);
 }
