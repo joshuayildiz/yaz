@@ -135,6 +135,12 @@ save.
 whatever is on screen. Type to narrow, up and down to move the selection, return
 to open, escape to close.
 
+**Nothing is offered until something is typed.** A list of every file in the
+repository is not an answer to a question nobody has asked yet, and drawing one
+would be a screenful of shaping done on the way to being replaced by the first
+keystroke. Until then the panel is the line you are typing and how many files
+there are to search.
+
 It does no listing and no matching of its own. `rg --files` says what there is
 to choose between, so .gitignore is honoured for free, and `fzf --filter` ranks
 it against what has been typed — the same ranking as fzf itself, because it *is*
@@ -745,6 +751,7 @@ src/
   components/      # anything that is given a rect and draws in it
     zstack.zig     #   the components of a window, back to front
     hstack.zig     #   the components of a window, left to right
+    vstack.zig     #   the components of a window, top to bottom
     text_view.zig  #   scrolling, the caret, hit-testing
     finder.zig     #   cmd+P, driving rg and fzf
     healthcheck.zig#   what is shown when a tool is missing
@@ -775,9 +782,10 @@ the order to read it in:
 | `text.zig` | glyph_atlas, painter |
 | `renderer.zig` | config, sdl, glyph_atlas, painter |
 | `tools.zig` | nothing of ours |
-| `components/zstack.zig`, `components/hstack.zig` | event, glyph_atlas, painter |
+| `components/zstack.zig`, `components/hstack.zig`, `components/vstack.zig` | event, glyph_atlas, painter |
 | `components/text_view.zig` | config, document, event, glyph_atlas, painter, text |
-| `components/finder.zig`, `components/healthcheck.zig` | config, event, glyph_atlas, painter, text, tools |
+| `components/healthcheck.zig` | config, event, glyph_atlas, painter, text, tools |
+| `components/finder.zig` | config, event, glyph_atlas, painter, text, tools, vstack |
 | `main.zig` | all of the above |
 
 **No component imports another.** Each is given a rect, told what happened in it
@@ -840,6 +848,19 @@ deciding where typing lands.
 Focus is not drawn: every view shows the same caret, so with more than one column
 the way to tell which has the keyboard is to type. That is the first thing a
 border or an active title would fix.
+
+**`VStack` is the third, and the only one whose members are not all the same
+size.** A ZStack gives every member the whole rect and an HStack divides it
+evenly; here each member is asked how tall it wants to be, and one that does not
+say takes what is left. That is why `place` carries the atlas: a height is nearly
+always a number of lines, and what a line is worth belongs to the font at the
+display's scale rather than to the layout.
+
+The finder is one — `VStack(&.{ Query, Results })`. The query says it is a line,
+a rule and the air around them; the list says nothing and gets the rest of the
+window. Neither has to be told where the other ends, and the finder itself no
+longer computes a single baseline: it owns the two processes and the bytes they
+produce, and hands the matches to the list.
 
 The view therefore names no SDL type and makes no SDL call. It does reach
 `sdl.zig` through `event.zig`, so the separation is one of vocabulary rather than

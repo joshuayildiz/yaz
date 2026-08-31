@@ -89,8 +89,8 @@ pub fn ZStack(comptime members: []const type) type {
             @compileError(@typeName(T) ++ " is not in this stack");
         }
 
-        pub fn place(self: *Self, rect: Rect) void {
-            inline for (0..count) |i| self.items[i].place(rect);
+        pub fn place(self: *Self, rect: Rect, atlas: *const GlyphAtlas) void {
+            inline for (0..count) |i| self.items[i].place(rect, atlas);
         }
 
         pub fn isDirty(self: *const Self) bool {
@@ -140,7 +140,7 @@ fn Spy(comptime tag: u8) type {
         gpa: std.mem.Allocator,
 
         pub fn deinit(_: *Self) void {}
-        pub fn place(_: *Self, _: Rect) void {}
+        pub fn place(_: *Self, _: Rect, _: *const GlyphAtlas) void {}
         pub fn isDirty(_: *const Self) bool {
             return false;
         }

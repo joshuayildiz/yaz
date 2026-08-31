@@ -318,7 +318,7 @@ fn App(comptime Stack: type) type {
                 .y = 0,
                 .width = @floatFromInt(width),
                 .height = @floatFromInt(height),
-            });
+            }, &self.renderer.atlas);
 
             self.painter.clear();
             try self.stack.draw(&self.renderer.atlas, &self.painter);
@@ -675,4 +675,5 @@ test {
     _ = @import("./components/text_view.zig");
     _ = @import("./components/zstack.zig");
     _ = @import("./components/hstack.zig");
+    _ = @import("./components/vstack.zig");
 }

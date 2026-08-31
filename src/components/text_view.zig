@@ -213,7 +213,11 @@ pub const TextView = struct {
 
     /// Hands the view the room it has. Called before anything is drawn or asked
     /// about, so nothing else has to be told the window's size.
-    pub fn place(self: *TextView, rect: Rect) void {
+    ///
+    /// The atlas comes with it for the sake of components that size themselves
+    /// from the font; this one measures nothing until it draws.
+    pub fn place(self: *TextView, rect: Rect, atlas: *const GlyphAtlas) void {
+        _ = atlas;
         self.rect = rect;
     }
 

@@ -89,7 +89,7 @@ pub fn HStack(comptime members: []const type) type {
         }
 
         /// Equal columns, left to right.
-        pub fn place(self: *Self, rect: Rect) void {
+        pub fn place(self: *Self, rect: Rect, atlas: *const GlyphAtlas) void {
             var left = rect.x;
             inline for (0..count) |i| {
                 // Each edge from the full width rather than by adding widths up,
@@ -97,7 +97,7 @@ pub fn HStack(comptime members: []const type) type {
                 // of the last one.
                 const right = @round(rect.x + rect.width * @as(f32, i + 1) / @as(f32, count));
                 self.rects[i] = .{ .x = left, .y = rect.y, .width = right - left, .height = rect.height };
-                self.items[i].place(self.rects[i]);
+                self.items[i].place(self.rects[i], atlas);
                 left = right;
             }
         }
@@ -190,7 +190,7 @@ fn Spy(comptime tag: u8) type {
         pub fn invalidate(_: *Self) void {}
         pub fn draw(_: *Self, _: *GlyphAtlas, _: *Painter) !void {}
 
-        pub fn place(self: *Self, rect: Rect) void {
+        pub fn place(self: *Self, rect: Rect, _: *const GlyphAtlas) void {
             self.rect = rect;
         }
 
@@ -210,7 +210,7 @@ fn testRow(gpa: std.mem.Allocator, told: *std.ArrayList(u8)) Row {
         .{ .told = told, .gpa = gpa },
         .{ .told = told, .gpa = gpa },
     });
-    row.place(.{ .x = 0, .y = 0, .width = 100, .height = 50 });
+    row.place(.{ .x = 0, .y = 0, .width = 100, .height = 50 }, undefined);
     return row;
 }
 

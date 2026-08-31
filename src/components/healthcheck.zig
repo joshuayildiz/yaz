@@ -153,7 +153,8 @@ pub const Healthcheck = struct {
         self.tail.deinit(self.gpa);
     }
 
-    pub fn place(self: *Healthcheck, rect: Rect) void {
+    pub fn place(self: *Healthcheck, rect: Rect, atlas: *const GlyphAtlas) void {
+        _ = atlas;
         self.rect = rect;
     }
 
