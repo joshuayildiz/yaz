@@ -148,9 +148,8 @@ const Parked = struct {
 /// Together because the event watch reaches them from behind one `void *`.
 const App = struct {
     gpa: std.mem.Allocator,
+    io: std.Io,
     renderer: Renderer,
-
-    io: std.Io = undefined,
 
     /// When set, one of the two tools does not run, and this is the whole
     /// window: no views, no files read, nothing routed anywhere else.
