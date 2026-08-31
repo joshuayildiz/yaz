@@ -25,6 +25,13 @@ const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
+/// Whether a press on a member should move the keyboard to it. A bar of tabs or
+/// a status line is pressed for what it does, not to be typed into, and says so
+/// with `pub const takes_focus = false;`. Anything that says nothing takes it.
+fn takesFocus(comptime T: type) bool {
+    return !@hasDecl(T, "takes_focus") or T.takes_focus;
+}
+
 pub fn HList(comptime Member: type) type {
     return struct {
         const Self = @This();
@@ -71,6 +78,15 @@ pub fn HList(comptime Member: type) type {
             return @round(self.rect.x + self.rect.width * @as(f32, @floatFromInt(nth)) / count);
         }
 
+        /// Whatever it is given. How wide the columns are is a row's business;
+        /// how tall they are is not, so it never asks for a height of its own.
+        /// Only meaningful where a row is a member of a column.
+        pub fn height(self: *const Self, atlas: *const GlyphAtlas) ?f32 {
+            _ = self;
+            _ = atlas;
+            return null;
+        }
+
         pub fn place(self: *Self, rect: Rect, atlas: *const GlyphAtlas) void {
             self.rect = rect;
 
@@ -110,7 +126,7 @@ pub fn HList(comptime Member: type) type {
             switch (event) {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
-                    self.focus = which;
+                    if (comptime takesFocus(Member)) self.focus = which;
                     self.holding = which;
                     return self.items.items[which].update(event, atlas);
                 },

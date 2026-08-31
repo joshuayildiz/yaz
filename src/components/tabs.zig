@@ -1,0 +1,206 @@
+//! A tab per file open in this window, along the top.
+//!
+//! Each is as wide as the name in it, packed from the left, so the bar reads as
+//! labels rather than as a grid. That is why this lays its own tabs out instead
+//! of being an `HList`, which divides evenly: a row of equal shares is the wrong
+//! shape for a row of words.
+//!
+//! It owns the names and nothing else. Which file is in front of the reader is
+//! asked of the columns every frame rather than remembered here, so the bar
+//! cannot disagree with what is on screen.
+//!
+//! A press answers `Intent.open`, exactly as the finder does, and the same code
+//! above puts the file in the column that has the keyboard.
+
+const std = @import("std");
+
+const config = @import("../config.zig");
+const event_mod = @import("../event.zig");
+const Event = event_mod.Event;
+const Intent = event_mod.Intent;
+
+const glyph_atlas = @import("../glyph_atlas.zig");
+const GlyphAtlas = glyph_atlas.GlyphAtlas;
+const LineLayout = glyph_atlas.LineLayout;
+
+const painter_mod = @import("../painter.zig");
+const Key = painter_mod.Key;
+const Painter = painter_mod.Painter;
+const Rect = painter_mod.Rect;
+
+const drawLine = @import("../text.zig").draw;
+const advance = @import("../text.zig").advance;
+
+/// Below the finder's 3 and above, and never over a document: the bar has the
+/// top strip to itself. The ground and the rule under it do not overlap, so they
+/// share a layer; the tab in front covers both and needs one of its own.
+const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.panel_colour };
+const rule_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.edge_colour };
+const front_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.background };
+const name_key: Key = .{ .layer = 2, .pipeline = .glyphs, .colour = config.text_colour };
+const other_key: Key = .{ .layer = 2, .pipeline = .glyphs, .colour = config.muted_colour };
+
+/// In points, scaled like the font: the air either side of a name, and above and
+/// below it.
+const across = 14;
+const down = 6;
+
+pub const Tabs = struct {
+    gpa: std.mem.Allocator,
+
+    /// Every file open in this window, in the order they were first opened.
+    /// Owned, because the copy a view or a parked document holds is freed and
+    /// replaced as files move between them.
+    paths: std.ArrayList([]u8) = .empty,
+    names: std.ArrayList(LineLayout) = .empty,
+
+    /// Where each one ended up, worked out while drawing, which is the only
+    /// time the labels can be measured. A press comes after a frame, so there
+    /// is always something to hit.
+    rects: std.ArrayList(Rect) = .empty,
+
+    /// Which of them the column with the keyboard is showing.
+    front: ?usize = null,
+
+    rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+    dirty: bool = true,
+
+    /// A press here picks a file; it does not move the keyboard out of the
+    /// document and into the bar.
+    pub const takes_focus = false;
+
+    pub fn init(gpa: std.mem.Allocator) Tabs {
+        return .{ .gpa = gpa };
+    }
+
+    pub fn deinit(self: *Tabs) void {
+        for (self.paths.items) |path| self.gpa.free(path);
+        self.paths.deinit(self.gpa);
+        for (self.names.items) |*name| name.deinit(self.gpa);
+        self.names.deinit(self.gpa);
+        self.rects.deinit(self.gpa);
+    }
+
+    /// Lists `path` if it is not listed already.
+    pub fn opened(self: *Tabs, path: []const u8) !void {
+        for (self.paths.items) |listed| {
+            if (std.mem.eql(u8, listed, path)) return;
+        }
+
+        const owned = try self.gpa.dupe(u8, path);
+        errdefer self.gpa.free(owned);
+
+        try self.paths.append(self.gpa, owned);
+        errdefer _ = self.paths.pop();
+        try self.names.append(self.gpa, .{});
+        try self.rects.append(self.gpa, .{ .x = 0, .y = 0, .width = 0, .height = 0 });
+        self.dirty = true;
+    }
+
+    /// Which file the column with the keyboard is showing, or none for a
+    /// document nobody named.
+    pub fn showing(self: *Tabs, path: ?[]const u8) void {
+        const found: ?usize = if (path) |named| found: {
+            for (self.paths.items, 0..) |listed, which| {
+                if (std.mem.eql(u8, listed, named)) break :found which;
+            }
+            break :found null;
+        } else null;
+
+        if (found != self.front) {
+            self.front = found;
+            self.dirty = true;
+        }
+    }
+
+    /// Nothing at all when no file has been named: a strip with no tabs on it
+    /// is a promise of something that is not there.
+    pub fn height(self: *const Tabs, atlas: *const GlyphAtlas) ?f32 {
+        if (self.paths.items.len == 0) return 0;
+        return @round(atlas.line_height + 2 * @round(down * atlas.scale));
+    }
+
+    pub fn place(self: *Tabs, rect: Rect, atlas: *const GlyphAtlas) void {
+        _ = atlas;
+        self.rect = rect;
+    }
+
+    pub fn isDirty(self: *const Tabs) bool {
+        return self.dirty;
+    }
+
+    pub fn setDirty(self: *Tabs, value: bool) void {
+        self.dirty = value;
+    }
+
+    pub fn invalidate(self: *Tabs) void {
+        for (self.names.items) |*name| name.shaped = false;
+        self.dirty = true;
+    }
+
+    pub fn update(self: *Tabs, event: Event, atlas: *GlyphAtlas) !Intent {
+        _ = atlas;
+        const at = switch (event) {
+            .press => |where| where,
+            else => return .nothing,
+        };
+
+        for (self.rects.items, 0..) |rect, which| {
+            if (!rect.contains(at)) continue;
+            // The same answer the finder gives, so the same code above acts on
+            // it: whoever takes the path owns it.
+            return .{ .open = try self.gpa.dupe(u8, self.paths.items[which]) };
+        }
+        return .nothing;
+    }
+
+    pub fn draw(self: *Tabs, atlas: *GlyphAtlas, painter: *Painter) !void {
+        if (self.paths.items.len == 0) return;
+
+        const line = @max(1, @round(atlas.scale));
+        const inset = @round(across * atlas.scale);
+
+        // The strip, and the rule that closes it off. Cut so they do not
+        // overlap, which is what lets them share a layer.
+        try painter.add(ground_key, .solid(
+            .{ self.rect.x, self.rect.y },
+            .{ self.rect.width, @max(0, self.rect.height - line) },
+        ));
+        try painter.add(rule_key, .solid(
+            .{ self.rect.x, self.rect.y + self.rect.height - line },
+            .{ self.rect.width, line },
+        ));
+
+        var left = self.rect.x;
+        for (self.paths.items, 0..) |path, which| {
+            const name = &self.names.items[which];
+            if (!name.shaped) try atlas.shapeLine(std.fs.path.basename(path), name);
+
+            const width = @round(advance(name) + 2 * inset);
+            self.rects.items[which] = .{
+                .x = left,
+                .y = self.rect.y,
+                .width = width,
+                .height = self.rect.height,
+            };
+
+            // The one in front is the colour of the page, so it joins the
+            // document below rather than sitting on a shelf above it. It covers
+            // the rule, which is the whole of what makes a tab look attached.
+            const in_front = which == self.front;
+            if (in_front) try painter.add(front_key, .solid(
+                .{ left, self.rect.y },
+                .{ width, self.rect.height },
+            ));
+
+            try drawLine(
+                painter,
+                if (in_front) name_key else other_key,
+                name,
+                .{ @round(left + inset), @round(self.rect.y + @round(down * atlas.scale) + atlas.ascent) },
+            );
+
+            left += width;
+        }
+    }
+};

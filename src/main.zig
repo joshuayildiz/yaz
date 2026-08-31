@@ -18,6 +18,8 @@ const Healthcheck = @import("./components/healthcheck.zig").Healthcheck;
 const Finder = @import("./components/finder.zig").Finder;
 const ZTuple = @import("./components/ztuple.zig").ZTuple;
 const HList = @import("./components/hlist.zig").HList;
+const VTuple = @import("./components/vtuple.zig").VTuple;
+const Tabs = @import("./components/tabs.zig").Tabs;
 const c = sdl.c;
 
 /// The largest file yaz will open. What still costs per line of the document
@@ -48,9 +50,15 @@ pub fn main(init: std.process.Init) !void {
     var views = try openViews(init);
     errdefer views.deinit();
 
+    var tabs: Tabs = .init(init.gpa);
+    errdefer tabs.deinit();
+    for (views.items.items) |view| {
+        if (view.path) |named| try tabs.opened(named);
+    }
+
     return run(Editing, init.gpa, init.io, .init(.{
         try Finder.init(init.gpa, init.io, init.minimal.environ),
-        views,
+        .init(.{ tabs, views }),
     }));
 }
 
@@ -91,9 +99,13 @@ const Stopped = ZTuple(&.{Healthcheck});
 /// many there are is not known until the command line has been read.
 const Views = HList(TextView);
 
-/// Back to front. The finder sits behind the text until cmd+P brings it
+/// Top to bottom: a tab per file open in the window, and the columns under it.
+/// The bar says how tall it is and the columns take the rest.
+const Workspace = VTuple(&.{ Tabs, Views });
+
+/// Back to front. The finder sits behind the workspace until cmd+P brings it
 /// forward, so opening and closing it is a change of order and nothing else.
-const Editing = ZTuple(&.{ Finder, Views });
+const Editing = ZTuple(&.{ Finder, Workspace });
 
 /// The window, and whatever `main` decided goes in it.
 ///
@@ -191,9 +203,16 @@ fn App(comptime Stack: type) type {
                 },
                 .open => |path| {
                     defer self.gpa.free(path);
-                    self.stack.lowerFront();
+
+                    // A panel that opens something is done with the screen. The
+                    // tab bar is not a panel, and lowering the workspace would
+                    // put the finder in front of it.
+                    if (comptime Stack.has(Finder)) {
+                        if (self.stack.inFront(Finder)) self.stack.lowerFront();
+                    }
+
                     self.dirty = true;
-                    if (comptime Stack.has(Views)) try self.reveal(path);
+                    if (comptime Stack.has(Workspace)) try self.reveal(path);
                 },
             }
         }
@@ -204,7 +223,10 @@ fn App(comptime Stack: type) type {
         /// opened, which is both what one expects and the only way two views of
         /// one file cannot drift apart -- they share no document.
         fn reveal(self: *Self, path: []const u8) !void {
-            const views = self.stack.get(Views);
+            const workspace = self.stack.get(Workspace);
+            try workspace.get(Tabs).opened(path);
+
+            const views = workspace.get(Views);
             for (views.items.items, 0..) |*view, which| {
                 const named = view.path orelse continue;
                 if (!std.mem.eql(u8, named, path)) continue;
@@ -267,6 +289,16 @@ fn App(comptime Stack: type) type {
             // modal loop, where only the watch below runs.
             const scale = displayScale(self.renderer.window);
             if (try self.renderer.atlas.setScale(scale)) self.stack.invalidate();
+
+            // Asked of the columns rather than remembered, so the bar cannot
+            // disagree with what is on screen -- a press that moves the keyboard
+            // to another column moves the tab in front with it, and nothing had
+            // to tell the bar so.
+            if (comptime Stack.has(Workspace)) {
+                const workspace = self.stack.get(Workspace);
+                const showing = if (workspace.get(Views).focused()) |view| view.path else null;
+                workspace.get(Tabs).showing(showing);
+            }
 
             // The window rather than the swapchain, which is not acquired until
             // `present`. The two can disagree for a frame mid-resize, which is
@@ -358,8 +390,8 @@ fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack) !
     // rather than carried around by the view -- where it would be a path whose
     // allocation is one byte longer than its length, and the parked documents
     // are keyed by exactly that path.
-    if (comptime Stack.has(Views)) {
-        if (app.stack.get(Views).items.items[0].path) |named| {
+    if (comptime Stack.has(Workspace)) {
+        if (app.stack.get(Workspace).get(Views).items.items[0].path) |named| {
             const title = try gpa.dupeZ(u8, named);
             defer gpa.free(title);
             _ = c.SDL_SetWindowTitle(window, title.ptr);
@@ -648,5 +680,6 @@ test {
     _ = @import("./components/ztuple.zig");
     _ = @import("./components/htuple.zig");
     _ = @import("./components/hlist.zig");
+    _ = @import("./components/tabs.zig");
     _ = @import("./components/vtuple.zig");
 }

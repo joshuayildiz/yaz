@@ -88,7 +88,10 @@ yaz a.md b.md     # both, in equal columns
 ```
 
 Any number of paths, in equal columns left to right in the order named; the
-window takes its title from the first.
+window takes its title from the first. A **tab bar** runs along the top with one
+tab per file open in the window — the ones named here and the ones picked with
+cmd+P — and pressing a tab puts that file in the column that has the keyboard.
+A file already in a column is focused rather than opened twice.
 
 `assets/sample.txt` is there to be opened — six lines exercising ligatures, a
 combining mark, `.notdef` and proportional advances.
@@ -756,6 +759,7 @@ src/
     htuple.zig     #   the components of a window, left to right
     vtuple.zig     #   the components of a window, top to bottom
     hlist.zig      #   however many components of one kind, left to right
+    tabs.zig       #   a tab per file open in the window
     text_view.zig  #   scrolling, the caret, hit-testing
     finder.zig     #   cmd+P, driving rg and fzf
     healthcheck.zig#   what is shown when a tool is missing
@@ -788,6 +792,7 @@ the order to read it in:
 | `tools.zig` | nothing of ours |
 | `components/ztuple.zig`, `components/htuple.zig`, `components/vtuple.zig` | event, glyph_atlas, painter |
 | `components/hlist.zig` | event, glyph_atlas, painter |
+| `components/tabs.zig` | config, event, glyph_atlas, painter, text |
 | `components/text_view.zig` | config, document, event, glyph_atlas, painter, text |
 | `components/healthcheck.zig` | config, event, glyph_atlas, painter, text, tools |
 | `components/finder.zig` | config, event, glyph_atlas, painter, text, tools, vtuple |
@@ -863,6 +868,18 @@ because the column count comes off the command line. One member type means
 reaching the nth is an index rather than a selection over a tuple, which is the
 whole of the difference in the code. `VList` and `ZList` are the same file again
 and will be written when something needs them.
+
+**The window is `ZTuple(&.{ Finder, Workspace })`**, and the workspace is
+`VTuple(&.{ Tabs, HList(TextView) })`: a bar that says how tall it is over a row
+of columns that takes the rest. A press on the bar picks a file without moving
+the keyboard into it, because `Tabs` declares `pub const takes_focus = false;` —
+a bar is pressed for what it does, not to be typed into, and the containers check
+that at compile time before moving focus to a member.
+
+`Tabs` lays its own tabs out rather than being an `HList`, because a row of equal
+shares is the wrong shape for a row of words: each tab is as wide as the name in
+it. It answers a press with `Intent.open`, exactly as the finder does, so one
+piece of code above acts on both.
 
 **`VTuple` is the third of the tuples, and the only one whose members are not all
 the same size.** A ZTuple gives every member the whole rect and an HTuple divides it

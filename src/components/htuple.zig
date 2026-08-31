@@ -22,6 +22,13 @@ const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
+/// Whether a press on a member should move the keyboard to it. A bar of tabs or
+/// a status line is pressed for what it does, not to be typed into, and says so
+/// with `pub const takes_focus = false;`. Anything that says nothing takes it.
+fn takesFocus(comptime T: type) bool {
+    return !@hasDecl(T, "takes_focus") or T.takes_focus;
+}
+
 /// `members` are listed left to right.
 pub fn HTuple(comptime members: []const type) type {
     return struct {
@@ -127,12 +134,16 @@ pub fn HTuple(comptime members: []const type) type {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
 
-                    // Nothing is marked dirty for the move of focus itself:
-                    // focus is not drawn, so a frame showing it would be a frame
-                    // identical to the last, and presenting one costs the wait
-                    // for a swapchain image.
-                    self.focus = which;
+                    // Nothing is marked dirty for the move itself. The member
+                    // pressed marks itself, and anything that draws the focus --
+                    // the tab bar does -- is read back out of the members while
+                    // that frame is being put together.
                     self.holding = which;
+                    inline for (0..count) |i| {
+                        if (comptime takesFocus(members[i])) {
+                            if (which == i) self.focus = i;
+                        }
+                    }
                     return self.tell(which, event, atlas);
                 },
                 // Whoever took the press keeps the drag, wherever it wanders.
