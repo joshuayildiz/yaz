@@ -162,13 +162,15 @@ pub const Workbench = struct {
     fn tell(self: *Workbench, cx: *Context) void {
         const row = self.views();
 
-        // Asked again every frame rather than kept in step, because a file
-        // leaves a column without anything being told. Whether it has been
-        // changed is not asked at all: the bar reads that off the file.
-        for (cx.files.items) |file| file.shown = false;
+        // Written every frame rather than kept in step, because a file leaves a
+        // column without anything being told. Whether it has been changed is
+        // not written at all: that is the file's own answer.
+        for (cx.files.items) |file| {
+            file.shown = false;
+            file.focused = false;
+        }
         for (row.items.items) |*view| view.file.shown = true;
-
-        self.tabs().showing(if (row.focused()) |view| view.file else null);
+        if (row.focused()) |view| view.file.focused = true;
     }
 
     /// Puts `path` in front of the reader, in the column with the keyboard.

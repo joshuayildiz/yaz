@@ -81,10 +81,6 @@ pub const Tabs = struct {
     /// is always something to hit.
     rects: std.ArrayList(Rect) = .empty,
 
-    /// Which file the column with the keyboard is showing. Held by identity
-    /// rather than by name, because there is one of each.
-    front: ?*const OpenFile = null,
-
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     dirty: bool = true,
 
@@ -102,15 +98,6 @@ pub const Tabs = struct {
             counted += 1;
         }
         return null;
-    }
-
-    /// Which file the column with the keyboard is showing, or none for a file
-    /// nobody named.
-    pub fn showing(self: *Tabs, file: ?*const OpenFile) void {
-        if (file != self.front) {
-            self.front = file;
-            self.dirty = true;
-        }
     }
 
     /// Nothing at all when no file has been named: a strip with no tabs on it
@@ -227,7 +214,7 @@ pub const Tabs = struct {
                 .{ line, @max(0, self.rect.height - line) },
             ));
 
-            const key = if (file == self.front) name_key else other_key;
+            const key = if (file.focused) name_key else other_key;
             const baseline = @round(self.rect.y + @round(down * cx.atlas.scale) + cx.atlas.ascent);
 
             // The mark's room is taken whether or not it is drawn, so a file

@@ -47,6 +47,39 @@ pub const Context = struct {
     /// the end of the window, and only the thing holding the files knows that.
     running: bool = true,
 
+    /// Nothing is open yet and there is no atlas yet: the first needs the
+    /// command line to have been read, the second needs a window. Both arrive
+    /// through the two calls below, and nothing draws in between.
+    pub fn init(process: std.process.Init) Context {
+        return .{ .allocator = process.gpa, .io = process.io };
+    }
+
+    /// Every file named on the command line, in the order they were named, and
+    /// a blank one when none was. Never empty, so a window always has
+    /// something to show.
+    ///
+    /// Apart from `init` because the tool check comes between them: with
+    /// ripgrep or fzf missing nothing but the healthcheck runs, and reading a
+    /// file first would report the wrong problem when the path is also bad.
+    pub fn openNamed(self: *Context, process: std.process.Init) !void {
+        var args = try std.process.Args.Iterator.initAllocator(process.minimal.args, self.allocator);
+        defer args.deinit();
+        _ = args.skip(); // The program itself.
+
+        // Read one at a time rather than gathering the paths first: the
+        // iterator owns what it returns until the next call, and `open` copies
+        // what it keeps.
+        while (args.next()) |named| _ = try self.open(named);
+
+        if (self.files.items.len == 0) _ = try self.blank();
+    }
+
+    /// The atlas, once there is a window to have made one. Called once, before
+    /// anything is placed or drawn.
+    pub fn attach(self: *Context, atlas: *GlyphAtlas) void {
+        self.atlas = atlas;
+    }
+
     pub fn deinit(self: *Context) void {
         for (self.files.items) |file| {
             file.deinit();

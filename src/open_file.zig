@@ -578,9 +578,14 @@ pub const OpenFile = struct {
     scroll: f32 = 0,
 
     /// Whether a column is showing it right now, as against being open and out
-    /// of sight. Written once a frame by whatever owns the columns; the bar
-    /// reads it.
+    /// of sight, and whether that column is the one with the keyboard. Two
+    /// questions rather than one: with the window split, several files are on
+    /// screen and only one of them is being typed into.
+    ///
+    /// Written once a frame by whatever owns the columns, since a file leaves a
+    /// column without being told. The bar reads both and says both.
     shown: bool = false,
+    focused: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, text: []const u8, path: ?[]const u8) !OpenFile {
         var buffer = try Buffer.init(allocator, text);

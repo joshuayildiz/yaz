@@ -29,7 +29,9 @@ const Editing = ZTuple(&.{ Finder, Workbench });
 pub fn main(init: std.process.Init) !void {
     if (try wantsSetup(init)) return setup(init);
 
-    var cx: Context = .{ .allocator = init.gpa, .io = init.io };
+    // Built once, and the whole of what the window is showing. Everything
+    // below reads its state out of this and writes changes back into it.
+    var cx: Context = .init(init);
     defer cx.deinit();
 
     // The tools before anything else: with either of them missing nothing but
@@ -44,40 +46,21 @@ pub fn main(init: std.process.Init) !void {
     // Read out here rather than inside `run`, so a file that cannot be opened
     // fails before a window has appeared and gone again. Nothing a component is
     // built from needs a window.
-    var views = try openColumns(&cx, init);
+    try cx.openNamed(init);
+
+    // A column per file named, left to right in the order they were named. The
+    // files belong to the context; a column only points at one.
+    var views: Views = .{};
     errdefer views.deinit(&cx);
+    try views.items.ensureTotalCapacity(cx.allocator, cx.files.items.len);
+    for (cx.files.items) |file| try views.append(&cx, .init(file));
 
     // Borrowed rather than copied: `run` hands it to SDL, which copies it, and
     // the context outlives the call.
-    const title = views.items.items[0].file.path;
+    const title = cx.files.items[0].path;
 
     const finder = try Finder.init(cx.allocator, init.minimal.environ);
     return run(&cx, Editing, .init(.{ finder, .init(.{}, views) }), title);
-}
-
-/// A column per file named, left to right in the order they were named.
-///
-/// The files themselves go into the context, which owns them; a column only
-/// points at one. A window given nothing to open gets a blank file, so there is
-/// always something to type into.
-fn openColumns(cx: *Context, init: std.process.Init) !Views {
-    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, cx.allocator);
-    defer args.deinit();
-    _ = args.skip(); // The program itself.
-
-    var views: Views = .{};
-    errdefer views.deinit(cx);
-
-    // Read one at a time rather than gathering the paths first: the iterator
-    // owns what it returns until the next call, and `open` copies it.
-    while (args.next()) |named| {
-        try views.append(cx, .init(try cx.open(named)));
-    }
-
-    if (views.items.items.len == 0) {
-        try views.append(cx, .init(try cx.blank()));
-    }
-    return views;
 }
 
 /// The window, and the one component `main` put in it.
@@ -235,9 +218,9 @@ fn run(cx: *Context, comptime Component: type, component: Component, title: ?[]c
     };
     defer app.deinit();
 
-    // The atlas cannot be named before now: the renderer owns it, and the
-    // renderer needs a window. Nothing has placed, drawn or measured yet.
-    cx.atlas = &app.renderer.atlas;
+    // The last thing the context was missing: the renderer owns the atlas, and
+    // the renderer needs a window. Nothing has placed, drawn or measured yet.
+    cx.attach(&app.renderer.atlas);
 
     // Only a window with a file in it has anything to be called. SDL copies the
     // string, so the sentinel it wants is borrowed for the length of the call
