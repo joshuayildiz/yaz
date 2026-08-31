@@ -157,7 +157,12 @@ fn addShaders(b: *std.Build, module: *std.Build.Module, format: Format) void {
             b.pathFromRoot("vendor/toolchain/bin/glslang"),
             // --quiet, or glslang echoes the input path and the build system
             // treats a command that produces output files and chatter as failed.
-            "-V", "--quiet", "--target-env", "vulkan1.0", "-S", shader.glslang_stage,
+            "-V",
+            "--quiet",
+            "--target-env",
+            "vulkan1.0",
+            "-S",
+            shader.glslang_stage,
         });
         glslang.addFileArg(b.path(b.fmt("assets/shaders/{s}.glsl", .{shader.name})));
         glslang.addArg("-o");
