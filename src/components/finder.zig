@@ -148,10 +148,6 @@ pub const Finder = struct {
         self.laid_out = false;
     }
 
-    pub fn isOpen(self: *const Finder) bool {
-        return self.showing;
-    }
-
     pub fn isDirty(self: *const Finder) bool {
         return self.dirty;
     }

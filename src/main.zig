@@ -16,6 +16,7 @@ const sdl = @import("./sdl.zig");
 const tools = @import("./tools.zig");
 const Healthcheck = @import("./components/healthcheck.zig").Healthcheck;
 const Finder = @import("./components/finder.zig").Finder;
+const ZStack = @import("./components/zstack.zig").ZStack;
 const c = sdl.c;
 
 /// The largest file yaz will open. What still costs per line of the document
@@ -81,51 +82,17 @@ pub fn main(init: std.process.Init) !void {
         if (opened.items[0].path) |path| _ = c.SDL_SetWindowTitle(window, path.ptr);
     }
 
-    var app: App = .{
-        .gpa = init.gpa,
-        .health = if (absent.any())
-            try Healthcheck.init(init.gpa, init.minimal.environ, absent)
-        else
-            null,
-        .renderer = try Renderer.init(init.gpa, window),
-        .painter = .init(init.gpa),
-        // Only where there is an editor to find files for. With a tool missing
-        // its paths cannot even be resolved.
-        .finder = if (absent.any()) null else try Finder.init(init.gpa, init.io, init.minimal.environ),
-        .columns = try Columns.init(init.gpa, init.io, opened.items),
-    };
-    defer app.deinit();
-
-    if (!c.SDL_AddEventWatch(redrawWhileResizing, &app)) {
-        std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
-        return error.SdlAddEventWatch;
+    // What the tool check decides, and the only thing it decides: which
+    // components there are. Nothing past here asks about it again.
+    if (absent.any()) {
+        return run(Stopped, init, window, .init(.{
+            try Healthcheck.init(init.gpa, init.minimal.environ, absent),
+        }));
     }
-    defer c.SDL_RemoveEventWatch(redrawWhileResizing, &app);
-
-    // Blocking wait, not a poll loop: idle costs nothing. Waking up is not a
-    // reason to draw, though; only a change to what is on screen is.
-    var event: c.SDL_Event = undefined;
-    while (app.running) {
-        if (app.isDirty()) {
-            try app.redraw();
-            app.setDirty(false);
-        }
-
-        if (!c.SDL_WaitEvent(&event)) {
-            std.log.err("SDL_WaitEvent: {s}", .{sdl.lastError()});
-            return error.SdlWaitEvent;
-        }
-
-        // Everything already queued belongs to the frame this wakeup produces.
-        // Folding a burst into one redraw is what stops a keystroke queueing up
-        // behind presents of unchanged content: presenting blocks on the
-        // swapchain, so each redundant one costs real latency, not just work.
-        while (true) {
-            const density = c.SDL_GetWindowPixelDensity(window);
-            if (Event.init(&event, density)) |what| try app.update(what);
-            if (!c.SDL_PollEvent(&event)) break;
-        }
-    }
+    return run(Editing, init, window, .init(.{
+        try Finder.init(init.gpa, init.io, init.minimal.environ),
+        try Columns.init(init.gpa, init.io, opened.items),
+    }));
 }
 
 /// Where the pointer was, for the events that carry it.
@@ -180,7 +147,7 @@ const Columns = struct {
         return self;
     }
 
-    fn deinit(self: *Columns) void {
+    pub fn deinit(self: *Columns) void {
         var resting = self.parked.iterator();
         while (resting.next()) |entry| {
             self.gpa.free(entry.key_ptr.*);
@@ -192,23 +159,23 @@ const Columns = struct {
         self.views.deinit(self.gpa);
     }
 
-    fn isDirty(self: *const Columns) bool {
+    pub fn isDirty(self: *const Columns) bool {
         for (self.views.items) |*view| {
             if (view.isDirty()) return true;
         }
         return false;
     }
 
-    fn setDirty(self: *Columns, value: bool) void {
+    pub fn setDirty(self: *Columns, value: bool) void {
         for (self.views.items) |*view| view.setDirty(value);
     }
 
-    fn invalidate(self: *Columns) void {
+    pub fn invalidate(self: *Columns) void {
         for (self.views.items) |*view| view.invalidate();
     }
 
     /// Equal columns, left to right.
-    fn place(self: *Columns, rect: Rect) void {
+    pub fn place(self: *Columns, rect: Rect) void {
         const count: f32 = @floatFromInt(self.views.items.len);
         var left = rect.x;
         for (self.views.items, 1..) |*view, nth| {
@@ -221,7 +188,7 @@ const Columns = struct {
         }
     }
 
-    fn update(self: *Columns, event: Event, atlas: *GlyphAtlas) !Intent {
+    pub fn update(self: *Columns, event: Event, atlas: *GlyphAtlas) !Intent {
         // A view holding the scrollbar keeps the pointer until it lets go,
         // wherever it wanders. Without this a drag crossing into the next view
         // would be handed over half way through.
@@ -265,7 +232,7 @@ const Columns = struct {
         return null;
     }
 
-    fn draw(self: *Columns, atlas: *GlyphAtlas, painter: *Painter) !void {
+    pub fn draw(self: *Columns, atlas: *GlyphAtlas, painter: *Painter) !void {
         // Read here rather than acted on at the keystroke that set it: a view
         // has to have been given its room before it can say what is in it.
         for (self.views.items) |*view| {
@@ -336,143 +303,188 @@ const Columns = struct {
     }
 };
 
-/// Together because the event watch reaches them from behind one `void *`.
-const App = struct {
-    gpa: std.mem.Allocator,
-    renderer: Renderer,
-    painter: Painter,
+/// The window when a tool is missing: one component, and nothing that could go
+/// in front of it.
+const Stopped = ZStack(&.{Healthcheck});
 
-    /// When set, one of the two tools does not run, and this is the whole
-    /// window: no columns, no files read, nothing routed anywhere else.
-    health: ?Healthcheck = null,
+/// Back to front. The finder sits behind the text until cmd+P brings it
+/// forward, so opening and closing it is a change of order and nothing else.
+const Editing = ZStack(&.{ Finder, Columns });
 
-    /// Null only alongside `health`, for the same reason.
-    finder: ?Finder = null,
+/// The window, and whatever `main` decided goes in it.
+///
+/// Generic over the stack rather than holding one of each kind, so a component
+/// that is not in this window does not exist in this build of it: the branches
+/// below that name one are compiled out where there is none. The tool check
+/// happens once, in `main`, and nothing here can ask again.
+fn App(comptime Stack: type) type {
+    return struct {
+        const Self = @This();
 
-    columns: Columns,
+        gpa: std.mem.Allocator,
+        renderer: Renderer,
+        painter: Painter,
+        stack: Stack,
 
-    running: bool = true,
+        running: bool = true,
 
-    /// What has changed at this level, as against inside a component. True to
-    /// begin with: the first frame has never been drawn.
-    dirty: bool = true,
+        /// What has changed at this level, as against inside the stack. True to
+        /// begin with: the first frame has never been drawn.
+        dirty: bool = true,
 
-    fn deinit(self: *App) void {
-        if (self.finder) |*finder| finder.deinit();
-        if (self.health) |*health| health.deinit();
-        self.columns.deinit();
-        self.painter.deinit();
-        self.renderer.deinit();
-    }
-
-    /// Answers for everything it holds, so the loop asks one thing.
-    fn isDirty(self: *const App) bool {
-        if (self.health) |*health| return self.dirty or health.isDirty();
-        if (self.finder) |*finder| {
-            if (finder.isDirty()) return true;
-        }
-        return self.dirty or self.columns.isDirty();
-    }
-
-    fn setDirty(self: *App, value: bool) void {
-        self.dirty = value;
-        if (self.health) |*health| return health.setDirty(value);
-        if (self.finder) |*finder| finder.setDirty(value);
-        self.columns.setDirty(value);
-    }
-
-    fn place(self: *App, rect: Rect) void {
-        if (self.health) |*health| return health.place(rect);
-
-        // The whole window: it is an overlay, not one of the columns.
-        if (self.finder) |*finder| finder.place(rect);
-        self.columns.place(rect);
-    }
-
-    /// Takes what belongs to the window and hands the rest down. What changed
-    /// is not answered here; it is asked for afterwards, through `isDirty`.
-    fn update(self: *App, event: Event) !void {
-        switch (event) {
-            .quit => {
-                self.running = false;
-                return;
-            },
-            .resized => {
-                self.dirty = true;
-                return;
-            },
-            else => {},
+        fn deinit(self: *Self) void {
+            self.stack.deinit();
+            self.painter.deinit();
+            self.renderer.deinit();
         }
 
-        const atlas = &self.renderer.atlas;
-
-        // Nothing below the window works while a tool is missing.
-        if (self.health) |*health| {
-            _ = try health.update(event, atlas);
-            return;
+        fn isDirty(self: *const Self) bool {
+            return self.dirty or self.stack.isDirty();
         }
 
-        if (self.finder) |*finder| {
-            if (event == .find and !finder.isOpen()) return finder.show();
-
-            // While it is up it has the keyboard entirely, and the pointer is
-            // not routed to it at all -- clicking a view behind it would be a
-            // way to type into something the panel is covering.
-            if (finder.isOpen()) return self.act(try finder.update(event, atlas));
+        fn setDirty(self: *Self, value: bool) void {
+            self.dirty = value;
+            self.stack.setDirty(value);
         }
 
-        _ = try self.columns.update(event, atlas);
-    }
+        /// Takes what belongs to the window and hands the rest to whatever is in
+        /// front. What changed is not answered here; it is asked for afterwards,
+        /// through `isDirty`.
+        fn update(self: *Self, event: Event) !void {
+            switch (event) {
+                .quit => {
+                    self.running = false;
+                    return;
+                },
+                .resized => {
+                    self.dirty = true;
+                    return;
+                },
+                // The one thing that changes what is in front. Pressed again it
+                // falls through to the finder itself, which asks to be put away
+                // exactly as escape makes it.
+                .find => if (comptime Stack.has(Finder)) {
+                    if (!self.stack.inFront(Finder)) {
+                        try self.stack.get(Finder).show();
+                        self.stack.raise(Finder);
+                        self.dirty = true;
+                        return;
+                    }
+                },
+                else => {},
+            }
 
-    /// Does what a component asked for, which it could not do itself.
-    fn act(self: *App, intent: Intent) !void {
-        switch (intent) {
-            .nothing, .dismiss => {},
-            .open => |path| {
-                defer self.gpa.free(path);
-                try self.columns.reveal(path, &self.renderer.atlas);
-            },
-        }
-    }
-
-    /// Every quad the frame is made of, from everything it holds.
-    fn draw(self: *App, painter: *Painter) !void {
-        const atlas = &self.renderer.atlas;
-        if (self.health) |*health| return health.draw(atlas, painter);
-        try self.columns.draw(atlas, painter);
-        if (self.finder) |*finder| try finder.draw(atlas, painter);
-    }
-
-    fn redraw(self: *App) !void {
-        // Read rather than listened for: three window events can imply the
-        // scale changed, and dragging to another display happens inside the
-        // modal loop, where only the watch below runs.
-        const scale = displayScale(self.renderer.window);
-        if (try self.renderer.atlas.setScale(scale)) {
-            if (self.health) |*health| health.invalidate();
-            if (self.finder) |*finder| finder.invalidate();
-            self.columns.invalidate();
+            try self.act(try self.stack.update(event, &self.renderer.atlas));
         }
 
-        // The window rather than the swapchain, which is not acquired until
-        // `present`. The two can disagree for a frame mid-resize, which is one
-        // line too many or too few.
-        var width: c_int = 0;
-        var height: c_int = 0;
-        _ = c.SDL_GetWindowSizeInPixels(self.renderer.window, &width, &height);
+        /// Does what the component in front asked for and could not do itself,
+        /// because only this knows what else is in the stack.
+        fn act(self: *Self, intent: Intent) !void {
+            switch (intent) {
+                .nothing => {},
+                .dismiss => {
+                    self.stack.lowerFront();
+                    self.dirty = true;
+                },
+                .open => |path| {
+                    defer self.gpa.free(path);
+                    self.stack.lowerFront();
+                    self.dirty = true;
+                    if (comptime Stack.has(Columns)) {
+                        try self.stack.get(Columns).reveal(path, &self.renderer.atlas);
+                    }
+                },
+            }
+        }
 
-        self.place(.{
-            .x = 0,
-            .y = 0,
-            .width = @floatFromInt(width),
-            .height = @floatFromInt(height),
-        });
+        fn redraw(self: *Self) !void {
+            // Read rather than listened for: three window events can imply the
+            // scale changed, and dragging to another display happens inside the
+            // modal loop, where only the watch below runs.
+            const scale = displayScale(self.renderer.window);
+            if (try self.renderer.atlas.setScale(scale)) self.stack.invalidate();
 
-        self.painter.clear();
-        try self.draw(&self.painter);
-        try self.renderer.present(&self.painter);
+            // The window rather than the swapchain, which is not acquired until
+            // `present`. The two can disagree for a frame mid-resize, which is
+            // one line too many or too few.
+            var width: c_int = 0;
+            var height: c_int = 0;
+            _ = c.SDL_GetWindowSizeInPixels(self.renderer.window, &width, &height);
+
+            // Everything gets the whole window. A component that divides it --
+            // the columns -- does that itself; one that lies over it -- the
+            // finder -- wants all of it.
+            self.stack.place(.{
+                .x = 0,
+                .y = 0,
+                .width = @floatFromInt(width),
+                .height = @floatFromInt(height),
+            });
+
+            self.painter.clear();
+            try self.stack.draw(&self.renderer.atlas, &self.painter);
+            try self.renderer.present(&self.painter);
+        }
+
+        /// Windows and macOS run a modal loop while a window is dragged or
+        /// resized, and do not hand control back until it ends, so
+        /// `SDL_WaitEvent` is stuck inside it and nothing redraws. SDL runs a
+        /// watch callback as events are pushed, which happens from within that
+        /// loop.
+        fn redrawWhileResizing(userdata: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.c) bool {
+            if (event.*.type == c.SDL_EVENT_WINDOW_EXPOSED) {
+                const app: *Self = @ptrCast(@alignCast(userdata.?));
+                // Swallowed: the main loop draws again the moment it gets
+                // control back and surfaces the failure there.
+                app.redraw() catch {};
+            }
+            // Watch callbacks cannot filter; the return value is ignored.
+            return true;
+        }
+    };
+}
+
+/// Opens the window's one stack and runs it until it is closed.
+fn run(comptime Stack: type, init: std.process.Init, window: *c.SDL_Window, stack: Stack) !void {
+    var app: App(Stack) = .{
+        .gpa = init.gpa,
+        .renderer = try Renderer.init(init.gpa, window),
+        .painter = .init(init.gpa),
+        .stack = stack,
+    };
+    defer app.deinit();
+
+    if (!c.SDL_AddEventWatch(App(Stack).redrawWhileResizing, &app)) {
+        std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
+        return error.SdlAddEventWatch;
     }
-};
+    defer c.SDL_RemoveEventWatch(App(Stack).redrawWhileResizing, &app);
+
+    // Blocking wait, not a poll loop: idle costs nothing. Waking up is not a
+    // reason to draw, though; only a change to what is on screen is.
+    var event: c.SDL_Event = undefined;
+    while (app.running) {
+        if (app.isDirty()) {
+            try app.redraw();
+            app.setDirty(false);
+        }
+
+        if (!c.SDL_WaitEvent(&event)) {
+            std.log.err("SDL_WaitEvent: {s}", .{sdl.lastError()});
+            return error.SdlWaitEvent;
+        }
+
+        // Everything already queued belongs to the frame this wakeup produces.
+        // Folding a burst into one redraw is what stops a keystroke queueing up
+        // behind presents of unchanged content: presenting blocks on the
+        // swapchain, so each redundant one costs real latency, not just work.
+        while (true) {
+            const density = c.SDL_GetWindowPixelDensity(window);
+            if (Event.init(&event, density)) |what| try app.update(what);
+            if (!c.SDL_PollEvent(&event)) break;
+        }
+    }
+}
 
 /// `yaz setup`, and exactly that. A file genuinely named `setup` is still
 /// openable, by naming it `./setup`.
@@ -525,21 +537,6 @@ fn setup(init: std.process.Init) !void {
     // already been reported in terms a person can act on, and returning it would
     // add a Zig stack trace that says nothing they can.
     if (failed) std.process.exit(1);
-}
-
-/// Windows and macOS run a modal loop while a window is dragged or resized, and
-/// do not hand control back until it ends, so `SDL_WaitEvent` is stuck inside it
-/// and nothing redraws. SDL runs a watch callback as events are pushed, which
-/// happens from within that loop.
-fn redrawWhileResizing(userdata: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.c) bool {
-    if (event.*.type == c.SDL_EVENT_WINDOW_EXPOSED) {
-        const app: *App = @ptrCast(@alignCast(userdata.?));
-        // Swallowed: the main loop draws again the moment it gets control back
-        // and surfaces the failure there.
-        app.redraw() catch {};
-    }
-    // Watch callbacks cannot filter; the return value is ignored.
-    return true;
 }
 
 /// Both fields are owned by the caller. `path` is null when nothing was named,
@@ -736,4 +733,5 @@ test {
     _ = @import("./tools.zig");
     _ = @import("./renderer.zig");
     _ = @import("./components/text_view.zig");
+    _ = @import("./components/zstack.zig");
 }

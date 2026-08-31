@@ -737,6 +737,7 @@ change nothing, which is the opposite of what the event loop is for.
 src/
   main.zig         # SDL setup, the window, the event loop, opening a file
   components/      # anything that is given a rect and draws in it
+    zstack.zig     #   the components of a window, back to front
     text_view.zig  #   scrolling, the caret, hit-testing
     finder.zig     #   cmd+P, driving rg and fzf
     healthcheck.zig#   what is shown when a tool is missing
@@ -767,6 +768,7 @@ the order to read it in:
 | `text.zig` | glyph_atlas, painter |
 | `renderer.zig` | config, sdl, glyph_atlas, painter |
 | `tools.zig` | nothing of ours |
+| `components/zstack.zig` | event, glyph_atlas, painter |
 | `components/text_view.zig` | config, document, event, glyph_atlas, painter, text |
 | `components/finder.zig`, `components/healthcheck.zig` | config, event, glyph_atlas, painter, text, tools |
 | `main.zig` | all of the above |
@@ -785,18 +787,41 @@ happened — quit, resized, typed text, a key, a wheel delta, a press, a move, a
 release — and answers null for the rest, which is most of it. Window coordinates
 become pixels there, once, so nothing downstream knows what a display scale is.
 
-What comes out goes to `App` first: it acts on what belongs to the window and
-hands the rest to the view, which is given a `Rect` and told what happened in it.
-Neither takes an `SDL_Event`.
+What comes out goes to `App` first: it acts on what belongs to the window — quit,
+resize, cmd+P — and hands the rest to its stack. Nothing below takes an
+`SDL_Event`.
 
-`App` and every component share the same five: `place` to be given room, `update`
-to be told what happened, `draw` to add quads to a painter, and
-`isDirty`/`setDirty` so a parent answers for what it holds. A sixth, `invalidate`,
-is for the one thing no component can survive: the atlas rebuilt at a different
-scale. A parent calls them on its children, so the tree is the type system rather
-than a vtable; that is enough until the set of children has to vary at runtime.
+Every component shares the same six: `place` to be given room, `update` to be
+told what happened, `draw` to add quads to a painter, `isDirty`/`setDirty` so a
+parent answers for what it holds, and `invalidate` for the one thing none of them
+survives — the atlas rebuilt at a different scale. A parent calls them on its
+children, so the tree is the type system rather than a vtable.
 
-**A keystroke goes to `App.focus`, and a press is the only thing that moves it.**
+**A window is a `ZStack`, and it is the whole of what is on screen.** Its members
+are fixed at compile time and their order is not: *everything in it draws, back
+to front*, and *only the one in front is told what happened*. That is why the
+finder's scrim can be near-white and translucent — the document is genuinely
+still being drawn under it — and why a click cannot reach a view the finder is
+covering. `raise` and `lowerFront` are the whole of opening a panel and putting
+it away; there is no separate notion of a thing being open.
+
+**The tool check decides which stack there is, once, in `main`.** With ripgrep or
+fzf missing the window is `ZStack(&.{Healthcheck})` and nothing else is built —
+no files are read, no finder exists. Otherwise it is
+`ZStack(&.{ Finder, Columns })`, listed back to front, so the finder sits behind
+the text until cmd+P brings it forward. `App` is generic over which one it got,
+so a component that is not in this window is not in this build of it: the
+branches that name one are compiled out where there is none. No code below `main`
+can ask whether a tool is missing, because nothing below `main` is told.
+
+**A component answers an event with an `Intent`** — `nothing`, `dismiss`, or
+`open` with a path. It is how the finder, which knows what was picked, reaches
+the columns, which know what to do with it, without the two knowing about each
+other. `App` is the only thing that acts on one, because it is the only thing
+that knows what else is in the stack.
+
+**A keystroke goes to `Columns.focus`, and a press is the only thing that moves
+it.**
 The pointer never consults it — the wheel turns whatever it is under and a
 scrollbar drag stays with the view it began in — so reading one file never
 decides where typing lands in another. Focus is not drawn: every view shows the
@@ -821,6 +846,11 @@ caller.
 asked without the other — shaping decides which glyphs exist, rasterizing decides
 where they land. It shapes one line at a time, into that line's own coordinates,
 and knows nothing about documents.
+
+`components/columns.zig` is not a file — the columns live in `main.zig` beside
+`App`, since dividing the window between open files and reading a named one are
+the same subject. It owns the views, which one has the keyboard, and the
+documents that have been looked at and are not on screen.
 
 `components/text_view.zig` owns a document and adds what a *view* of one has: a
 caret, a scroll offset, a scrollbar, and the rect all three are measured from. It
