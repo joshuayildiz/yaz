@@ -4,7 +4,7 @@
 //! lets them be different things; this one fixes what they are and lets there be
 //! any number of them. A window divided between however many files were named
 //! is this rather than that -- the count is not known until the command line is
-//! read, and every column is a view of a document.
+//! read, and every column is a view of a file.
 //!
 //! One member type means no selection over a tuple: reaching the nth is an
 //! index. That is the whole of the difference in the code below.

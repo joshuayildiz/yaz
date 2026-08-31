@@ -13,10 +13,8 @@
 
 const std = @import("std");
 
-const context = @import("../context.zig");
-const Context = context.Context;
-const Position = context.Position;
-const Document = @import("../document.zig").Document;
+const Context = @import("../context.zig").Context;
+const OpenFile = @import("../open_file.zig").OpenFile;
 
 const event_mod = @import("../event.zig");
 const Event = event_mod.Event;
@@ -79,12 +77,8 @@ pub const Workbench = struct {
     pub fn update(self: *Workbench, cx: *Context, event: Event) !Intent {
         switch (event) {
             .tab => |which| {
-                const path = self.tabs().nth(which) orelse return .nothing;
-                // Copied, because pointing a column at it frees the bar's copy
-                // when the file it displaces is parked.
-                const wanted = try cx.allocator.dupe(u8, path);
-                defer cx.allocator.free(wanted);
-                try self.showOnly(cx, wanted);
+                const file = self.tabs().nth(cx, which) orelse return .nothing;
+                try self.showOnly(cx, file.path orelse return .nothing);
                 return .nothing;
             },
             .split => |which| {
@@ -151,64 +145,35 @@ pub const Workbench = struct {
     /// keyboard to another column moves the tab in front with it, and nothing
     /// had to tell the bar so.
     fn tell(self: *Workbench, cx: *Context) void {
-        const bar = self.tabs();
         const row = self.views();
 
-        bar.showing(if (row.focused()) |view| view.path else null);
+        // Asked again every frame rather than kept in step, because a file
+        // leaves a column without anything being told. Whether it has been
+        // changed is not asked at all: the bar reads that off the file.
+        for (cx.files.items) |file| file.shown = false;
+        for (row.items.items) |*view| view.file.shown = true;
 
-        // Which files have been changed, asked of the documents that hold them:
-        // a document is either in a column or parked, and the bar lists both.
-        // Which are on screen comes from the same walk, since that is what
-        // being in a column means.
-        bar.forgetColumns();
-        for (row.items.items) |*view| {
-            const named = view.path orelse continue;
-            bar.columnShows(named);
-            bar.mark(named, view.document.modified);
-        }
-        var resting = cx.parked.iterator();
-        while (resting.next()) |entry| {
-            bar.mark(entry.key_ptr.*, entry.value_ptr.document.modified);
-        }
+        self.tabs().showing(if (row.focused()) |view| view.file else null);
     }
 
     /// Puts `path` in front of the reader, in the column with the keyboard.
     ///
     /// A column already showing it is left alone rather than a second copy
     /// opened, which is both what one expects and the only way two views of one
-    /// file cannot drift apart -- they share no document.
+    /// file cannot drift apart -- there is only one of each file, so they would
+    /// be two views of the same caret.
     fn reveal(self: *Workbench, cx: *Context, path: []const u8) !void {
-        try self.tabs().opened(cx, path);
+        const wanted = try cx.open(path);
 
         const row = self.views();
         for (row.items.items, 0..) |*view, which| {
-            const named = view.path orelse continue;
-            if (!std.mem.eql(u8, named, path)) continue;
-
+            if (view.file != wanted) continue;
             row.focus = which;
             return;
         }
 
         const view = row.focused() orelse return;
-
-        var document: Document = undefined;
-        var was: ?Position = null;
-
-        if (cx.unpark(path)) |resting| {
-            // Looked at before: everything about it is still here.
-            document = resting.document;
-            was = resting.position;
-        } else {
-            // Through `read`, so a file picked here meets the same rules as one
-            // named on the command line: the size limit, the UTF-8 check, and
-            // CRLF turned into LF.
-            var file = try cx.read(path);
-            defer file.deinit(cx.allocator);
-            document = try Document.init(cx.allocator, file.text);
-        }
-        errdefer document.deinit();
-
-        try cx.park(try view.swap(cx, document, path, was));
+        view.show(wanted);
     }
 
     /// Shows `path` and nothing else: every other column goes back to being
@@ -220,16 +185,16 @@ pub const Workbench = struct {
         const row = self.views();
 
         // Down to one column, keeping the one already showing it if there is
-        // one. Whatever is taken away is parked, not closed.
+        // one. Nothing is closed: a column that goes stops pointing at a file,
+        // and the file stays open.
         var column: usize = 0;
         while (row.items.items.len > 1) {
-            const named = row.items.items[column].path;
-            if (named != null and std.mem.eql(u8, named.?, path)) {
+            const showing = row.items.items[column].file.path;
+            if (showing != null and std.mem.eql(u8, showing.?, path)) {
                 column += 1;
                 continue;
             }
-            var gone = row.remove(column);
-            try cx.park(gone.retire());
+            _ = row.remove(column);
         }
 
         row.focus = 0;
@@ -243,22 +208,18 @@ pub const Workbench = struct {
     /// Puts the nth file on the bar beside what is already split, or takes it
     /// away again when it is already there.
     ///
-    /// Taking one away is not closing it: the file stays on the bar and its
-    /// document is parked, so putting it back costs nothing. The last column
+    /// Taking one away is not closing it: the file stays on the bar with its
+    /// caret where it was, so putting it back costs nothing. The last column
     /// cannot go -- something has to be there to type into.
     fn toggleSplit(self: *Workbench, cx: *Context, which: usize) !void {
         const row = self.views();
-        const bar = self.tabs();
-
-        const path = bar.nth(which) orelse return;
+        const wanted = self.tabs().nth(cx, which) orelse return;
 
         for (row.items.items, 0..) |*view, column| {
-            const named = view.path orelse continue;
-            if (!std.mem.eql(u8, named, path)) continue;
+            if (view.file != wanted) continue;
 
             if (row.items.items.len == 1) return;
-            var gone = row.remove(column);
-            try cx.park(gone.retire());
+            _ = row.remove(column);
 
             self.stack.focusOn(Views);
             self.dirty = true;
@@ -267,86 +228,58 @@ pub const Workbench = struct {
 
         // Columns follow the bar's order, so one put back lands where it was
         // rather than on the end.
+        const listed = cx.indexOf(wanted) orelse return;
         var at: usize = 0;
         for (row.items.items) |*view| {
-            const named = view.path orelse continue;
-            const listed = bar.indexOf(named) orelse continue;
-            if (listed < which) at += 1;
+            const seen = cx.indexOf(view.file) orelse continue;
+            if (seen < listed) at += 1;
         }
 
-        var document: Document = undefined;
-        var was: ?Position = null;
-        if (cx.unpark(path)) |resting| {
-            document = resting.document;
-            was = resting.position;
-        } else {
-            var file = try cx.read(path);
-            defer file.deinit(cx.allocator);
-            document = try Document.init(cx.allocator, file.text);
-        }
-        errdefer document.deinit();
-
-        try row.insert(cx, at, try TextView.hold(cx.allocator, document, path, was));
+        try row.insert(cx, at, .init(wanted));
         row.focus = at;
         self.stack.focusOn(Views);
         self.dirty = true;
     }
 
-    /// Takes the file the focused column is showing off the bar and out of
-    /// memory, and puts something else in the column. With nothing left on the
-    /// bar the window goes too.
+    /// Takes the file the focused column is showing out of the window and out
+    /// of memory, and puts something else in the column. With nothing left on
+    /// the bar the window goes too.
     ///
-    /// The column takes the first file nothing is showing, so closing walks
-    /// back through what is open; when there is nothing left it goes empty,
-    /// which is where a window with no file named starts.
+    /// The column takes the first file nothing else is showing, so closing
+    /// walks back through what is open; when there is nothing left it goes
+    /// empty, which is where a window with no file named starts.
     fn shut(self: *Workbench, cx: *Context) !void {
         const row = self.views();
-        const bar = self.tabs();
 
-        // A document nobody named has no tab and so nothing to close, which is
-        // not the same as nothing to do: the window still goes if that leaves
-        // the bar empty.
-        close: {
-            const view = row.focused() orelse break :close;
-            const closing = view.path orelse break :close;
+        const view = row.focused() orelse return;
+        const closing = view.file;
 
-            bar.close(cx, closing);
-
-            // One fewer split. The last one stays, because something has to be
-            // there to type into while anything is open at all.
-            if (row.items.items.len > 1) {
-                var gone = row.remove(row.focus);
-                gone.deinit(cx);
-                break :close;
-            }
-
+        // One fewer column to split into. The last one stays, because
+        // something has to be there to type into.
+        if (row.items.items.len > 1) {
+            _ = row.remove(row.focus);
+        } else {
             // Being the only one, it takes the first file nothing else is
-            // showing instead, or goes empty when there is none.
-            var document: Document = undefined;
-            var was: ?Position = null;
-            var path: ?[]const u8 = null;
-            for (bar.paths.items) |listed| {
-                const resting = cx.unpark(listed) orelse continue;
-                document = resting.document;
-                was = resting.position;
-                path = listed;
-                break;
+            // showing instead, or a blank one when there is none.
+            var next: ?*OpenFile = null;
+            for (cx.files.items) |file| {
+                if (file != closing and file.path != null) {
+                    next = file;
+                    break;
+                }
             }
-            if (path == null) document = try Document.init(cx.allocator, "");
-            errdefer document.deinit();
-
-            var retired = try view.swap(cx, document, path, was);
-
-            // Not parked: closing is the one thing that means a document is
-            // finished with.
-            if (retired.path) |named| cx.allocator.free(named);
-            retired.document.deinit();
+            view.show(next orelse try cx.blank());
         }
+
+        cx.close(closing);
 
         // Nothing open is nothing to come back to. It is also where a window
         // that was never given a file starts, so cmd+W on one of those is a way
         // out rather than a keystroke that does nothing.
-        if (bar.paths.items.len == 0) cx.running = false;
+        for (cx.files.items) |file| {
+            if (file.path != null) break;
+        } else cx.running = false;
+
         self.dirty = true;
     }
 };

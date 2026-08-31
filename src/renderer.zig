@@ -278,7 +278,7 @@ pub const Renderer = struct {
         }
     }
 
-    /// Doubling rather than fitting exactly, so a document that grows a glyph
+    /// Doubling rather than fitting exactly, so a file that grows a glyph
     /// at a time does not reallocate a glyph at a time.
     fn reserve(self: *Renderer, count: u32) !void {
         if (count <= self.capacity) return;

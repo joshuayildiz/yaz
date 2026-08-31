@@ -9,53 +9,12 @@
 const std = @import("std");
 
 const GlyphAtlas = @import("./glyph_atlas.zig").GlyphAtlas;
-const Document = @import("./document.zig").Document;
+const OpenFile = @import("./open_file.zig").OpenFile;
 
-/// The largest file yaz will open. What still costs per line of the document
+/// The largest file yaz will open. What still costs per line of the file
 /// rather than per line on screen is the layout cache, which holds a 64-byte
 /// entry for each of them, and the line index behind it.
 const file_limit = 1 << 20;
-
-/// Both fields are owned by the caller. `path` is null when nothing was named,
-/// which is not the same as a file that turned out to be empty.
-pub const Opened = struct {
-    text: []u8,
-    /// Sentinel-terminated because it goes to SDL as a window title.
-    path: ?[:0]u8,
-
-    pub fn deinit(self: *Opened, allocator: std.mem.Allocator) void {
-        allocator.free(self.text);
-        if (self.path) |path| allocator.free(path);
-    }
-};
-
-/// Where a reader was in a file: what the caret was on, and what was on screen.
-///
-/// Kept by whoever outlives the view, since a view shows one file at a time and
-/// this is the half of the last one that the document itself does not hold.
-pub const Position = struct {
-    cursor: usize,
-    scroll: f32,
-};
-
-/// What a view was showing before it was pointed somewhere else. The caller owns
-/// all of it, and can hand the document straight back later rather than reading
-/// the file again.
-pub const Retired = struct {
-    document: Document,
-    path: ?[]u8,
-    position: Position,
-};
-
-/// A file that is in memory but not on screen, and where its reader was in it.
-pub const Parked = struct {
-    document: Document,
-    position: Position,
-
-    /// By path, which is what the finder answers with. Keys are owned, and a
-    /// document is either in here or in exactly one view, never both.
-    pub const Map = std.StringHashMapUnmanaged(Parked);
-};
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -70,12 +29,18 @@ pub const Context = struct {
     /// there is one. Nothing between here and there places, draws or measures.
     atlas: *GlyphAtlas = undefined,
 
-    /// Files that have been looked at and are not on screen now.
+    /// Every file this window has open, in the order they were opened, which is
+    /// also the order the bar lists them in.
     ///
-    /// Kept whole rather than re-read: a document is a buffer, a line index and
-    /// every line already shaped, and looking away from a file is no reason to
-    /// throw that away and pay for it again on the way back.
-    parked: Parked.Map = .empty,
+    /// Owned here and nowhere else. A column points at one rather than holding
+    /// it, so looking away from a file costs nothing and gives nothing up: the
+    /// buffer, the line index, every line already shaped and the caret are all
+    /// still here when it comes back. A file no column is pointing at is open
+    /// and out of sight, which is the whole of what used to be a separate set.
+    ///
+    /// Boxed, because both the bar and the columns keep pointers into this and
+    /// the list moves as it grows.
+    files: std.ArrayList(*OpenFile) = .empty,
 
     /// False ends the window. Here rather than in the loop that reads it
     /// because what decides it is a component: the last file being closed is
@@ -83,59 +48,80 @@ pub const Context = struct {
     running: bool = true,
 
     pub fn deinit(self: *Context) void {
-        var resting = self.parked.iterator();
-        while (resting.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            entry.value_ptr.document.deinit();
+        for (self.files.items) |file| {
+            file.deinit();
+            self.allocator.destroy(file);
         }
-        self.parked.deinit(self.allocator);
+        self.files.deinit(self.allocator);
     }
 
-    /// Keeps what a view was showing, against being asked for it again.
-    pub fn park(self: *Context, retired: Retired) !void {
-        var leaving = retired;
-
-        const path = leaving.path orelse {
-            // A document nobody named cannot be asked for by name.
-            leaving.document.deinit();
-            return;
-        };
-        errdefer {
-            self.allocator.free(path);
-            leaving.document.deinit();
-        }
-
-        const slot = try self.parked.getOrPut(self.allocator, path);
-        if (slot.found_existing) {
-            // Keep what was just put down.
-            slot.value_ptr.document.deinit();
-            self.allocator.free(path);
-        } else {
-            slot.key_ptr.* = path;
-        }
-        slot.value_ptr.* = .{ .document = leaving.document, .position = leaving.position };
-    }
-
-    /// Takes a file back out, with the key freed and the document handed over.
-    /// Null when it has not been looked at, which means it has to be read.
-    pub fn unpark(self: *Context, path: []const u8) ?Parked {
-        const entry = self.parked.fetchRemove(path) orelse return null;
-        self.allocator.free(entry.key);
-        return entry.value;
-    }
-
-    /// Reads one named file.
+    /// The file called `path`, opened if it is not open already.
     ///
-    /// A path that does not exist opens empty under that name, the way a new file
-    /// starts. Anything else stops the program: an empty window otherwise looks
-    /// exactly like an empty file.
-    pub fn read(self: *Context, named: []const u8) !Opened {
+    /// Asking twice gives the same file back, which is what stops two columns
+    /// showing two copies of one file that drift apart.
+    pub fn open(self: *Context, path: []const u8) !*OpenFile {
+        if (self.find(path)) |already| return already;
+
+        const text = try self.read(path);
+        defer self.allocator.free(text);
+        return self.hold(text, path);
+    }
+
+    /// A file nobody named, which is what a window with nothing to show has.
+    pub fn blank(self: *Context) !*OpenFile {
+        return self.hold("", null);
+    }
+
+    pub fn find(self: *Context, path: []const u8) ?*OpenFile {
+        for (self.files.items) |file| {
+            const named = file.path orelse continue;
+            if (std.mem.eql(u8, named, path)) return file;
+        }
+        return null;
+    }
+
+    pub fn indexOf(self: *Context, file: *const OpenFile) ?usize {
+        for (self.files.items, 0..) |listed, which| {
+            if (listed == file) return which;
+        }
+        return null;
+    }
+
+    /// Out of the window and out of memory. Closing is the one thing that means
+    /// a file is finished with.
+    pub fn close(self: *Context, file: *OpenFile) void {
+        const which = self.indexOf(file) orelse return;
+        _ = self.files.orderedRemove(which);
+        file.deinit();
+        self.allocator.destroy(file);
+    }
+
+    /// Every file gives up what it had shaped, for after the atlas is rebuilt
+    /// at a different scale. Asked of the context rather than of the components
+    /// because a file nothing is showing has a tab, and its name is glyphs of
+    /// the old size too.
+    pub fn invalidate(self: *Context) void {
+        for (self.files.items) |file| file.invalidate();
+    }
+
+    fn hold(self: *Context, text: []const u8, path: ?[]const u8) !*OpenFile {
+        const file = try self.allocator.create(OpenFile);
+        errdefer self.allocator.destroy(file);
+
+        file.* = try OpenFile.init(self.allocator, text, path);
+        errdefer file.deinit();
+
+        try self.files.append(self.allocator, file);
+        return file;
+    }
+
+    fn read(self: *Context, named: []const u8) ![]u8 {
         const allocator = self.allocator;
         const path = try allocator.dupeZ(u8, named);
-        errdefer allocator.free(path);
+        defer allocator.free(path);
 
         const contents = std.Io.Dir.cwd().readFileAlloc(self.io, path, allocator, .limited(file_limit)) catch |err| switch (err) {
-            error.FileNotFound => return .{ .text = try allocator.alloc(u8, 0), .path = path },
+            error.FileNotFound => return allocator.alloc(u8, 0),
             error.StreamTooLong => {
                 std.log.err(
                     "{s} is larger than the {d}MB yaz will open: the layout cache holds an entry for every line of it, on screen or not",
@@ -155,7 +141,7 @@ pub const Context = struct {
             return error.InvalidUtf8;
         }
 
-        return .{ .text = try stripCarriageReturns(allocator, contents), .path = path };
+        return stripCarriageReturns(allocator, contents);
     }
 };
 

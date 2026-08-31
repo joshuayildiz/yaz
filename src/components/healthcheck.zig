@@ -175,7 +175,7 @@ pub const Healthcheck = struct {
     }
 
     /// Every shaped piece goes, for after the atlas is rebuilt at a different
-    /// scale, for the reason `Document.invalidate` gives.
+    /// scale, for the reason `OpenFile.invalidate` gives.
     pub fn invalidate(self: *Healthcheck) void {
         var all: [piece_count]*Piece = undefined;
         self.pieces(&all);

@@ -105,18 +105,18 @@ typed into, grey for the rest.
 
 **cmd+alt+1** to **cmd+alt+9** put that file beside what is already split, or
 take it away again when it is already there — the one binding that adds a column
-rather than replacing what is there. Taking one away is not closing it:
-the file keeps its tab and its document is parked, so putting it back costs
-nothing and it lands where it was, since the columns follow the bar's order. The
-last column stays — something has to be there to type into.
+rather than replacing what is there. Taking one away is not closing it: the file
+stays open with its tab and its caret where you left it, so putting it back
+costs nothing and it lands where it was, since the columns follow the bar's
+order. The last column stays — something has to be there to type into.
 
 *(Alt rather than shift, because macOS has taken shift+cmd+3 and shift+cmd+4 for
 screenshots and never passes them on.)*
 
-**cmd+W** closes the file the focused column is showing: its tab goes, its
-document goes, and its column goes with it, so there is one less to split. The
-last column stays and falls back to the first file nothing else is showing — or
-to an empty document when there is none, which is where a window with no file
+**cmd+W** closes the file the focused column is showing: its tab goes, the file
+goes out of memory, and its column goes with it, so there is one less to split.
+The last column stays and falls back to the first file nothing else is showing —
+or to an empty file when there is none, which is where a window with no file
 named starts. It closes what that column has, so a file sitting in another column
 is reached with cmd+N or a press before it can be closed.
 
@@ -536,7 +536,7 @@ rasterize is a broken build rather than bad input.
 
 Shaping is the expensive half of turning a line into pixels, and it depends on
 **the line's bytes and nothing else** — not on where the line sits. So each
-line's sprites are shaped once and kept **on the document**, in coordinates of
+line's sprites are shaped once and kept **on the open file**, in coordinates of
 the line's own: x from where the line starts, y from its baseline. Placing them
 is then an add.
 
@@ -563,9 +563,9 @@ Invalidation is not a search. `Buffer.insert` and `Buffer.delete` already work
 out which line an edit landed in and how many it created or destroyed, because
 they have to patch the line index, so they return it as an `Edit` and the cache
 gets the same splice. The buffer never learns that shaping exists; the atlas
-never learns that a document does.
+never learns that an open file does.
 
-Both live inside `Document`, so an edit and its splice are one call — the only
+Both live inside `OpenFile`, so an edit and its splice are one call — the only
 real way to keep two structures indexed the same way from drifting apart.
 
 Measured on a synthetic Latin document, ReleaseFast, native x86-64. This is all
@@ -659,11 +659,11 @@ sprites into it, and copies them across in a copy pass before the swapchain is
 acquired — work that does not need a frame handed back first, so it is done
 before the wait rather than after it.
 
-## The document
+## The open file
 
 Text lives in a **gap buffer**: one contiguous allocation with a hole in it,
-kept wherever the last edit happened. It sits in `text_view.zig`, underneath the
-view that owns it.
+kept wherever the last edit happened. It sits in `open_file.zig`, underneath
+everything else the file carries.
 
 ```
 The quick[                    ]brown fox
@@ -818,7 +818,7 @@ src/
   text.zig         # placing a shaped line, and how wide one is
   tools.zig        # the pinned binaries, and installing them
   event.zig        # what happened, in our words rather than SDL's
-  document.zig     # the gap buffer, the line index, the layout cache
+  open_file.zig    # the gap buffer, the line index, the layout cache, the caret
   renderer.zig     # GPU device, the two pipelines, drawing
   glyph_atlas.zig  # shaping, rasterizing, atlas uploads
   sdl.zig          # the one @cImport of SDL
@@ -836,19 +836,19 @@ the order to read it in:
 | `config.zig`, `sdl.zig` | nothing of ours |
 | `event.zig` | sdl |
 | `glyph_atlas.zig` | config, sdl |
-| `document.zig` | glyph_atlas |
+| `open_file.zig` | glyph_atlas |
 | `painter.zig` | glyph_atlas |
 | `text.zig` | glyph_atlas, painter |
 | `renderer.zig` | config, sdl, glyph_atlas, painter |
 | `tools.zig` | nothing of ours |
-| `context.zig` | document, glyph_atlas |
+| `context.zig` | glyph_atlas, open_file |
 | `components/ztuple.zig`, `components/htuple.zig`, `components/vtuple.zig` | context, event, painter |
 | `components/hlist.zig` | context, event, painter |
-| `components/tabs.zig` | config, context, event, glyph_atlas, painter, text |
-| `components/text_view.zig` | config, context, document, event, glyph_atlas, painter, text |
+| `components/tabs.zig` | config, context, event, glyph_atlas, open_file, painter, text |
+| `components/text_view.zig` | config, context, event, glyph_atlas, open_file, painter, text |
 | `components/healthcheck.zig` | config, context, event, glyph_atlas, painter, text, tools |
 | `components/finder.zig` | config, context, event, glyph_atlas, painter, text, tools, vtuple |
-| `components/workbench.zig` | context, document, event, painter, hlist, tabs, text_view, vtuple |
+| `components/workbench.zig` | context, event, open_file, painter, hlist, tabs, text_view, vtuple |
 | `main.zig` | all of the above |
 
 **The only components that import another are the ones whose whole job is
@@ -971,10 +971,10 @@ The view therefore names no SDL type and makes no SDL call. It does reach
 `sdl.zig` through `event.zig`, so the separation is one of vocabulary rather than
 of linkage.
 
-`document.zig` is the text, where its lines begin, and what each line shaped to
-— everything derived from the bytes and nothing else. It does not know that text
-gets drawn or scrolled, and holds no coordinates but its own, which is why it can
-be read and tested on its own.
+`open_file.zig` is one file the window has open: the text, where its lines
+begin, what each line shaped to, the name on its tab, and where its reader was.
+It does not know that text gets drawn, and holds no coordinates but its own,
+which is why it can be read and tested on its own.
 
 The layout cache is there rather than in the view because it depends on a line's
 bytes and the atlas scale and on nothing a view has, which is also what lets
@@ -984,13 +984,14 @@ caller.
 `glyph_atlas.zig` keeps shaping and rasterizing together because neither can be
 asked without the other — shaping decides which glyphs exist, rasterizing decides
 where they land. It shapes one line at a time, into that line's own coordinates,
-and knows nothing about documents.
+and knows nothing about files.
 
-`components/text_view.zig` owns a document and adds what a *view* of one has: a
-caret, a scroll offset, a scrollbar, and the rect all three are measured from. It
-is the only thing that turns a click into a byte offset. Pointing it at another
-file hands the whole document back rather than dropping it, which is why looking
-away from one and returning to it reshapes nothing.
+`components/text_view.zig` points at an open file and adds what a *view* of one
+has: a scrollbar, the rect everything is measured from, and the gesture in
+progress. It is the only thing that turns a click into a byte offset. Pointing
+it at another file hands nothing back and drops nothing — the file it was
+showing stays open, which is why looking away from one and returning to it
+reshapes nothing and the caret is where you left it.
 
 `renderer.zig` is handed a finished array of quads and knows nothing else: not
 what they spell, not which line each came from, not that shaping happened.

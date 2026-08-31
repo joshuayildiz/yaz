@@ -38,7 +38,7 @@ pub const Event = union(enum) {
     split: u8,
     /// Take the file in front off the bar and out of memory: cmd+W.
     close,
-    /// Move a selection, not a caret: nothing in a document reads these yet.
+    /// Move a selection, not a caret: nothing in a file reads these yet.
     up,
     down,
     /// Escape. Put back whatever was in front of this.
@@ -112,7 +112,7 @@ pub const Event = union(enum) {
             // lines instead and nothing tells the two apart -- macOS registers
             // one mouse and gives it no name -- so everything is read as points.
             // Negated because SDL counts a wheel positive away from the reader,
-            // which is towards the start of the document.
+            // which is towards the start of the file.
             c.SDL_EVENT_MOUSE_WHEEL => .{ .wheel = .{
                 .delta = -event.wheel.y * 10 * density,
                 .at = .{ event.wheel.mouse_x * density, event.wheel.mouse_y * density },

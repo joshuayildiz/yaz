@@ -12,14 +12,14 @@ SDL's headers, so the first step for each is to find out whether it is real.
 
 ## Edits are visible, and still cannot be kept
 
-**Where:** `src/document.zig`, `Document.modified`.
+**Where:** `src/open_file.zig`, `OpenFile.modified`.
 
-There is no way to save. A document survives being looked away from, so typing
-into a file, opening another, and closing the window loses the first edit.
+There is no way to save. A file survives being looked away from, so typing into
+one, opening another, and closing the window loses the first edit.
 
 What that used to mean is that the edit disappeared without a sign. It no longer
 does: every file open in the window has a tab, an unsaved one carries a mark, and
-the mark stays on a file that has been parked behind another. So the loss is in
+the mark stays on a file that is open behind another. So the loss is in
 front of the reader the whole time -- which is the half of this that was worth
 fixing before saving existed, since the flag it needed is the one saving will
 clear.
@@ -30,14 +30,14 @@ the tab says it has been changed, and which closes the window once the bar is
 empty.
 
 **Left alone because** the answer is saving, not a better warning about not
-saving. `Document.modified` is now set by every edit and read by the bar, so the
+saving. `OpenFile.modified` is now set by every edit and read by the bar, so the
 piece a save would need is already here and already exercised.
 
 **To assess:** type into a file and close the window. The tab says the file has
 changed; nothing asks, and nothing is written.
 
 **Likely fix:** writing to disk, which is what the README already says is
-missing. `Document.modified` is where a save would clear, and the bar is already
+missing. `OpenFile.modified` is where a save would clear, and the bar is already
 watching it.
 
 ---

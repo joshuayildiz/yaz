@@ -269,29 +269,30 @@ per-tool path lookup is back.
 
 ## 13. Keeping a file that was looked away from
 
-Switching files used to free the document and read the file again on the way
-back, which threw away a gap buffer, a line index, and every line already
-shaped, to buy nothing. `App` keeps it instead, by path, and hands it straight
-back.
+Switching files used to free the file and read it again on the way back, which
+threw away a gap buffer, a line index, and every line already shaped, to buy
+nothing. The context owns every open file instead, and a column only points at
+one, so looking away from a file gives nothing up.
 
 Measured on an M2: a first visit is **1240us**, a return **95us**, and the
-return reshapes **0 lines** where the first visit shaped 51. A document is in
-exactly one view or parked, never both, so nothing has to be kept in step.
+return reshapes **0 lines** where the first visit shaped 51. There is one
+`OpenFile` per path and at most one column pointing at it, so nothing has to be
+kept in step -- including the caret, which is on the file for that reason.
 
 **Costs memory, and is not bounded.** Nine files of this codebase -- 5050 lines
--- park in about 520KB: 205KB of text and 315KB of cache entries, at 64 bytes a
+-- cost about 520KB: 205KB of text and 315KB of cache entries, at 64 bytes a
 line whether or not that line was ever drawn, plus the sprites of the ones that
 were. A session that visits a hundred files would hold a few MB.
 
 **Check:** count `shapeLine` calls across a return trip. Anything above zero
-means the document is being rebuilt rather than handed back.
+means the file is being read again rather than pointed at.
 
 ## Not optimizations yet
 
 Stated so they are not mistaken for finished work:
 
-- **Nothing evicts a parked document.** Every file visited stays in memory for
-  the life of the window. Fine for a working set of a few dozen files; a cap
+- **Nothing evicts an open file.** Every file visited stays in memory for
+  the life of the window, whether or not a column is showing it. Fine for a working set of a few dozen files; a cap
   would be the fix if it stops being.
 - **Startup pays ~11ms to spawn both tools.** The check is that they *run*,
   which is what catches a truncated download or a wrong-architecture binary --

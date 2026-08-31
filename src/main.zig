@@ -3,7 +3,6 @@ const std = @import("std");
 const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const Context = @import("./context.zig").Context;
-const Opened = @import("./context.zig").Opened;
 const event_mod = @import("./event.zig");
 const Event = event_mod.Event;
 const Painter = @import("./painter.zig").Painter;
@@ -45,38 +44,38 @@ pub fn main(init: std.process.Init) !void {
     // Read out here rather than inside `run`, so a file that cannot be opened
     // fails before a window has appeared and gone again. Nothing a component is
     // built from needs a window.
-    var views = try openViews(&cx, init);
+    var views = try openColumns(&cx, init);
     errdefer views.deinit(&cx);
 
-    var tabs: Tabs = .{};
-    errdefer tabs.deinit(&cx);
-    for (views.items.items) |view| {
-        if (view.path) |named| try tabs.opened(&cx, named);
-    }
-
-    // Borrowed from the view rather than copied: `run` hands it to SDL, which
-    // copies it, and the view outlives the call.
-    const title = views.items.items[0].path;
+    // Borrowed rather than copied: `run` hands it to SDL, which copies it, and
+    // the context outlives the call.
+    const title = views.items.items[0].file.path;
 
     const finder = try Finder.init(cx.allocator, init.minimal.environ);
-    return run(&cx, Editing, .init(.{ finder, .init(tabs, views) }), title);
+    return run(&cx, Editing, .init(.{ finder, .init(.{}, views) }), title);
 }
 
 /// A column per file named, left to right in the order they were named.
-fn openViews(cx: *Context, init: std.process.Init) !Views {
-    var opened = try openAll(cx, init);
-    defer {
-        for (opened.items) |*file| file.deinit(cx.allocator);
-        opened.deinit(cx.allocator);
-    }
+///
+/// The files themselves go into the context, which owns them; a column only
+/// points at one. A window given nothing to open gets a blank file, so there is
+/// always something to type into.
+fn openColumns(cx: *Context, init: std.process.Init) !Views {
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, cx.allocator);
+    defer args.deinit();
+    _ = args.skip(); // The program itself.
 
     var views: Views = .{};
     errdefer views.deinit(cx);
 
-    // Never empty: a document nobody named is still a document.
-    try views.items.ensureTotalCapacity(cx.allocator, opened.items.len);
-    for (opened.items) |file| {
-        try views.append(cx, try TextView.init(cx.allocator, file.text, file.path));
+    // Read one at a time rather than gathering the paths first: the iterator
+    // owns what it returns until the next call, and `open` copies it.
+    while (args.next()) |named| {
+        try views.append(cx, .init(try cx.open(named)));
+    }
+
+    if (views.items.items.len == 0) {
+        try views.append(cx, .init(try cx.blank()));
     }
     return views;
 }
@@ -144,7 +143,10 @@ fn App(comptime Component: type) type {
             // scale changed, and dragging to another display happens inside the
             // modal loop, where only the watch below runs.
             const scale = displayScale(self.renderer.window);
-            if (try self.renderer.atlas.setScale(scale)) self.component.invalidate();
+            if (try self.renderer.atlas.setScale(scale)) {
+                self.cx.invalidate();
+                self.component.invalidate();
+            }
 
             // The window rather than the swapchain, which is not acquired until
             // `present`. The two can disagree for a frame mid-resize, which is
@@ -331,29 +333,6 @@ fn setup(init: std.process.Init) !void {
     // already been reported in terms a person can act on, and returning it would
     // add a Zig stack trace that says nothing they can.
     if (failed) std.process.exit(1);
-}
-
-/// Every file named on the command line, in the order they were named, and one
-/// empty document when none was. Never empty, so there is always a view.
-fn openAll(cx: *Context, init: std.process.Init) !std.ArrayList(Opened) {
-    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
-    defer args.deinit();
-    _ = args.skip(); // The program itself.
-
-    var opened: std.ArrayList(Opened) = .empty;
-    errdefer {
-        for (opened.items) |*file| file.deinit(cx.allocator);
-        opened.deinit(cx.allocator);
-    }
-
-    // Read one at a time rather than gathering the paths first: the iterator
-    // owns what it returns until the next call, and `read` copies it.
-    while (args.next()) |named| try opened.append(cx.allocator, try cx.read(named));
-
-    if (opened.items.len == 0) {
-        try opened.append(cx.allocator, .{ .text = try cx.allocator.alloc(u8, 0), .path = null });
-    }
-    return opened;
 }
 
 test {

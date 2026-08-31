@@ -10,7 +10,7 @@
 //! padding, the list is as many rows as it has -- so an empty query is a single
 //! box with nothing under it, and the panel is never larger than what is in it.
 //!
-//! It is laid over the document rather than replacing it, and nothing is dimmed:
+//! It is laid over the file rather than replacing it, and nothing is dimmed:
 //! the surfaces carry their own ground and their own edge, so the code either
 //! side of them stays at full contrast.
 //!
@@ -171,7 +171,7 @@ const Query = struct {
                 if (self.typed.items.len == 0) return .nothing;
                 // One byte at a time is wrong the moment the query is not
                 // ASCII, and `Buffer.stepBack` is where that is already solved;
-                // this is a query, not a document, and cannot reach it.
+                // this is a query, not a file, and cannot reach it.
                 self.typed.items.len -= 1;
             },
             else => return .nothing,
@@ -578,7 +578,7 @@ pub const Finder = struct {
         painter.clipTo(self.rect);
         defer painter.clipTo(null);
 
-        // Nothing is laid over the document: the panel is two opaque surfaces
+        // Nothing is laid over the file: the panel is two opaque surfaces
         // and the code either side of them is not dimmed at all.
         try self.panel.draw(cx, painter);
     }

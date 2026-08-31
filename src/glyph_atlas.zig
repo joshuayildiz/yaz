@@ -7,10 +7,9 @@
 //! can say what to rasterise; rasterising decides where they land in the atlas,
 //! so it is the only thing that can say what to sample.
 //!
-//! What is not here is which lines a document has and which of them have
-//! changed. That belongs to the document rather than to a font: one atlas serves
-//! every document, and each document caches its own shaped lines. See
-//! document.zig.
+//! What is not here is which lines a file has and which of them have changed.
+//! That belongs to the file rather than to a font: one atlas serves every file,
+//! and each file caches its own shaped lines. See open_file.zig.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -49,7 +48,7 @@ const subpixel_positions = 4;
 /// scale is whatever the display reports and 1024 covers a scale of one.
 ///
 /// 46 distinct glyphs reach 82 rows, putting the ceiling near 500 -- past a page
-/// of English, short of a CJK document, which wants eviction rather than a
+/// of English, short of a CJK file, which wants eviction rather than a
 /// bigger number here.
 ///
 /// TODO: the ceiling follows scale, not platform. Windows on a 4K panel at 200%
@@ -123,7 +122,7 @@ pub const LineLayout = struct {
     carets: std.ArrayList(Caret) = .empty,
 
     /// What this was shaped from. A cache that has drifted out of step with the
-    /// document would otherwise draw the wrong line rather than say so.
+    /// file would otherwise draw the wrong line rather than say so.
     bytes: usize = 0,
 
     shaped: bool = false,
@@ -358,7 +357,7 @@ pub const GlyphAtlas = struct {
 
             const width: u16 = @intCast(bitmap.width);
             const height: u16 = @intCast(bitmap.rows);
-            // TODO: fixed size and no eviction, so a document with more
+            // TODO: fixed size and no eviction, so a file with more
             // distinct glyphs than fit lands here -- CJK long before Latin.
             // Growing at runtime means a larger texture, re-running the packer
             // over `slots` and re-rasterising; FreeType is still open, so no CPU
@@ -677,7 +676,7 @@ test "an empty line shapes to no glyphs rather than crashing" {
     var shaper = try Shaper.init(1);
     defer shaper.deinit();
 
-    // Reachable from a keystroke -- Return at the end of the document -- and
+    // Reachable from a keystroke -- Return at the end of the file -- and
     // from opening any file that ends in a newline.
     const shaped = shaper.shape("");
     try std.testing.expectEqual(@as(usize, 0), shaped.infos.len);

@@ -22,6 +22,7 @@ const Intent = event_mod.Intent;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Context = @import("../context.zig").Context;
+const OpenFile = @import("../open_file.zig").OpenFile;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 
@@ -33,7 +34,7 @@ const Rect = painter_mod.Rect;
 const drawLine = @import("../text.zig").draw;
 const advance = @import("../text.zig").advance;
 
-/// Below the finder's 3 and above, and never over a document: the bar has the
+/// Below the finder's 3 and above, and never over a file: the bar has the
 /// top strip to itself. The ground and the rule under it do not overlap, so they
 /// share a layer; the tab in front covers both and needs one of its own.
 /// The strip is recessed so that a tab lifted out of it reads as lifted. Against
@@ -69,21 +70,6 @@ const Ink = struct {
 };
 
 pub const Tabs = struct {
-    /// Every file open in this window, in the order they were first opened.
-    /// Owned, because the copy a view or a parked document holds is freed and
-    /// replaced as files move between them.
-    paths: std.ArrayList([]u8) = .empty,
-    names: std.ArrayList(LineLayout) = .empty,
-
-    /// Whether each file has been changed since it was read. Told to the bar
-    /// rather than worked out here: which documents exist is not its business.
-    unsaved: std.ArrayList(bool) = .empty,
-
-    /// Whether each file is in a column. Several are once the window is split,
-    /// so this is not the same question as which one has the keyboard -- a tab
-    /// says both, with the ground it is on and the colour of its name.
-    in_column: std.ArrayList(bool) = .empty,
-
     /// The mark itself, shaped once. Its width is reserved on every tab whether
     /// it is drawn or not, so a file does not shift the bar by being typed into,
     /// and again on the other side of the name, so the name sits in the middle
@@ -95,129 +81,46 @@ pub const Tabs = struct {
     /// is always something to hit.
     rects: std.ArrayList(Rect) = .empty,
 
-    /// Which of them the column with the keyboard is showing.
-    front: ?usize = null,
+    /// Which file the column with the keyboard is showing. Held by identity
+    /// rather than by name, because there is one of each.
+    front: ?*const OpenFile = null,
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     dirty: bool = true,
 
     pub fn deinit(self: *Tabs, cx: *Context) void {
-        for (self.paths.items) |path| cx.allocator.free(path);
-        self.paths.deinit(cx.allocator);
-        for (self.names.items) |*name| name.deinit(cx.allocator);
-        self.names.deinit(cx.allocator);
-        self.unsaved.deinit(cx.allocator);
-        self.in_column.deinit(cx.allocator);
         self.rects.deinit(cx.allocator);
         self.bullet.deinit(cx.allocator);
     }
 
-    /// Lists `path` if it is not listed already.
-    pub fn opened(self: *Tabs, cx: *Context, path: []const u8) !void {
-        for (self.paths.items) |listed| {
-            if (std.mem.eql(u8, listed, path)) return;
-        }
-
-        const owned = try cx.allocator.dupe(u8, path);
-        errdefer cx.allocator.free(owned);
-
-        try self.paths.append(cx.allocator, owned);
-        errdefer _ = self.paths.pop();
-        try self.names.append(cx.allocator, .{});
-        errdefer _ = self.names.pop();
-        try self.unsaved.append(cx.allocator, false);
-        errdefer _ = self.unsaved.pop();
-        try self.in_column.append(cx.allocator, false);
-        try self.rects.append(cx.allocator, .{ .x = 0, .y = 0, .width = 0, .height = 0 });
-        self.dirty = true;
-    }
-
-    /// Where `path` sits on the bar, or none when it is not on it.
-    pub fn indexOf(self: *const Tabs, path: []const u8) ?usize {
-        for (self.paths.items, 0..) |listed, which| {
-            if (std.mem.eql(u8, listed, path)) return which;
+    /// The nth file on the bar, or none when the bar is shorter than that.
+    pub fn nth(_: *const Tabs, cx: *Context, which: usize) ?*OpenFile {
+        var counted: usize = 0;
+        for (cx.files.items) |file| {
+            if (file.path == null) continue;
+            if (counted == which) return file;
+            counted += 1;
         }
         return null;
     }
 
-    /// The nth file listed, or none when the bar is shorter than that.
-    pub fn nth(self: *const Tabs, which: usize) ?[]const u8 {
-        if (which >= self.paths.items.len) return null;
-        return self.paths.items[which];
-    }
-
-    /// Takes `path` off the bar. Whether the file is still open anywhere is not
-    /// the bar's business: whoever calls this has decided it is not.
-    pub fn close(self: *Tabs, cx: *Context, path: []const u8) void {
-        for (self.paths.items, 0..) |listed, which| {
-            if (!std.mem.eql(u8, listed, path)) continue;
-
-            cx.allocator.free(listed);
-            _ = self.paths.orderedRemove(which);
-            var name = self.names.orderedRemove(which);
-            name.deinit(cx.allocator);
-            _ = self.unsaved.orderedRemove(which);
-            _ = self.in_column.orderedRemove(which);
-            _ = self.rects.orderedRemove(which);
-
-            self.dirty = true;
-            return;
-        }
-    }
-
-    /// Whether `path` has been changed since it was read. A file the bar has
-    /// never heard of is not an error: it is one nobody has opened.
-    pub fn mark(self: *Tabs, path: []const u8, unsaved: bool) void {
-        for (self.paths.items, 0..) |listed, which| {
-            if (!std.mem.eql(u8, listed, path)) continue;
-            if (self.unsaved.items[which] != unsaved) {
-                self.unsaved.items[which] = unsaved;
-                self.dirty = true;
-            }
-            return;
-        }
-    }
-
-    /// Forgets which files are in columns. Asked again every frame rather than
-    /// kept in step, because a file leaves a column without the bar being told.
-    pub fn forgetColumns(self: *Tabs) void {
-        for (self.in_column.items) |*shown| shown.* = false;
-    }
-
-    /// Says a column is showing `path`. Several may be.
-    pub fn columnShows(self: *Tabs, path: []const u8) void {
-        const which = self.indexOf(path) orelse return;
-        if (!self.in_column.items[which]) {
-            self.in_column.items[which] = true;
-            self.dirty = true;
-        }
-    }
-
-    /// Which file the column with the keyboard is showing, or none for a
-    /// document nobody named.
-    pub fn showing(self: *Tabs, path: ?[]const u8) void {
-        const found: ?usize = if (path) |named| found: {
-            for (self.paths.items, 0..) |listed, which| {
-                if (std.mem.eql(u8, listed, named)) break :found which;
-            }
-            break :found null;
-        } else null;
-
-        if (found != self.front) {
-            self.front = found;
+    /// Which file the column with the keyboard is showing, or none for a file
+    /// nobody named.
+    pub fn showing(self: *Tabs, file: ?*const OpenFile) void {
+        if (file != self.front) {
+            self.front = file;
             self.dirty = true;
         }
     }
 
     /// Nothing at all when no file has been named: a strip with no tabs on it
     /// is a promise of something that is not there.
-    pub fn height(self: *const Tabs, cx: *Context) ?f32 {
-        if (self.paths.items.len == 0) return 0;
+    pub fn height(_: *const Tabs, cx: *Context) ?f32 {
+        if (listed(cx) == 0) return 0;
         return @round(cx.atlas.line_height + 2 * @round(down * cx.atlas.scale));
     }
 
-    pub fn place(self: *Tabs, cx: *Context, rect: Rect) void {
-        _ = cx.atlas;
+    pub fn place(self: *Tabs, _: *Context, rect: Rect) void {
         self.rect = rect;
     }
 
@@ -229,14 +132,14 @@ pub const Tabs = struct {
         self.dirty = value;
     }
 
+    /// The names go too, but they are not the bar's to drop: each belongs to
+    /// the file it names, and `OpenFile.invalidate` is what gives it up.
     pub fn invalidate(self: *Tabs) void {
-        for (self.names.items) |*name| name.shaped = false;
         self.bullet.shaped = false;
         self.dirty = true;
     }
 
     pub fn update(self: *Tabs, cx: *Context, event: Event) !Intent {
-        _ = cx.atlas;
         const at = switch (event) {
             .press => |where| where,
             else => return .nothing,
@@ -244,16 +147,23 @@ pub const Tabs = struct {
 
         for (self.rects.items, 0..) |rect, which| {
             if (!rect.contains(at)) continue;
+            const file = self.nth(cx, which) orelse return .nothing;
+            const path = file.path orelse return .nothing;
             // Pressing a tab is choosing that file over the others, which is
             // what cmd+N means too. The finder answers `open` instead: picking
             // a file there is not a statement about the ones already on screen.
-            return .{ .only = try cx.allocator.dupe(u8, self.paths.items[which]) };
+            return .{ .only = try cx.allocator.dupe(u8, path) };
         }
         return .nothing;
     }
 
     pub fn draw(self: *Tabs, cx: *Context, painter: *Painter) !void {
-        if (self.paths.items.len == 0) return;
+        const count = listed(cx);
+        if (count == 0) return;
+
+        // One per tab, sized here rather than as files are opened: the bar is
+        // told nothing when one is.
+        try self.rects.resize(cx.allocator, count);
 
         const line = @max(1, @round(cx.atlas.scale));
         const inset = @round(across * cx.atlas.scale);
@@ -281,8 +191,12 @@ pub const Tabs = struct {
         ));
 
         var left = self.rect.x;
-        for (self.paths.items, 0..) |path, which| {
-            const name = &self.names.items[which];
+        var which: usize = 0;
+        for (cx.files.items) |file| {
+            const path = file.path orelse continue;
+            defer which += 1;
+
+            const name = &file.name;
             if (!name.shaped) try cx.atlas.shapeLine(std.fs.path.basename(path), name);
 
             const width = @round(advance(name) + 2 * (ink.wide + gap) + 2 * inset);
@@ -300,7 +214,7 @@ pub const Tabs = struct {
             // split they have different answers: the ground says whether the
             // file is on screen at all, and the name's colour says whether it is
             // the one being typed into.
-            const on_screen = self.in_column.items[which];
+            const on_screen = file.shown;
             if (on_screen) try painter.add(shown_key, .solid(
                 .{ left, self.rect.y },
                 .{ width, @max(0, self.rect.height - line) },
@@ -313,13 +227,13 @@ pub const Tabs = struct {
                 .{ line, @max(0, self.rect.height - line) },
             ));
 
-            const key = if (which == self.front) name_key else other_key;
+            const key = if (file == self.front) name_key else other_key;
             const baseline = @round(self.rect.y + @round(down * cx.atlas.scale) + cx.atlas.ascent);
 
             // The mark's room is taken whether or not it is drawn, so a file
             // being typed into does not push the rest of the bar along; the
             // same room again on the right is what centres the name.
-            if (self.unsaved.items[which]) {
+            if (file.modified) {
                 // Placed by its ink rather than by its pen, so what was
                 // reserved is what appears there.
                 try drawLine(painter, key, &self.bullet, .{ @round(left + inset - ink.from), baseline });
@@ -328,5 +242,16 @@ pub const Tabs = struct {
 
             left += width;
         }
+    }
+
+    /// How many files have a name, which is how many tabs there are: a file
+    /// nobody named has nothing to write on one, and a window showing one has
+    /// no bar at all.
+    fn listed(cx: *Context) usize {
+        var count: usize = 0;
+        for (cx.files.items) |file| {
+            if (file.path != null) count += 1;
+        }
+        return count;
     }
 };

@@ -1,6 +1,6 @@
 //! Putting a shaped line on screen, and asking how wide one is.
 //!
-//! Shaping belongs to the atlas and a line's bytes belong to the document. What
+//! Shaping belongs to the atlas and a line's bytes belong to the file. What
 //! is left is placing the result, which every component that draws text does the
 //! same way and did until now in three copies.
 

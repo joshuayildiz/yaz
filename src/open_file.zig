@@ -1,9 +1,11 @@
-//! The document: the text itself, where its lines begin, and what each line
-//! shaped to.
+//! One file the window has open: the text itself, where its lines begin, what
+//! each line shaped to, the name on its tab, and where its reader was in it.
 //!
-//! Everything here is derived from the bytes and from nothing a view has. What
-//! a view keeps of its own is where its caret is and how far down it is
-//! looking. See components/text_view.zig.
+//! Everything a file is, in other words, apart from where it is being shown.
+//! There is one of these per path and the context owns it; a column points at
+//! one rather than holding it, which is what lets the caret and the scroll live
+//! here and survive being looked away from. See components/text_view.zig for
+//! the rest, which is a scrollbar, a rect and a gesture.
 
 const std = @import("std");
 
@@ -24,7 +26,7 @@ pub const Edit = struct {
 /// at a time, and an exact fit would reallocate on every keystroke.
 const min_gap = 4096;
 
-/// The document: one contiguous allocation with a hole in it, kept wherever the
+/// The file: one contiguous allocation with a hole in it, kept wherever the
 /// last edit happened.
 ///
 /// Editing at the hole is a write and a bounds change. Editing elsewhere moves
@@ -35,7 +37,7 @@ pub const Buffer = struct {
     allocator: std.mem.Allocator,
 
     /// Text and hole together. `bytes[0..gap_start]` and `bytes[gap_end..]` are
-    /// the document; what lies between them is not part of it.
+    /// the file; what lies between them is not part of it.
     bytes: []u8,
     gap_start: usize,
     gap_end: usize,
@@ -91,7 +93,7 @@ pub const Buffer = struct {
         if (text.len == 0) return .{ .line = line, .removed = 0, .added = 0 };
 
         // Both allocations happen before a byte is written, so failing here
-        // leaves the document and its index exactly as they were.
+        // leaves the file and its index exactly as they were.
         const added = std.mem.count(u8, text, "\n");
         try self.starts.ensureUnusedCapacity(self.allocator, added);
         if (self.gap_end - self.gap_start < text.len) try self.grow(text.len);
@@ -118,7 +120,7 @@ pub const Buffer = struct {
     }
 
     /// Where line `index` begins and ends, its newline excluded. The last line
-    /// has no newline and runs to the end of the document.
+    /// has no newline and runs to the end of the file.
     fn lineRange(self: *const Buffer, index: usize) struct { from: usize, to: usize } {
         std.debug.assert(index < self.lineCount());
         const from = self.starts.items[index];
@@ -137,21 +139,21 @@ pub const Buffer = struct {
     }
 
     /// Turns an offset within a line, which is what layout and hit-testing both
-    /// speak in, back into one the document understands.
+    /// speak in, back into one the file understands.
     pub fn lineStart(self: *const Buffer, index: usize) usize {
         std.debug.assert(index < self.lineCount());
         return self.starts.items[index];
     }
 
     /// Without reading it. A cached line is never fetched, so this is what
-    /// checks the cache still lines up with the document.
+    /// checks the cache still lines up with the file.
     pub fn lineLength(self: *const Buffer, index: usize) usize {
         const range = self.lineRange(index);
         return range.to - range.from;
     }
 
     /// The offset one character before `offset`, or `offset` at the start of the
-    /// document.
+    /// file.
     ///
     /// A whole UTF-8 sequence, but not yet a whole grapheme cluster: `e` plus a
     /// combining acute is two of these, so backspacing over it takes two presses.
@@ -273,7 +275,7 @@ pub const Buffer = struct {
     }
 };
 
-test "an empty document is one empty line" {
+test "an empty file is one empty line" {
     var buffer = try Buffer.init(std.testing.allocator, "");
     defer buffer.deinit();
 
@@ -495,7 +497,7 @@ test "random edits agree with a plain array doing the same thing" {
     var buffer = try Buffer.init(allocator, seed_text);
     defer buffer.deinit();
 
-    // The same document held the obvious way, which is wrong for an editor and
+    // The same file held the obvious way, which is wrong for an editor and
     // right for saying what the answer should have been.
     var model: std.ArrayList(u8) = .empty;
     defer model.deinit(allocator);
@@ -534,44 +536,79 @@ test "random edits agree with a plain array doing the same thing" {
     }
 }
 
-/// The text and everything derived from it.
+/// The text, everything derived from it, and where its reader was.
 ///
 /// The layout cache is here rather than in the view because shaping depends on
 /// a line's bytes and on the atlas scale, and on nothing a view has. Keeping it
 /// beside the text is also what lets `insert` and `delete` splice it themselves,
 /// rather than leaving a caller to remember to.
-pub const Document = struct {
+///
+/// The caret is here for a different reason: a file is shown in at most one
+/// column at a time, so there is one answer rather than one per view, and it
+/// has to outlive being looked away from. That is what a separate parked-file
+/// type used to be for.
+pub const OpenFile = struct {
     allocator: std.mem.Allocator,
     buffer: Buffer,
 
-    /// One entry per line, in the document's order. Empty until the first frame,
+    /// One entry per line, in the file's order. Empty until the first frame,
     /// which is where it learns how many lines there are.
     lines: std.ArrayList(LineLayout) = .empty,
 
+    /// What it was opened as, or null for a file nobody named. Owned, and the
+    /// only copy: the bar and the columns both read this one.
+    path: ?[]u8 = null,
+
+    /// The name on its tab, shaped once. Here rather than on the bar for the
+    /// same reason the line cache is here rather than on a view: it is the
+    /// glyphs of this file's name, and it outlives every place it is drawn.
+    name: LineLayout = .{},
+
     /// Whether the text has been changed since it was read. Nothing clears it,
-    /// because nothing can yet: there is no way to save. It is here rather than
-    /// on a view because it is a fact about the text, and a document that is
-    /// parked has it too.
+    /// because nothing can yet: there is no way to save.
     modified: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, text: []const u8) !Document {
-        return .{ .allocator = allocator, .buffer = try Buffer.init(allocator, text) };
+    /// Where the next character lands, as a byte offset, and how far down the
+    /// window sits, in whole pixels.
+    ///
+    /// Here rather than on a view because a file is shown in at most one column
+    /// at a time, so there is only ever one answer -- and because the answer has
+    /// to survive being looked away from, which a view does not.
+    cursor: usize = 0,
+    scroll: f32 = 0,
+
+    /// Whether a column is showing it right now, as against being open and out
+    /// of sight. Written once a frame by whatever owns the columns; the bar
+    /// reads it.
+    shown: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator, text: []const u8, path: ?[]const u8) !OpenFile {
+        var buffer = try Buffer.init(allocator, text);
+        errdefer buffer.deinit();
+
+        return .{
+            .allocator = allocator,
+            .buffer = buffer,
+            .path = if (path) |named| try allocator.dupe(u8, named) else null,
+        };
     }
 
-    pub fn deinit(self: *Document) void {
+    pub fn deinit(self: *OpenFile) void {
         for (self.lines.items) |*entry| entry.deinit(self.allocator);
         self.lines.deinit(self.allocator);
+        self.name.deinit(self.allocator);
+        if (self.path) |path| self.allocator.free(path);
         self.buffer.deinit();
     }
 
-    pub fn insert(self: *Document, at: usize, text: []const u8) !Edit {
+    pub fn insert(self: *OpenFile, at: usize, text: []const u8) !Edit {
         const edit = try self.buffer.insert(at, text);
         if (text.len != 0) self.modified = true;
         try self.splice(edit);
         return edit;
     }
 
-    pub fn delete(self: *Document, at: usize, count: usize) !Edit {
+    pub fn delete(self: *OpenFile, at: usize, count: usize) !Edit {
         const edit = self.buffer.delete(at, count);
         if (count != 0) self.modified = true;
         try self.splice(edit);
@@ -584,12 +621,14 @@ pub const Document = struct {
     /// rounding do not distribute over a scale.
     ///
     /// The entries stay, so the cache is still one per line and in step with the
-    /// document.
-    pub fn invalidate(self: *Document) void {
+    /// file. The name on its tab goes the same way, being glyphs of the old size
+    /// like any other.
+    pub fn invalidate(self: *OpenFile) void {
         for (self.lines.items) |*entry| entry.shaped = false;
+        self.name.shaped = false;
     }
 
-    fn splice(self: *Document, edit: Edit) !void {
+    fn splice(self: *OpenFile, edit: Edit) !void {
         // Nothing has been laid out yet, so there is nothing to keep in step.
         if (self.lines.items.len == 0) return;
         try spliceLines(self.allocator, &self.lines, edit.line, edit.removed, edit.added);
@@ -603,7 +642,7 @@ pub const Document = struct {
 /// the same shaped line at a different baseline, which is why its glyphs are
 /// kept in coordinates of their own.
 ///
-/// Apart from `Document` so it can be tested without one to splice.
+/// Apart from `OpenFile` so it can be tested without one to splice.
 fn spliceLines(
     allocator: std.mem.Allocator,
     cache: *std.ArrayList(LineLayout),
@@ -615,7 +654,7 @@ fn spliceLines(
     std.debug.assert(first + removed <= cache.items.len);
 
     // Reserved before anything moves, so a failure cannot leave the cache a
-    // different length from the document it describes.
+    // different length from the file it describes.
     try cache.ensureUnusedCapacity(allocator, added);
 
     for (cache.items[first..][0..removed]) |*entry| entry.deinit(allocator);

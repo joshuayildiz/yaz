@@ -21,7 +21,7 @@ pub const text_colour: [4]f32 = .{ 0, 0, 0, 1 };
 pub const caret_colour: [4]f32 = .{ 0, 0, 0, 1 };
 pub const scrollbar_colour: [4]f32 = .{ 0, 0, 0, 0.28 };
 
-// The two things yaz draws that are not a document: the healthcheck's card, and
+// The two things yaz draws that are not a file: the healthcheck's card, and
 // the finder's panel. Both are surfaces laid over the window rather than boxes
 // drawn in it, so they carry their own ground and their own edge.
 

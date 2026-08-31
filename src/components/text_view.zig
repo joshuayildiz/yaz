@@ -1,10 +1,10 @@
-//! A view of a document: where the caret sits in it, how far down it is being
+//! A view of a file: where the caret sits in it, how far down it is being
 //! looked at, and the scrollbar that says so.
 //!
-//! The document is owned rather than pointed at, and everything derived from the
+//! The file is owned rather than pointed at, and everything derived from the
 //! bytes -- the line index, the shaped layout of every line -- lives on it. What
 //! a view adds is a position and a rect, which is also all it has to hand over
-//! when it is pointed at another file. See document.zig.
+//! when it is pointed at another file. See file.zig.
 
 const std = @import("std");
 
@@ -17,14 +17,11 @@ const Key = painter_mod.Key;
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
-const Document = @import("../document.zig").Document;
+const OpenFile = @import("../open_file.zig").OpenFile;
 const drawLine = @import("../text.zig").draw;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
-const context = @import("../context.zig");
-const Context = context.Context;
-const Position = context.Position;
-const Retired = context.Retired;
+const Context = @import("../context.zig").Context;
 const Caret = glyph_atlas.Caret;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
@@ -43,7 +40,7 @@ const bar_inset = 3;
 /// The room the scrollbar takes down the left, which the text starts after.
 const bar_gutter = bar_inset + bar_width;
 
-/// The shortest the thumb is allowed to get. A long document would otherwise
+/// The shortest the thumb is allowed to get. A long file would otherwise
 /// scale it down to something there is no catching with a pointer.
 const bar_minimum = 24;
 
@@ -59,23 +56,14 @@ const caret_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.caret
 const bar_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.scrollbar_colour };
 
 pub const TextView = struct {
-    document: Document,
-
-    /// What this view is showing, as it was named, or null for a document
-    /// nobody named. Owned. Kept so the finder can tell whether a file is
-    /// already open somewhere rather than opening a second copy of it.
-    path: ?[]u8 = null,
-
-    /// Where the next character lands, as a byte offset into the document, and
-    /// where the caret is drawn. One number rather than a line and a column:
-    /// every edit already speaks in offsets, and a pair would be a second thing
-    /// to keep in step for no gain.
-    cursor: usize,
-
-    /// How far down the document the window sits, in whole pixels. A fraction
-    /// would re-round every baseline independently and the text would shimmer
-    /// as it moved.
-    scroll: f32 = 0,
+    /// What this view is showing. Borrowed: the file is owned by the context,
+    /// which is what lets a column stop showing one without giving anything up,
+    /// and what stops two columns ever holding two copies of one file.
+    ///
+    /// The caret and the scroll are on it rather than here for the same reason.
+    /// A file is in at most one column at a time, so there is only ever one
+    /// answer, and it has to survive being looked away from.
+    file: *OpenFile,
 
     /// What is left of a gesture too small to have moved a whole pixel yet. A
     /// trackpad reports fractions, and without this a slow drag would round
@@ -97,119 +85,43 @@ pub const TextView = struct {
     /// Something changed that has not been drawn yet. Read through `isDirty`
     /// and cleared through `setDirty`, so that a view holding views of its own
     /// can answer for all of them.
-    dirty: bool = false,
+    dirty: bool = true,
 
-    /// The caret starts at the top: nothing scrolls yet, so a caret at the end
-    /// of a long file is one nobody can see.
-    pub fn init(allocator: std.mem.Allocator, text: []const u8, path: ?[]const u8) !TextView {
-        var document = try Document.init(allocator, text);
-        errdefer document.deinit();
-
-        return .{
-            .document = document,
-            .path = if (path) |named| try allocator.dupe(u8, named) else null,
-            .cursor = 0,
-        };
+    pub fn init(file: *OpenFile) TextView {
+        return .{ .file = file };
     }
 
-    /// A view of a document that already exists, taking ownership of it. `was`
-    /// is where its reader was, or null to start at the top.
+    /// Points this view at another file. Nothing is handed back and nothing is
+    /// thrown away: what it was showing stays open and out of sight, with the
+    /// caret where the reader left it.
     ///
-    /// The scroll is not clamped, because there is no rect to clamp against
-    /// until this is placed. It does not need to be: how far a document can be
-    /// scrolled depends on its line count and the height of a column, and this
-    /// is the same document going into a column the same height as the last.
-    pub fn hold(
-        allocator: std.mem.Allocator,
-        document: Document,
-        path: ?[]const u8,
-        was: ?Position,
-    ) !TextView {
-        const named = if (path) |called| try allocator.dupe(u8, called) else null;
-
-        var self: TextView = .{ .document = document, .path = named, .cursor = 0 };
-        if (was) |seen| {
-            self.cursor = @min(seen.cursor, self.document.buffer.byteLen());
-            self.scroll = seen.scroll;
-        }
-        return self;
-    }
-
-    /// Hands over everything this view was holding. It must not be used again
-    /// and must not be deinitialised: all of it belongs to the caller now.
-    pub fn retire(self: *TextView) Retired {
-        return .{ .document = self.document, .path = self.path, .position = self.position() };
-    }
-
-    /// Points this view at `document`, taking ownership of it, and hands back
-    /// what it was showing for the caller to keep or throw away. `was` is where
-    /// this file was last looked at, or null to start at the top.
-    ///
-    /// The document is passed in rather than made here so that one already in
-    /// memory can be handed straight back: everything expensive about it -- the
-    /// buffer, the line index, every line already shaped -- survives being
-    /// looked away from.
-    pub fn swap(
-        self: *TextView,
-        cx: *Context,
-        document: Document,
-        path: ?[]const u8,
-        was: ?Position,
-    ) !Retired {
-        const named = if (path) |called| try cx.allocator.dupe(u8, called) else null;
-
-        const retired: Retired = .{
-            .document = self.document,
-            .path = self.path,
-            .position = self.position(),
-        };
-
-        self.document = document;
-        self.path = named;
+    /// The scroll it comes back with is clamped by the next `place`, which is
+    /// the only thing that knows how much room this column has.
+    pub fn show(self: *TextView, file: *OpenFile) void {
+        self.file = file;
         self.pending = 0;
-        // Not set even when the caret is restored off screen: the remembered
-        // scroll is what was being looked at, and following the caret would
-        // overrule it.
+        // Not set even when the caret is off screen: the remembered scroll is
+        // what was being looked at, and following the caret would overrule it.
         self.follow_caret = false;
         self.drag = null;
         self.dirty = true;
-
-        const seen = was orelse {
-            self.cursor = 0;
-            self.scroll = 0;
-            return retired;
-        };
-
-        // Clamped, both of them: the file may have been edited on disk since it
-        // was last looked at, and an offset past the end of it is not a caret.
-        self.cursor = @min(seen.cursor, self.document.buffer.byteLen());
-        self.scrollTo(cx, seen.scroll);
-        return retired;
     }
 
-    /// Where this view is, to be given back to `swap` later.
-    fn position(self: *const TextView) Position {
-        return .{ .cursor = self.cursor, .scroll = self.scroll };
-    }
-
-    pub fn deinit(self: *TextView, cx: *Context) void {
-        self.document.deinit();
-        if (self.path) |named| cx.allocator.free(named);
-    }
+    pub fn deinit(_: *TextView, _: *Context) void {}
 
     fn insert(self: *TextView, text: []const u8) !void {
-        _ = try self.document.insert(self.cursor, text);
-        self.cursor += text.len;
+        _ = try self.file.insert(self.file.cursor, text);
+        self.file.cursor += text.len;
         self.follow_caret = true;
     }
 
     /// Deletes the character before the caret, answering whether there was one.
     fn backspace(self: *TextView) !bool {
-        const from = self.document.buffer.stepBack(self.cursor);
-        if (from == self.cursor) return false;
+        const from = self.file.buffer.stepBack(self.file.cursor);
+        if (from == self.file.cursor) return false;
 
-        _ = try self.document.delete(from, self.cursor - from);
-        self.cursor = from;
+        _ = try self.file.delete(from, self.file.cursor - from);
+        self.file.cursor = from;
         self.follow_caret = true;
         return true;
     }
@@ -229,8 +141,14 @@ pub const TextView = struct {
     /// The atlas comes with it for the sake of components that size themselves
     /// from the font; this one measures nothing until it draws.
     pub fn place(self: *TextView, cx: *Context, rect: Rect) void {
-        _ = cx.atlas;
         self.rect = rect;
+
+        // Clamped here rather than where the scroll was set. How far a file can
+        // be scrolled depends on its line count and on the room it has been
+        // given, and this is the only place that knows both -- which matters
+        // because a file keeps its scroll while it is out of sight and can come
+        // back into a shorter column than it left.
+        self.file.scroll = @min(self.furthest(cx), @max(0, self.file.scroll));
     }
 
     /// Everything that happens inside the view. What belongs to the window has
@@ -295,14 +213,14 @@ pub const TextView = struct {
         self.pending += pixels;
         const whole = @trunc(self.pending);
         self.pending -= whole;
-        self.scrollTo(cx, self.scroll + whole);
+        self.scrollTo(cx, self.file.scroll + whole);
     }
 
     /// Where the scrollbar's thumb sits in a window `height` tall.
     fn scrollbar(self: *const TextView, cx: *Context) Thumb {
-        const count: f32 = @floatFromInt(self.document.buffer.lineCount());
+        const count: f32 = @floatFromInt(self.file.buffer.lineCount());
         const content = self.origin(cx)[1] - self.rect.y + count * cx.atlas.line_height;
-        return thumb(self.scroll, content, self.rect.height, @round(bar_minimum * cx.atlas.scale));
+        return thumb(self.file.scroll, content, self.rect.height, @round(bar_minimum * cx.atlas.scale));
     }
 
     /// Where on the thumb a press at `point` takes hold, or null when the press
@@ -325,7 +243,7 @@ pub const TextView = struct {
     /// Drags the thumb so that the point `grab` down it sits at `y`.
     fn dragTo(self: *TextView, cx: *Context, y: f32, grab: f32) void {
         if (self.rect.height <= 0) return;
-        const count: f32 = @floatFromInt(self.document.buffer.lineCount());
+        const count: f32 = @floatFromInt(self.file.buffer.lineCount());
         // The inverse of the thumb, whose top is `scroll * height / content`.
         const content = self.origin(cx)[1] - self.rect.y + count * cx.atlas.line_height;
         self.pending = 0;
@@ -335,24 +253,24 @@ pub const TextView = struct {
     /// Brings the caret's line into view, and clears the flag that asked for it.
     fn scrollToCaret(self: *TextView, cx: *Context) void {
         self.follow_caret = false;
-        const index = self.document.buffer.lineAt(self.cursor);
+        const index = self.file.buffer.lineAt(self.file.cursor);
         // A jump is not a gesture, so anything a gesture had part-way through
         // it goes rather than being applied on top of the answer.
         self.pending = 0;
         const top = self.origin(cx)[1] - self.rect.y;
-        self.scrollTo(cx, scrollToCentre(self.scroll, index, top, self.rect.height, cx.atlas.line_height));
+        self.scrollTo(cx, scrollToCentre(self.file.scroll, index, top, self.rect.height, cx.atlas.line_height));
     }
 
     fn scrollTo(self: *TextView, cx: *Context, to: f32) void {
-        self.scroll = @min(self.furthest(cx), @max(0, to));
+        self.file.scroll = @min(self.furthest(cx), @max(0, to));
     }
 
     /// The far end of the scroll: where the last line reaches the top of the
     /// window rather than the bottom, so the end of a file stops being somewhere
-    /// the view cannot follow you to. A document shorter than the window scrolls
+    /// the view cannot follow you to. A file shorter than the window scrolls
     /// by the same rule.
     fn furthest(self: *const TextView, cx: *Context) f32 {
-        const last = self.document.buffer.lineCount() -| 1;
+        const last = self.file.buffer.lineCount() -| 1;
         const top = self.origin(cx)[1] - self.rect.y;
         return @max(0, @ceil(top + @as(f32, @floatFromInt(last)) * cx.atlas.line_height));
     }
@@ -362,7 +280,7 @@ pub const TextView = struct {
     /// not its baseline.
     ///
     /// A redraw that changed nothing shapes nothing and does not so much as
-    /// read the document; a keystroke shapes the one line it landed in. What
+    /// read the file; a keystroke shapes the one line it landed in. What
     /// remains per frame is placing the cached glyphs, which has to happen
     /// anyway to fill the buffer the GPU reads.
     pub fn draw(self: *TextView, cx: *Context, painter: *Painter) !void {
@@ -381,25 +299,25 @@ pub const TextView = struct {
         const x = at[0];
         const top = at[1] - self.rect.y;
         const height = self.rect.height;
-        std.debug.assert(self.scroll == @round(self.scroll));
+        std.debug.assert(self.file.scroll == @round(self.file.scroll));
 
-        const count = self.document.buffer.lineCount();
-        if (self.document.lines.items.len == 0) try self.document.lines.appendNTimes(cx.allocator, .{}, count);
+        const count = self.file.buffer.lineCount();
+        if (self.file.lines.items.len == 0) try self.file.lines.appendNTimes(cx.allocator, .{}, count);
         // Anything else means an edit did not reach the cache and the entries
         // no longer line up with the lines they describe.
-        std.debug.assert(self.document.lines.items.len == count);
+        std.debug.assert(self.file.lines.items.len == count);
 
-        const caret_line = self.document.buffer.lineAt(self.cursor);
+        const caret_line = self.file.buffer.lineAt(self.file.cursor);
         // Filled in as that line comes round, so the caret is placed from the
         // same shaped layout as the glyphs it sits between.
         var caret: ?Sprite = null;
 
-        const range = visibleLines(top, self.scroll, height, cx.atlas.line_height, count);
-        for (self.document.lines.items[range.first..range.last], range.first..) |*entry, index| {
-            if (!entry.shaped) try cx.atlas.shapeLine(try self.document.buffer.lineSlice(index), entry);
-            std.debug.assert(entry.bytes == self.document.buffer.lineLength(index));
+        const range = visibleLines(top, self.file.scroll, height, cx.atlas.line_height, count);
+        for (self.file.lines.items[range.first..range.last], range.first..) |*entry, index| {
+            if (!entry.shaped) try cx.atlas.shapeLine(try self.file.buffer.lineSlice(index), entry);
+            std.debug.assert(entry.bytes == self.file.buffer.lineLength(index));
 
-            const baseline = @round(self.rect.y + lineTop(index, top, self.scroll, cx.atlas.line_height) + cx.atlas.ascent);
+            const baseline = @round(self.rect.y + lineTop(index, top, self.file.scroll, cx.atlas.line_height) + cx.atlas.ascent);
             try drawLine(painter, glyph_key, entry, .{ x, baseline });
 
             if (index == caret_line) caret = self.caretOn(cx, entry, index, x, baseline);
@@ -410,11 +328,11 @@ pub const TextView = struct {
         // is never has to be a special case. Nothing partly on screen reaches
         // here, so where exactly it lands does not matter.
         if (caret == null) {
-            const entry = &self.document.lines.items[caret_line];
-            if (!entry.shaped) try cx.atlas.shapeLine(try self.document.buffer.lineSlice(caret_line), entry);
-            std.debug.assert(entry.bytes == self.document.buffer.lineLength(caret_line));
+            const entry = &self.file.lines.items[caret_line];
+            if (!entry.shaped) try cx.atlas.shapeLine(try self.file.buffer.lineSlice(caret_line), entry);
+            std.debug.assert(entry.bytes == self.file.buffer.lineLength(caret_line));
 
-            const off = self.rect.y + lineTop(caret_line, top, self.scroll, cx.atlas.line_height) + cx.atlas.ascent;
+            const off = self.rect.y + lineTop(caret_line, top, self.file.scroll, cx.atlas.line_height) + cx.atlas.ascent;
             caret = self.caretOn(cx, entry, caret_line, x, @round(off));
         }
         try painter.add(caret_key, caret.?);
@@ -435,7 +353,7 @@ pub const TextView = struct {
         x: f32,
         baseline: f32,
     ) Sprite {
-        const offset = self.cursor - self.document.buffer.lineStart(index);
+        const offset = self.file.cursor - self.file.buffer.lineStart(index);
         return .solid(.{
             x + @round(caretX(entry.carets.items, offset)),
             baseline - @round(cx.atlas.ascent),
@@ -449,25 +367,27 @@ pub const TextView = struct {
     /// place the caret can go, which is what makes dragging past the end behave.
     fn moveCaretTo(self: *TextView, cx: *Context, point: [2]f32) !void {
         // Nothing has been laid out, so there is nothing on screen to click.
-        if (self.document.lines.items.len == 0) return;
+        if (self.file.lines.items.len == 0) return;
 
         const at = self.origin(cx);
-        const row = (point[1] - at[1] + self.scroll) / cx.atlas.line_height;
+        const row = (point[1] - at[1] + self.file.scroll) / cx.atlas.line_height;
         const index = if (row < 0)
             0
         else
-            @min(self.document.buffer.lineCount() - 1, @as(usize, @intFromFloat(row)));
+            @min(self.file.buffer.lineCount() - 1, @as(usize, @intFromFloat(row)));
 
         // A click lands on a line that was drawn, but the row arithmetic
         // clamps, and what it clamps to need not have been.
-        const entry = &self.document.lines.items[index];
-        if (!entry.shaped) try cx.atlas.shapeLine(try self.document.buffer.lineSlice(index), entry);
+        const entry = &self.file.lines.items[index];
+        if (!entry.shaped) try cx.atlas.shapeLine(try self.file.buffer.lineSlice(index), entry);
 
-        self.cursor = self.document.buffer.lineStart(index) + caretOffset(entry.carets.items, point[0] - at[0]);
+        self.file.cursor = self.file.buffer.lineStart(index) + caretOffset(entry.carets.items, point[0] - at[0]);
     }
 
+    /// The file's own cache is not dropped here: the context does that for
+    /// every file it holds, shown or not.
     pub fn invalidate(self: *TextView) void {
-        self.document.invalidate();
+        self.dirty = true;
     }
 };
 
@@ -504,35 +424,35 @@ fn visibleLines(
 /// Where the scrollbar's thumb goes, in pixels down the window.
 const Thumb = struct { y: f32, height: f32 };
 
-/// The thumb for a scroll of `scroll` through a document `content` tall, in a
+/// The thumb for a scroll of `scroll` through a file `content` tall, in a
 /// track `height` tall.
 ///
-/// The track stands for the document and nothing else, so the thumb is the
+/// The track stands for the file and nothing else, so the thumb is the
 /// window's share of it and sits where the window sits. Scrolling past the last
 /// line therefore carries the thumb below the track, where it is clipped -- which
 /// is what being past the end looks like, and truer than counting empty space as
 /// something there is to scroll through.
 fn thumb(scroll: f32, content: f32, height: f32, minimum: f32) Thumb {
-    // An empty document is not a thing to be a share of.
+    // An empty file is not a thing to be a share of.
     if (content <= 0) return .{ .y = 0, .height = height };
     const share = height / content;
     return .{
         .y = @round(scroll * share),
         // Short of the minimum there is nothing to catch hold of, and a long
-        // document would take it there.
+        // file would take it there.
         .height = @min(height, @max(minimum, @round(height * share))),
     };
 }
 
-test "the thumb is the window's share of the document" {
-    // A document twice the window: half the track, at the top.
+test "the thumb is the window's share of the file" {
+    // A file twice the window: half the track, at the top.
     const t = thumb(0, 200, 100, 10);
     try std.testing.expectEqual(@as(f32, 0), t.y);
     try std.testing.expectEqual(@as(f32, 50), t.height);
 }
 
 test "the thumb reaches the bottom when the last line does" {
-    // Scrolled so the document's end meets the window's, the thumb's end meets
+    // Scrolled so the file's end meets the window's, the thumb's end meets
     // the track's: 100 of 200 scrolled, half a track tall, half way down.
     const t = thumb(100, 200, 100, 10);
     try std.testing.expectEqual(@as(f32, 50), t.y);
@@ -540,18 +460,18 @@ test "the thumb reaches the bottom when the last line does" {
 }
 
 test "scrolling past the last line carries the thumb below the track" {
-    // The overscroll is not part of the document, so the thumb keeps going and
+    // The overscroll is not part of the file, so the thumb keeps going and
     // is clipped rather than being squeezed to make room for empty space.
     const t = thumb(160, 200, 100, 10);
     try std.testing.expectEqual(@as(f32, 80), t.y);
     try std.testing.expect(t.y + t.height > 100);
 }
 
-test "a document shorter than the window fills the track" {
+test "a file shorter than the window fills the track" {
     try std.testing.expectEqual(@as(f32, 100), thumb(0, 40, 100, 10).height);
 }
 
-test "a long document stops shrinking the thumb at the minimum" {
+test "a long file stops shrinking the thumb at the minimum" {
     try std.testing.expectEqual(@as(f32, 24), thumb(0, 1_000_000, 100, 24).height);
 }
 
@@ -578,13 +498,13 @@ fn clampIndex(value: f32, count: usize) usize {
     return @intFromFloat(value);
 }
 
-test "a viewport taller than the document shows all of it" {
+test "a viewport taller than the file shows all of it" {
     const range = visibleLines(10, 0, 1000, 15, 4);
     try std.testing.expectEqual(@as(usize, 0), range.first);
     try std.testing.expectEqual(@as(usize, 4), range.last);
 }
 
-test "a viewport shorter than the document stops short of its end" {
+test "a viewport shorter than the file stops short of its end" {
     // Lines of 15 starting 10 down, so the sixth begins at 85 and the seventh
     // at 100, which is already the bottom edge.
     try std.testing.expectEqual(@as(usize, 6), visibleLines(10, 0, 100, 15, 10).last);
@@ -651,7 +571,7 @@ test "scrollToCentre leaves a line that is already on screen alone" {
 test "scrollToCentre brings a line above the window to the middle" {
     // Scrolled 40, line 1 sits 25 above the window. The middle of 100 starts at
     // 42.5, so it asks for 40 - 25 - 42.5, rounded away from zero. The caller
-    // clamps that back to the top of the document.
+    // clamps that back to the top of the file.
     try std.testing.expectEqual(@as(f32, -28), scrollToCentre(40, 1, 0, 100, 15));
 }
 
@@ -789,8 +709,8 @@ test "the two directions agree at every boundary" {
 }
 
 test {
-    // Tests follow the imports: this file pulls in the document's, so a test
+    // Tests follow the imports: this file pulls in the file's, so a test
     // build reaches them without `main` having to know they exist.
-    _ = @import("../document.zig");
+    _ = @import("../open_file.zig");
     _ = @import("../painter.zig");
 }

@@ -1,7 +1,7 @@
 //! A stack of components, back to front.
 //!
 //! Everything in it draws, bottom first, so what is behind is still there --
-//! the finder is two small surfaces over a document, not a page that replaced
+//! the finder is two small surfaces over a file, not a page that replaced
 //! one, and the code either side of them is not dimmed. Only the component in
 //! front is told what happened, which is what being in front means.
 //!
