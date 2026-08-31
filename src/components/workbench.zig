@@ -43,7 +43,12 @@ pub const Workbench = struct {
     dirty: bool = false,
 
     pub fn init(bar: Tabs, row: Views) Workbench {
-        return .{ .stack = .init(.{ bar, row }) };
+        var self: Workbench = .{ .stack = .init(.{ bar, row }) };
+        // The columns have the keyboard from the moment there is a window. A
+        // bar is something to press, not something to type into, and the first
+        // member of a column would otherwise have it by default.
+        self.stack.focusOn(Views);
+        return self;
     }
 
     pub fn deinit(self: *Workbench, cx: *Context) void {
@@ -92,7 +97,17 @@ pub const Workbench = struct {
             else => {},
         }
 
-        return self.act(cx, try self.stack.update(cx, event));
+        const asked = try self.stack.update(cx, event);
+
+        // A press on the bar moves the keyboard to it, and nothing would move
+        // it back: pressing a tab ends in `showOnly`, but pressing the empty
+        // strip beside the tabs would leave typing going nowhere.
+        switch (event) {
+            .press => self.stack.focusOn(Views),
+            else => {},
+        }
+
+        return self.act(cx, asked);
     }
 
     /// A path from something that is not one of its members -- the finder, in
