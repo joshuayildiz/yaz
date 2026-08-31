@@ -103,7 +103,6 @@ const Query = struct {
     count: LineLayout = .{},
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-    dirty: bool = false,
 
     pub fn deinit(self: *Query, cx: *Context) void {
         self.typed.deinit(cx.allocator);
@@ -134,18 +133,9 @@ const Query = struct {
         self.rect = rect;
     }
 
-    pub fn isDirty(self: *const Query) bool {
-        return self.dirty;
-    }
-
-    pub fn setDirty(self: *Query, value: bool) void {
-        self.dirty = value;
-    }
-
     pub fn invalidate(self: *Query) void {
         self.layout.shaped = false;
         self.count.shaped = false;
-        self.dirty = true;
     }
 
     pub fn clear(self: *Query) void {
@@ -156,11 +146,11 @@ const Query = struct {
     }
 
     /// What the finder found, for the far end of the line.
-    pub fn counted(self: *Query, shown: usize, total: usize) void {
+    pub fn counted(self: *Query, cx: *Context, shown: usize, total: usize) void {
         self.shown = shown;
         self.total = total;
         self.count.shaped = false;
-        self.dirty = true;
+        cx.changed();
     }
 
     pub fn update(self: *Query, cx: *Context, event: Event) !Intent {
@@ -182,7 +172,7 @@ const Query = struct {
         // opened -- and every character typed after goes on the panel without
         // appearing on it.
         self.layout.shaped = false;
-        self.dirty = true;
+        cx.changed();
         return .nothing;
     }
 
@@ -245,7 +235,6 @@ const Results = struct {
     laid_out: bool = false,
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-    dirty: bool = false,
 
     pub fn deinit(self: *Results, cx: *Context) void {
         for (&self.rows) |*row| row.deinit(cx.allocator);
@@ -266,26 +255,17 @@ const Results = struct {
         self.rect = rect;
     }
 
-    pub fn isDirty(self: *const Results) bool {
-        return self.dirty;
-    }
-
-    pub fn setDirty(self: *Results, value: bool) void {
-        self.dirty = value;
-    }
-
     pub fn invalidate(self: *Results) void {
         self.laid_out = false;
-        self.dirty = true;
     }
 
     /// Points at a new set of matches and goes back to the top of it.
-    pub fn show(self: *Results, matches: []const []const u8) void {
+    pub fn show(self: *Results, cx: *Context, matches: []const []const u8) void {
         self.matches = matches;
         self.selected = 0;
         self.top_row = 0;
         self.laid_out = false;
-        self.dirty = true;
+        cx.changed();
     }
 
     /// What return would open.
@@ -312,7 +292,7 @@ const Results = struct {
             self.top_row = self.selected + 1 - visible_rows;
         }
         self.laid_out = false;
-        self.dirty = true;
+        cx.changed();
         return .nothing;
     }
 
@@ -398,7 +378,6 @@ pub const Finder = struct {
     panel: Panel,
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-    dirty: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, environ: std.process.Environ) !Finder {
         const rg = try tools.path(allocator, environ, .rg);
@@ -429,7 +408,7 @@ pub const Finder = struct {
         self.showing = false;
 
         // Before the bytes go, since the rows point into them.
-        self.panel.get(Results).show(&.{});
+        self.panel.get(Results).show(cx, &.{});
         self.panel.get(Query).clear();
 
         self.all.clearRetainingCapacity();
@@ -439,15 +418,6 @@ pub const Finder = struct {
         self.listing = &.{};
         cx.allocator.free(self.ranked);
         self.ranked = &.{};
-    }
-
-    pub fn isDirty(self: *const Finder) bool {
-        return self.dirty or self.panel.isDirty();
-    }
-
-    pub fn setDirty(self: *Finder, value: bool) void {
-        self.dirty = value;
-        self.panel.setDirty(value);
     }
 
     /// A measure down the middle, hanging a short way from the top of the
@@ -468,14 +438,13 @@ pub const Finder = struct {
 
     pub fn invalidate(self: *Finder) void {
         self.panel.invalidate();
-        self.dirty = true;
     }
 
     /// Reads what there is to choose between and shows the panel.
     pub fn show(self: *Finder, cx: *Context) !void {
         self.close(cx);
         self.showing = true;
-        self.dirty = true;
+        cx.changed();
 
         const result = try std.process.run(cx.allocator, cx.io, .{
             .argv = &.{ self.rg, "--files" },
@@ -525,7 +494,7 @@ pub const Finder = struct {
     /// done on the way to being thrown away.
     fn rank(self: *Finder, cx: *Context) !void {
         self.matches.clearRetainingCapacity();
-        self.panel.get(Results).show(&.{});
+        self.panel.get(Results).show(cx, &.{});
 
         cx.allocator.free(self.ranked);
         self.ranked = &.{};
@@ -568,8 +537,8 @@ pub const Finder = struct {
             }
         }
 
-        self.panel.get(Results).show(self.matches.items);
-        self.panel.get(Query).counted(self.matches.items.len, self.all.items.len);
+        self.panel.get(Results).show(cx, self.matches.items);
+        self.panel.get(Query).counted(cx, self.matches.items.len, self.all.items.len);
     }
 
     pub fn draw(self: *Finder, cx: *Context, painter: *Painter) !void {

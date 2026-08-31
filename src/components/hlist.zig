@@ -111,17 +111,6 @@ pub fn HList(comptime Member: type) type {
             }
         }
 
-        pub fn isDirty(self: *const Self) bool {
-            for (self.items.items) |*member| {
-                if (member.isDirty()) return true;
-            }
-            return false;
-        }
-
-        pub fn setDirty(self: *Self, value: bool) void {
-            for (self.items.items) |*member| member.setDirty(value);
-        }
-
         pub fn invalidate(self: *Self) void {
             for (self.items.items) |*member| member.invalidate();
         }
@@ -179,10 +168,6 @@ const Spy = struct {
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
     pub fn deinit(_: *Spy, _: *Context) void {}
-    pub fn isDirty(_: *const Spy) bool {
-        return false;
-    }
-    pub fn setDirty(_: *Spy, _: bool) void {}
     pub fn invalidate(_: *Spy) void {}
     pub fn draw(_: *Spy, _: *Context, _: *Painter) !void {}
 

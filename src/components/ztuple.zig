@@ -35,10 +35,6 @@ pub fn ZTuple(comptime members: []const type) type {
 
         items: std.meta.Tuple(members),
 
-        /// True when the order changed. The order is this type's own state and
-        /// no member records that it moved, so nothing else can answer for it.
-        dirty: bool = false,
-
         /// Indices into `items`, back to front.
         order: [count]usize = declared: {
             var initial: [count]usize = undefined;
@@ -64,24 +60,24 @@ pub fn ZTuple(comptime members: []const type) type {
         }
 
         /// Brings `T` to the front. What was above it moves back one.
-        pub fn raise(self: *Self, comptime T: type) void {
-            self.raiseAt(comptime indexOf(T));
+        pub fn raise(self: *Self, cx: *Context, comptime T: type) void {
+            self.raiseAt(cx, comptime indexOf(T));
         }
 
-        fn raiseAt(self: *Self, which: usize) void {
+        fn raiseAt(self: *Self, cx: *Context, which: usize) void {
             const at = std.mem.indexOfScalar(usize, &self.order, which).?;
             std.mem.copyForwards(usize, self.order[at..], self.order[at + 1 ..]);
             self.order[count - 1] = which;
-            self.dirty = true;
+            cx.changed();
         }
 
         /// Sends whatever is in front all the way back, which is where a panel
         /// goes when it is done. A stack of one has no front to give up.
-        pub fn lowerFront(self: *Self) void {
+        pub fn lowerFront(self: *Self, cx: *Context) void {
             const front = self.order[count - 1];
             std.mem.copyBackwards(usize, self.order[1..], self.order[0 .. count - 1]);
             self.order[0] = front;
-            self.dirty = true;
+            cx.changed();
         }
 
         fn indexOf(comptime T: type) usize {
@@ -93,19 +89,6 @@ pub fn ZTuple(comptime members: []const type) type {
 
         pub fn place(self: *Self, cx: *Context, rect: Rect) void {
             inline for (0..count) |i| self.items[i].place(cx, rect);
-        }
-
-        pub fn isDirty(self: *const Self) bool {
-            if (self.dirty) return true;
-            inline for (0..count) |i| {
-                if (self.items[i].isDirty()) return true;
-            }
-            return false;
-        }
-
-        pub fn setDirty(self: *Self, value: bool) void {
-            self.dirty = value;
-            inline for (0..count) |i| self.items[i].setDirty(value);
         }
 
         pub fn invalidate(self: *Self) void {
@@ -137,7 +120,7 @@ pub fn ZTuple(comptime members: []const type) type {
                     if (comptime @hasDecl(members[i], "show")) {
                         if (self.order[count - 1] != i) {
                             try self.items[i].show(cx);
-                            self.raiseAt(i);
+                            self.raiseAt(cx, i);
                             return .nothing;
                         }
                     }
@@ -172,7 +155,7 @@ pub fn ZTuple(comptime members: []const type) type {
                 switch (intent) {
                     .nothing => return .nothing,
                     .dismiss => {
-                        self.lowerFront();
+                        self.lowerFront(cx);
                         return .nothing;
                     },
                     else => {},
@@ -189,7 +172,7 @@ pub fn ZTuple(comptime members: []const type) type {
             switch (intent) {
                 .nothing => return .nothing,
                 .dismiss => {
-                    self.lowerFront();
+                    self.lowerFront(cx);
                     return .nothing;
                 },
                 else => return intent,
@@ -208,10 +191,6 @@ fn Spy(comptime tag: u8) type {
 
         pub fn deinit(_: *Self, _: *Context) void {}
         pub fn place(_: *Self, _: *Context, _: Rect) void {}
-        pub fn isDirty(_: *const Self) bool {
-            return false;
-        }
-        pub fn setDirty(_: *Self, _: bool) void {}
         pub fn invalidate(_: *Self) void {}
 
         pub fn draw(self: *Self, cx: *Context, _: *Painter) !void {
@@ -233,10 +212,6 @@ const Panel = struct {
     pub fn deinit(_: *Panel, _: *Context) void {}
     pub fn place(_: *Panel, _: *Context, _: Rect) void {}
     pub fn draw(_: *Panel, _: *Context, _: *Painter) !void {}
-    pub fn isDirty(_: *const Panel) bool {
-        return false;
-    }
-    pub fn setDirty(_: *Panel, _: bool) void {}
     pub fn invalidate(_: *Panel) void {}
 
     pub fn show(self: *Panel, _: *Context) !void {
@@ -255,10 +230,6 @@ const Taker = struct {
     pub fn deinit(_: *Taker, _: *Context) void {}
     pub fn place(_: *Taker, _: *Context, _: Rect) void {}
     pub fn draw(_: *Taker, _: *Context, _: *Painter) !void {}
-    pub fn isDirty(_: *const Taker) bool {
-        return false;
-    }
-    pub fn setDirty(_: *Taker, _: bool) void {}
     pub fn invalidate(_: *Taker) void {}
 
     pub fn update(_: *Taker, _: *Context, _: Event) !Intent {
@@ -303,14 +274,14 @@ test "everything draws back to front, and only the front is told" {
 
     // Raising the back one turns the drawing order round and moves the keyboard
     // with it.
-    stack.raise(Back);
+    stack.raise(&cx, Back);
     try stack.draw(&cx, undefined);
     _ = try stack.update(&cx, .cancel);
     try std.testing.expectEqualStrings("bffb", drawn.items);
     try std.testing.expectEqualStrings("fb", told.items);
 
     // And putting it away returns both to where they were.
-    stack.lowerFront();
+    stack.lowerFront(&cx);
     try stack.draw(&cx, undefined);
     _ = try stack.update(&cx, .cancel);
     try std.testing.expectEqualStrings("bffbbf", drawn.items);
@@ -318,6 +289,8 @@ test "everything draws back to front, and only the front is told" {
 }
 
 test "a change of order is a change to what is on screen" {
+    const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     const Back = Spy('b');
     const Front = Spy('f');
     var stack: ZTuple(&.{ Back, Front }) = .init(.{
@@ -325,12 +298,15 @@ test "a change of order is a change to what is on screen" {
         .{ .drawn = undefined, .told = undefined },
     });
 
-    // The members never change, so nothing but the stack can answer for this.
-    try std.testing.expect(!stack.isDirty());
-    stack.raise(Back);
-    try std.testing.expect(stack.isDirty());
-    stack.setDirty(false);
-    try std.testing.expect(!stack.isDirty());
+    // Nothing inside a member moved, so the order is the only thing that can
+    // have asked for a frame.
+    cx.dirty = false;
+    stack.raise(&cx, Back);
+    try std.testing.expect(cx.dirty);
+
+    cx.dirty = false;
+    stack.lowerFront(&cx);
+    try std.testing.expect(cx.dirty);
 }
 
 test "the keystroke that shows a panel finds it wherever it is" {
@@ -343,7 +319,7 @@ test "the keystroke that shows a panel finds it wherever it is" {
     _ = try stack.update(&cx, .find);
     try std.testing.expectEqual(@as(usize, 0), stack.get(Panel).shown);
 
-    stack.lowerFront();
+    stack.lowerFront(&cx);
     _ = try stack.update(&cx, .find);
     try std.testing.expectEqual(@as(usize, 1), stack.get(Panel).shown);
     try std.testing.expect(stack.inFront(Panel));
@@ -392,8 +368,8 @@ test "a stack of one has no front to give up" {
     const Only = Spy('o');
     var stack: ZTuple(&.{Only}) = .init(.{.{ .drawn = &drawn, .told = &told }});
 
-    stack.lowerFront();
-    stack.raise(Only);
+    stack.lowerFront(&cx);
+    stack.raise(&cx, Only);
     try stack.draw(&cx, undefined);
     try std.testing.expectEqualStrings("o", drawn.items);
     try std.testing.expect(stack.inFront(Only));

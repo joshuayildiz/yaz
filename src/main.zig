@@ -15,7 +15,6 @@ const Tabs = @import("./components/tabs.zig").Tabs;
 const TextView = @import("./components/text_view.zig").TextView;
 const workbench_mod = @import("./components/workbench.zig");
 const Workbench = workbench_mod.Workbench;
-const Views = workbench_mod.Views;
 const c = sdl.c;
 
 /// `setup` prints, so it has to be heard from in a release build too, where the
@@ -48,19 +47,15 @@ pub fn main(init: std.process.Init) !void {
     // built from needs a window.
     try cx.openNamed(init);
 
-    // A column per file named, left to right in the order they were named. The
-    // files belong to the context; a column only points at one.
-    var views: Views = .{};
-    errdefer views.deinit(&cx);
-    try views.items.ensureTotalCapacity(cx.allocator, cx.files.items.len);
-    for (cx.files.items) |file| try views.append(&cx, .init(file));
+    // A column per file named, left to right in the order they were named.
+    try cx.columns.appendSlice(cx.allocator, cx.files.items);
 
     // Borrowed rather than copied: `run` hands it to SDL, which copies it, and
     // the context outlives the call.
     const title = cx.files.items[0].path;
 
     const finder = try Finder.init(cx.allocator, init.minimal.environ);
-    return run(&cx, Editing, .init(.{ finder, .init(.{}, views) }), title);
+    return run(&cx, Editing, .init(.{ finder, .init(.{}, .{}) }), title);
 }
 
 /// The window, and the one component `main` put in it.
@@ -78,28 +73,15 @@ fn App(comptime Component: type) type {
         painter: Painter,
         component: Component,
 
-        /// What has changed at this level, as against inside the component.
-        /// True to begin with: the first frame has never been drawn.
-        dirty: bool = true,
-
         fn deinit(self: *Self) void {
             self.component.deinit(self.cx);
             self.painter.deinit();
             self.renderer.deinit();
         }
 
-        fn isDirty(self: *const Self) bool {
-            return self.dirty or self.component.isDirty();
-        }
-
-        fn setDirty(self: *Self, value: bool) void {
-            self.dirty = value;
-            self.component.setDirty(value);
-        }
-
         /// Two events belong to the window itself and the rest belong to what
         /// is in it. What changed is not answered here; it is asked for
-        /// afterwards, through `isDirty`.
+        /// afterwards, through `Context.dirty`.
         fn update(self: *Self, event: Event) !void {
             switch (event) {
                 .quit => {
@@ -107,7 +89,7 @@ fn App(comptime Component: type) type {
                     return;
                 },
                 .resized => {
-                    self.dirty = true;
+                    self.cx.changed();
                     return;
                 },
                 else => {},
@@ -243,9 +225,9 @@ fn run(cx: *Context, comptime Component: type, component: Component, title: ?[]c
     // reason to draw, though; only a change to what is on screen is.
     var event: c.SDL_Event = undefined;
     while (cx.running) {
-        if (app.isDirty()) {
+        if (cx.dirty) {
             try app.redraw();
-            app.setDirty(false);
+            cx.dirty = false;
         }
 
         if (!c.SDL_WaitEvent(&event)) {

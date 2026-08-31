@@ -42,6 +42,24 @@ pub const Context = struct {
     /// the list moves as it grows.
     files: std.ArrayList(*OpenFile) = .empty,
 
+    /// Which files are on screen, left to right. Every one of these is in
+    /// `files` as well; a file in `files` and not here is open and out of
+    /// sight, which is all being "closed" ever meant short of closing.
+    columns: std.ArrayList(*OpenFile) = .empty,
+
+    /// Which column has the keyboard, and which has the pointer while a press
+    /// is being held. Both are indices into `columns`.
+    focus: usize = 0,
+    holding: ?usize = null,
+
+    /// Whether anything above has changed since the last frame was drawn.
+    ///
+    /// One flag for the whole model rather than one per component: what a
+    /// window has to decide is whether to draw at all, and presenting blocks,
+    /// so a redundant frame costs latency rather than just work. True to begin
+    /// with, since the first frame has never been drawn.
+    dirty: bool = true,
+
     /// False ends the window. Here rather than in the loop that reads it
     /// because what decides it is a component: the last file being closed is
     /// the end of the window, and only the thing holding the files knows that.
@@ -80,7 +98,38 @@ pub const Context = struct {
         self.atlas = atlas;
     }
 
+    /// Says the model has moved on and the window has to be drawn again.
+    pub fn changed(self: *Context) void {
+        self.dirty = true;
+    }
+
+    /// What the column with the keyboard is showing, or none before there is a
+    /// column. Asked rather than stored: it is `columns` and `focus`, and two
+    /// facts that agree by construction cannot drift.
+    pub fn showing(self: *const Context) ?*OpenFile {
+        if (self.focus >= self.columns.items.len) return null;
+        return self.columns.items[self.focus];
+    }
+
+    /// Whether a column is showing `file`. The bar asks this of every file it
+    /// lists, which is few enough that a walk is the whole of it.
+    pub fn onScreen(self: *const Context, file: *const OpenFile) bool {
+        for (self.columns.items) |shown| {
+            if (shown == file) return true;
+        }
+        return false;
+    }
+
+    /// Which column is showing `file`, if one is.
+    pub fn columnOf(self: *const Context, file: *const OpenFile) ?usize {
+        for (self.columns.items, 0..) |shown, which| {
+            if (shown == file) return which;
+        }
+        return null;
+    }
+
     pub fn deinit(self: *Context) void {
+        self.columns.deinit(self.allocator);
         for (self.files.items) |file| {
             file.deinit();
             self.allocator.destroy(file);

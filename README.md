@@ -878,11 +878,17 @@ the window itself — quit and resize — and hands everything else to the one
 component it was given. It asks no questions about what that component is.
 Nothing below takes an `SDL_Event`.
 
-Every component shares the same six: `place` to be given room, `update` to be
-told what happened, `draw` to add quads to a painter, `isDirty`/`setDirty` so a
-parent answers for what it holds, and `invalidate` for the one thing none of them
-survives — the atlas rebuilt at a different scale. A parent calls them on its
-children, so the tree is the type system rather than a vtable.
+Every component shares the same four: `place` to be given room, `update` to be
+told what happened, `draw` to add quads to a painter, and `invalidate` for the
+one thing none of them survives — the atlas rebuilt at a different scale. A
+parent calls them on its children, so the tree is the type system rather than a
+vtable.
+
+**Nothing answers for whether it has changed.** There is one flag, on the
+Context, and anything that changes the model says so through `cx.changed()`.
+The loop draws when it is set and clears it after. That is not damage tracking
+— the whole window is redrawn — but presenting blocks on the swapchain, so the
+question worth asking is only ever *whether* to draw.
 
 **A window is one component, and that component is the whole of what is on
 screen.** It is a `ZTuple` when more than one thing is in it, whose members are

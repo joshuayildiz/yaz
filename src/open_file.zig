@@ -577,15 +577,23 @@ pub const OpenFile = struct {
     cursor: usize = 0,
     scroll: f32 = 0,
 
-    /// Whether a column is showing it right now, as against being open and out
-    /// of sight, and whether that column is the one with the keyboard. Two
-    /// questions rather than one: with the window split, several files are on
-    /// screen and only one of them is being typed into.
+    /// Set by an edit, acted on before the next frame is drawn: typing that
+    /// has gone off screen brings the view back to it, and clicking reads the
+    /// view where it is.
+    follow_caret: bool = false,
+
+    /// What is left of a gesture too small to have moved a whole pixel yet. A
+    /// trackpad reports fractions, and without this a slow drag would round
+    /// away to nothing every event.
+    pending: f32 = 0,
+
+    /// Where on the scrollbar's thumb the pointer took hold, while it is
+    /// holding it. Null the rest of the time, which is also the answer to
+    /// whether a drag is on.
     ///
-    /// Written once a frame by whatever owns the columns, since a file leaves a
-    /// column without being told. The bar reads both and says both.
-    shown: bool = false,
-    focused: bool = false,
+    /// Here with the caret and the scroll, and for the same reason: a file is
+    /// shown in at most one column, so there is one of each per file.
+    drag: ?f32 = null,
 
     pub fn init(allocator: std.mem.Allocator, text: []const u8, path: ?[]const u8) !OpenFile {
         var buffer = try Buffer.init(allocator, text);

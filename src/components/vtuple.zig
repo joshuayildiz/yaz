@@ -119,17 +119,6 @@ pub fn VTuple(comptime members: []const type) type {
             }
         }
 
-        pub fn isDirty(self: *const Self) bool {
-            inline for (0..count) |i| {
-                if (self.items[i].isDirty()) return true;
-            }
-            return false;
-        }
-
-        pub fn setDirty(self: *Self, value: bool) void {
-            inline for (0..count) |i| self.items[i].setDirty(value);
-        }
-
         pub fn invalidate(self: *Self) void {
             inline for (0..count) |i| self.items[i].invalidate();
         }
@@ -183,10 +172,6 @@ fn Band(comptime tag: u8, comptime wants: ?f32) type {
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
         pub fn deinit(_: *Self, _: *Context) void {}
-        pub fn isDirty(_: *const Self) bool {
-            return false;
-        }
-        pub fn setDirty(_: *Self, _: bool) void {}
         pub fn invalidate(_: *Self) void {}
         pub fn draw(_: *Self, _: *Context, _: *Painter) !void {}
 

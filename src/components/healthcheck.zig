@@ -93,9 +93,6 @@ pub const Healthcheck = struct {
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    /// True to begin with: it has never been drawn.
-    dirty: bool = true,
-
     pub fn init(
         allocator: std.mem.Allocator,
         environ: std.process.Environ,
@@ -166,21 +163,12 @@ pub const Healthcheck = struct {
         return .nothing;
     }
 
-    pub fn isDirty(self: *const Healthcheck) bool {
-        return self.dirty;
-    }
-
-    pub fn setDirty(self: *Healthcheck, value: bool) void {
-        self.dirty = value;
-    }
-
     /// Every shaped piece goes, for after the atlas is rebuilt at a different
     /// scale, for the reason `OpenFile.invalidate` gives.
     pub fn invalidate(self: *Healthcheck) void {
         var all: [piece_count]*Piece = undefined;
         self.pieces(&all);
         for (all) |target| target.layout.shaped = false;
-        self.dirty = true;
     }
 
     const piece_count = 4 + tools.Tool.all.len * 3;

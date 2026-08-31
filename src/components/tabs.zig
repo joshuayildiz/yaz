@@ -82,7 +82,6 @@ pub const Tabs = struct {
     rects: std.ArrayList(Rect) = .empty,
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-    dirty: bool = true,
 
     pub fn deinit(self: *Tabs, cx: *Context) void {
         self.rects.deinit(cx.allocator);
@@ -111,19 +110,10 @@ pub const Tabs = struct {
         self.rect = rect;
     }
 
-    pub fn isDirty(self: *const Tabs) bool {
-        return self.dirty;
-    }
-
-    pub fn setDirty(self: *Tabs, value: bool) void {
-        self.dirty = value;
-    }
-
     /// The names go too, but they are not the bar's to drop: each belongs to
     /// the file it names, and `OpenFile.invalidate` is what gives it up.
     pub fn invalidate(self: *Tabs) void {
         self.bullet.shaped = false;
-        self.dirty = true;
     }
 
     pub fn update(self: *Tabs, cx: *Context, event: Event) !Intent {
@@ -201,7 +191,7 @@ pub const Tabs = struct {
             // split they have different answers: the ground says whether the
             // file is on screen at all, and the name's colour says whether it is
             // the one being typed into.
-            const on_screen = file.shown;
+            const on_screen = cx.onScreen(file);
             if (on_screen) try painter.add(shown_key, .solid(
                 .{ left, self.rect.y },
                 .{ width, @max(0, self.rect.height - line) },
@@ -214,7 +204,7 @@ pub const Tabs = struct {
                 .{ line, @max(0, self.rect.height - line) },
             ));
 
-            const key = if (file.focused) name_key else other_key;
+            const key = if (cx.showing() == file) name_key else other_key;
             const baseline = @round(self.rect.y + @round(down * cx.atlas.scale) + cx.atlas.ascent);
 
             // The mark's room is taken whether or not it is drawn, so a file

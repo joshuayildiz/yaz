@@ -24,23 +24,115 @@ const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
-const HList = @import("./hlist.zig").HList;
 const VTuple = @import("./vtuple.zig").VTuple;
 const Tabs = @import("./tabs.zig").Tabs;
 const TextView = @import("./text_view.zig").TextView;
 
-/// Left to right, one per file on screen. A list rather than a tuple because
-/// how many there are is not known until the program runs.
-pub const Views = HList(TextView);
+/// Left to right, one per file on screen.
+///
+/// Which files those are is not this to decide or to remember: it is
+/// `cx.columns`, and a column is made from it for as long as it takes to place
+/// it, draw it, or hand it an event. What is kept is where each one ended up,
+/// so a press can be turned back into the column it fell in.
+pub const Views = struct {
+    rects: std.ArrayList(Rect) = .empty,
+
+    rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+
+    pub fn deinit(self: *Views, cx: *Context) void {
+        self.rects.deinit(cx.allocator);
+    }
+
+    /// Nothing shaped is kept here: what a column draws belongs to its file,
+    /// and the context drops that for every file it holds.
+    pub fn invalidate(_: *Views) void {}
+
+    /// Whatever it is given. How wide the columns are is a row's business; how
+    /// tall they are is not, so it never asks for a height of its own.
+    pub fn height(_: *const Views, _: *Context) ?f32 {
+        return null;
+    }
+
+    pub fn place(self: *Views, cx: *Context, rect: Rect) void {
+        self.rect = rect;
+
+        // Room for one more than there are, so `place` can fail to grow the
+        // list and still leave every column somewhere sensible.
+        self.rects.resize(cx.allocator, cx.columns.items.len) catch return;
+
+        var left = rect.x;
+        for (cx.columns.items, self.rects.items, 1..) |file, *slot, nth| {
+            const right = self.edge(cx, nth);
+            slot.* = .{ .x = left, .y = rect.y, .width = right - left, .height = rect.height };
+            left = right;
+
+            var column: TextView = .init(file, slot.*);
+            column.place(cx, slot.*);
+        }
+    }
+
+    pub fn draw(self: *Views, cx: *Context, painter: *Painter) !void {
+        for (cx.columns.items, 0..) |file, which| {
+            if (which >= self.rects.items.len) break;
+            var column: TextView = .init(file, self.rects.items[which]);
+            try column.draw(cx, painter);
+        }
+    }
+
+    pub fn update(self: *Views, cx: *Context, event: Event) !Intent {
+        switch (event) {
+            .press => |at| {
+                const which = self.over(at) orelse return .nothing;
+                if (cx.focus != which) {
+                    cx.focus = which;
+                    cx.changed();
+                }
+                cx.holding = which;
+                return self.tell(cx, which, event);
+            },
+            // Held, so a drag that wanders out of the column it began in stays
+            // with it. Only the pointer is caught that way: typing goes to the
+            // focused column even mid-drag.
+            .move => |at| return self.tell(cx, cx.holding orelse self.over(at) orelse return .nothing, event),
+            .release => {
+                const which = cx.holding orelse return .nothing;
+                cx.holding = null;
+                return self.tell(cx, which, event);
+            },
+            // Turns whatever it is under without deciding where typing lands.
+            .wheel => |wheel| return self.tell(cx, self.over(wheel.at) orelse return .nothing, event),
+            else => return self.tell(cx, cx.focus, event),
+        }
+    }
+
+    fn tell(self: *Views, cx: *Context, which: usize, event: Event) !Intent {
+        if (which >= cx.columns.items.len or which >= self.rects.items.len) return .nothing;
+        var column: TextView = .init(cx.columns.items[which], self.rects.items[which]);
+        return column.update(cx, event);
+    }
+
+    /// Where the nth column ends, counted from one. Worked out rather than
+    /// remembered so that the columns always meet exactly, whatever the
+    /// fractions, and so `place` and `over` cannot disagree.
+    fn edge(self: *const Views, cx: *Context, nth: usize) f32 {
+        const count = cx.columns.items.len;
+        if (count == 0) return self.rect.x;
+        const share = self.rect.width * @as(f32, @floatFromInt(nth)) / @as(f32, @floatFromInt(count));
+        return @round(self.rect.x + share);
+    }
+
+    fn over(self: *const Views, at: [2]f32) ?usize {
+        for (self.rects.items, 0..) |rect, which| {
+            if (rect.contains(at)) return which;
+        }
+        return null;
+    }
+};
 
 const Stack = VTuple(&.{ Tabs, Views });
 
 pub const Workbench = struct {
     stack: Stack,
-
-    /// True when a column has come or gone, or the keyboard has moved between
-    /// them. Neither is inside a member, so nothing else can answer for it.
-    dirty: bool = false,
 
     pub fn init(bar: Tabs, row: Views) Workbench {
         var self: Workbench = .{ .stack = .init(.{ bar, row }) };
@@ -55,21 +147,11 @@ pub const Workbench = struct {
         self.stack.deinit(cx);
     }
 
-    pub fn isDirty(self: *const Workbench) bool {
-        return self.dirty or self.stack.isDirty();
-    }
-
-    pub fn setDirty(self: *Workbench, value: bool) void {
-        self.dirty = value;
-        self.stack.setDirty(value);
-    }
-
     pub fn invalidate(self: *Workbench) void {
         self.stack.invalidate();
     }
 
     pub fn place(self: *Workbench, cx: *Context, rect: Rect) void {
-        self.tell(cx);
         self.stack.place(cx, rect);
     }
 
@@ -135,7 +217,7 @@ pub const Workbench = struct {
                 // follows it into the column it landed in -- wherever the press
                 // that chose it happened.
                 self.stack.focusOn(Views);
-                self.dirty = true;
+                cx.changed();
                 return .nothing;
             },
             .only => |path| {
@@ -159,38 +241,24 @@ pub const Workbench = struct {
     /// cannot disagree with what is on screen -- a press that moves the
     /// keyboard to another column moves the tab in front with it, and nothing
     /// had to tell the bar so.
-    fn tell(self: *Workbench, cx: *Context) void {
-        const row = self.views();
-
-        // Written every frame rather than kept in step, because a file leaves a
-        // column without anything being told. Whether it has been changed is
-        // not written at all: that is the file's own answer.
-        for (cx.files.items) |file| {
-            file.shown = false;
-            file.focused = false;
-        }
-        for (row.items.items) |*view| view.file.shown = true;
-        if (row.focused()) |view| view.file.focused = true;
-    }
-
     /// Puts `path` in front of the reader, in the column with the keyboard.
     ///
     /// A column already showing it is left alone rather than a second copy
-    /// opened, which is both what one expects and the only way two views of one
-    /// file cannot drift apart -- there is only one of each file, so they would
-    /// be two views of the same caret.
-    fn reveal(self: *Workbench, cx: *Context, path: []const u8) !void {
+    /// opened, which is both what one expects and the only way two columns
+    /// cannot drift apart -- there is one of each file, so they would be two
+    /// views of the same caret.
+    fn reveal(_: *Workbench, cx: *Context, path: []const u8) !void {
         const wanted = try cx.open(path);
 
-        const row = self.views();
-        for (row.items.items, 0..) |*view, which| {
-            if (view.file != wanted) continue;
-            row.focus = which;
-            return;
+        if (cx.columnOf(wanted)) |which| {
+            cx.focus = which;
+        } else if (cx.focus < cx.columns.items.len) {
+            cx.columns.items[cx.focus] = wanted;
+        } else {
+            try cx.columns.append(cx.allocator, wanted);
+            cx.focus = cx.columns.items.len - 1;
         }
-
-        const view = row.focused() orelse return;
-        view.show(wanted);
+        cx.changed();
     }
 
     /// Shows `path` and nothing else: every other column goes back to being
@@ -199,27 +267,13 @@ pub const Workbench = struct {
     /// Choosing one of something is choosing it instead of the rest, which is
     /// what makes this the plain binding and `cmd+alt` the one that adds.
     fn showOnly(self: *Workbench, cx: *Context, path: []const u8) !void {
-        const row = self.views();
+        const wanted = try cx.open(path);
 
-        // Down to one column, keeping the one already showing it if there is
-        // one. Nothing is closed: a column that goes stops pointing at a file,
-        // and the file stays open.
-        var column: usize = 0;
-        while (row.items.items.len > 1) {
-            const showing = row.items.items[column].file.path;
-            if (showing != null and std.mem.eql(u8, showing.?, path)) {
-                column += 1;
-                continue;
-            }
-            _ = row.remove(column);
-        }
-
-        row.focus = 0;
+        cx.columns.clearRetainingCapacity();
+        try cx.columns.append(cx.allocator, wanted);
+        cx.focus = 0;
         self.stack.focusOn(Views);
-        // Points the one that is left at the file, or does nothing when it is
-        // the one that was kept.
-        try self.reveal(cx, path);
-        self.dirty = true;
+        cx.changed();
     }
 
     /// Puts the nth file on the bar beside what is already split, or takes it
@@ -229,33 +283,27 @@ pub const Workbench = struct {
     /// caret where it was, so putting it back costs nothing. The last column
     /// cannot go -- something has to be there to type into.
     fn toggleSplit(self: *Workbench, cx: *Context, which: usize) !void {
-        const row = self.views();
         const wanted = self.tabs().nth(cx, which) orelse return;
 
-        for (row.items.items, 0..) |*view, column| {
-            if (view.file != wanted) continue;
-
-            if (row.items.items.len == 1) return;
-            _ = row.remove(column);
-
-            self.stack.focusOn(Views);
-            self.dirty = true;
-            return;
+        if (cx.columnOf(wanted)) |column| {
+            if (cx.columns.items.len == 1) return;
+            _ = cx.columns.orderedRemove(column);
+            if (cx.focus >= cx.columns.items.len) cx.focus = cx.columns.items.len - 1;
+        } else {
+            // Columns follow the bar's order, so one put back lands where it
+            // was rather than on the end.
+            const listed = cx.indexOf(wanted) orelse return;
+            var at: usize = 0;
+            for (cx.columns.items) |shown| {
+                const seen = cx.indexOf(shown) orelse continue;
+                if (seen < listed) at += 1;
+            }
+            try cx.columns.insert(cx.allocator, at, wanted);
+            cx.focus = at;
         }
 
-        // Columns follow the bar's order, so one put back lands where it was
-        // rather than on the end.
-        const listed = cx.indexOf(wanted) orelse return;
-        var at: usize = 0;
-        for (row.items.items) |*view| {
-            const seen = cx.indexOf(view.file) orelse continue;
-            if (seen < listed) at += 1;
-        }
-
-        try row.insert(cx, at, .init(wanted));
-        row.focus = at;
         self.stack.focusOn(Views);
-        self.dirty = true;
+        cx.changed();
     }
 
     /// Takes the file the focused column is showing out of the window and out
@@ -265,16 +313,14 @@ pub const Workbench = struct {
     /// The column takes the first file nothing else is showing, so closing
     /// walks back through what is open; when there is nothing left it goes
     /// empty, which is where a window with no file named starts.
-    fn shut(self: *Workbench, cx: *Context) !void {
-        const row = self.views();
-
-        const view = row.focused() orelse return;
-        const closing = view.file;
+    fn shut(_: *Workbench, cx: *Context) !void {
+        const closing = cx.showing() orelse return;
 
         // One fewer column to split into. The last one stays, because
         // something has to be there to type into.
-        if (row.items.items.len > 1) {
-            _ = row.remove(row.focus);
+        if (cx.columns.items.len > 1) {
+            _ = cx.columns.orderedRemove(cx.focus);
+            if (cx.focus >= cx.columns.items.len) cx.focus = cx.columns.items.len - 1;
         } else {
             // Being the only one, it takes the first file nothing else is
             // showing instead, or a blank one when there is none.
@@ -285,7 +331,7 @@ pub const Workbench = struct {
                     break;
                 }
             }
-            view.show(next orelse try cx.blank());
+            cx.columns.items[0] = next orelse try cx.blank();
         }
 
         cx.close(closing);
@@ -297,6 +343,6 @@ pub const Workbench = struct {
             if (file.path != null) break;
         } else cx.running = false;
 
-        self.dirty = true;
+        cx.changed();
     }
 };

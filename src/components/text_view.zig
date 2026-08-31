@@ -55,64 +55,25 @@ const glyph_key: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = config.text
 const caret_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.caret_colour };
 const bar_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.scrollbar_colour };
 
+/// One column: a file, and the room it has been given.
+///
+/// Made where it is needed rather than kept, because there is nothing left in
+/// it to keep. Everything a column remembers between frames -- the caret, the
+/// scroll, the gesture in flight -- is on the file, since a file is shown in at
+/// most one column at a time.
 pub const TextView = struct {
-    /// What this view is showing. Borrowed: the file is owned by the context,
-    /// which is what lets a column stop showing one without giving anything up,
-    /// and what stops two columns ever holding two copies of one file.
-    ///
-    /// The caret and the scroll are on it rather than here for the same reason.
-    /// A file is in at most one column at a time, so there is only ever one
-    /// answer, and it has to survive being looked away from.
     file: *OpenFile,
-
-    /// What is left of a gesture too small to have moved a whole pixel yet. A
-    /// trackpad reports fractions, and without this a slow drag would round
-    /// away to nothing every event.
-    pending: f32 = 0,
-
-    /// Set by an edit, acted on by `scrollToCaret`. Typing that has gone off
-    /// screen brings the view back; clicking reads the view where it is.
-    follow_caret: bool = false,
-
-    /// The room this view has been given. Everything it draws and everything it
-    /// is asked about a point on screen is measured from here.
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    /// Where on the thumb the pointer took hold, while it is holding it. Null
-    /// the rest of the time, which is also the answer to whether a drag is on.
-    drag: ?f32 = null,
-
-    /// Something changed that has not been drawn yet. Read through `isDirty`
-    /// and cleared through `setDirty`, so that a view holding views of its own
-    /// can answer for all of them.
-    dirty: bool = true,
-
-    pub fn init(file: *OpenFile) TextView {
-        return .{ .file = file };
+    pub fn init(file: *OpenFile, rect: Rect) TextView {
+        return .{ .file = file, .rect = rect };
     }
 
-    /// Points this view at another file. Nothing is handed back and nothing is
-    /// thrown away: what it was showing stays open and out of sight, with the
-    /// caret where the reader left it.
-    ///
-    /// The scroll it comes back with is clamped by the next `place`, which is
-    /// the only thing that knows how much room this column has.
-    pub fn show(self: *TextView, file: *OpenFile) void {
-        self.file = file;
-        self.pending = 0;
-        // Not set even when the caret is off screen: the remembered scroll is
-        // what was being looked at, and following the caret would overrule it.
-        self.follow_caret = false;
-        self.drag = null;
-        self.dirty = true;
-    }
-
-    pub fn deinit(_: *TextView, _: *Context) void {}
-
-    fn insert(self: *TextView, text: []const u8) !void {
+    fn insert(self: *TextView, cx: *Context, text: []const u8) !void {
         _ = try self.file.insert(self.file.cursor, text);
         self.file.cursor += text.len;
-        self.follow_caret = true;
+        self.file.follow_caret = true;
+        cx.changed();
     }
 
     /// Deletes the character before the caret, answering whether there was one.
@@ -122,17 +83,8 @@ pub const TextView = struct {
 
         _ = try self.file.delete(from, self.file.cursor - from);
         self.file.cursor = from;
-        self.follow_caret = true;
+        self.file.follow_caret = true;
         return true;
-    }
-
-    /// Whether anything here has changed since it was last drawn.
-    pub fn isDirty(self: *const TextView) bool {
-        return self.dirty;
-    }
-
-    pub fn setDirty(self: *TextView, value: bool) void {
-        self.dirty = value;
     }
 
     /// Hands the view the room it has. Called before anything is drawn or asked
@@ -160,39 +112,33 @@ pub const TextView = struct {
             // give them to yet.
             .quit, .resized, .find, .tab, .split, .close, .up, .down, .cancel => {},
             .text => |typed| {
-                try self.insert(typed);
-                self.dirty = true;
+                try self.insert(cx, typed);
             },
             .newline => {
-                try self.insert("\n");
-                self.dirty = true;
+                try self.insert(cx, "\n");
             },
-            .backspace => self.dirty = try self.backspace() or self.dirty,
+            .backspace => if (try self.backspace()) cx.changed(),
             .wheel => |wheel| {
                 self.scrollBy(cx, wheel.delta);
-                self.dirty = true;
             },
             .press => |at| {
                 // The scrollbar is asked first, so a press on it moves the view
                 // rather than the caret.
                 if (self.thumbGrab(cx, at)) |grab| {
-                    self.drag = grab;
+                    self.file.drag = grab;
                     self.dragTo(cx, at[1], grab);
-                    self.dirty = true;
                     return .nothing;
                 }
                 try self.moveCaretTo(cx, at);
-                self.dirty = true;
             },
             .move => |at| {
                 // The only reason motion is looked at at all: OPTIMIZATIONS.md 2
                 // has the loop ignoring it, and a redraw per motion event is what
                 // that buys.
-                const grab = self.drag orelse return .nothing;
+                const grab = self.file.drag orelse return .nothing;
                 self.dragTo(cx, at[1], grab);
-                self.dirty = true;
             },
-            .release => self.drag = null,
+            .release => self.file.drag = null,
         }
         return .nothing;
     }
@@ -210,9 +156,9 @@ pub const TextView = struct {
     /// Moves the view by `pixels`, keeping the offset a whole number of them.
     /// What is left over waits for the next event rather than rounding away.
     fn scrollBy(self: *TextView, cx: *Context, pixels: f32) void {
-        self.pending += pixels;
-        const whole = @trunc(self.pending);
-        self.pending -= whole;
+        self.file.pending += pixels;
+        const whole = @trunc(self.file.pending);
+        self.file.pending -= whole;
         self.scrollTo(cx, self.file.scroll + whole);
     }
 
@@ -246,23 +192,25 @@ pub const TextView = struct {
         const count: f32 = @floatFromInt(self.file.buffer.lineCount());
         // The inverse of the thumb, whose top is `scroll * height / content`.
         const content = self.origin(cx)[1] - self.rect.y + count * cx.atlas.line_height;
-        self.pending = 0;
+        self.file.pending = 0;
         self.scrollTo(cx, @round((y - self.rect.y - grab) * content / self.rect.height));
     }
 
     /// Brings the caret's line into view, and clears the flag that asked for it.
     fn scrollToCaret(self: *TextView, cx: *Context) void {
-        self.follow_caret = false;
+        self.file.follow_caret = false;
         const index = self.file.buffer.lineAt(self.file.cursor);
         // A jump is not a gesture, so anything a gesture had part-way through
         // it goes rather than being applied on top of the answer.
-        self.pending = 0;
+        self.file.pending = 0;
         const top = self.origin(cx)[1] - self.rect.y;
         self.scrollTo(cx, scrollToCentre(self.file.scroll, index, top, self.rect.height, cx.atlas.line_height));
     }
 
     fn scrollTo(self: *TextView, cx: *Context, to: f32) void {
+        const was = self.file.scroll;
         self.file.scroll = @min(self.furthest(cx), @max(0, to));
+        if (self.file.scroll != was) cx.changed();
     }
 
     /// The far end of the scroll: where the last line reaches the top of the
@@ -293,7 +241,7 @@ pub const TextView = struct {
         // Typing that has gone off screen brings the view back to it. Read here
         // rather than acted on at the keystroke that set it: the view has to
         // have been given its room before it can say what is in it.
-        if (self.follow_caret) self.scrollToCaret(cx);
+        if (self.file.follow_caret) self.scrollToCaret(cx);
 
         const at = self.origin(cx);
         const x = at[0];
@@ -381,13 +329,9 @@ pub const TextView = struct {
         const entry = &self.file.lines.items[index];
         if (!entry.shaped) try cx.atlas.shapeLine(try self.file.buffer.lineSlice(index), entry);
 
+        const was = self.file.cursor;
         self.file.cursor = self.file.buffer.lineStart(index) + caretOffset(entry.carets.items, point[0] - at[0]);
-    }
-
-    /// The file's own cache is not dropped here: the context does that for
-    /// every file it holds, shown or not.
-    pub fn invalidate(self: *TextView) void {
-        self.dirty = true;
+        if (self.file.cursor != was) cx.changed();
     }
 };
 
