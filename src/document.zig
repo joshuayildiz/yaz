@@ -117,16 +117,23 @@ pub const Buffer = struct {
         return .{ .line = line, .removed = self.reindexDelete(line, at, count), .added = 0 };
     }
 
-    /// Line `index` without its newline. The result borrows from the buffer and
-    /// is good until the next edit.
-    pub fn lineSlice(self: *Buffer, index: usize) ![]const u8 {
+    /// Where line `index` begins and ends, its newline excluded. The last line
+    /// has no newline and runs to the end of the document.
+    fn lineRange(self: *const Buffer, index: usize) struct { from: usize, to: usize } {
         std.debug.assert(index < self.lineCount());
         const from = self.starts.items[index];
         const to = if (index + 1 < self.lineCount())
             self.starts.items[index + 1] - 1
         else
             self.byteLen();
-        return self.slice(from, to);
+        return .{ .from = from, .to = to };
+    }
+
+    /// Line `index` without its newline. The result borrows from the buffer and
+    /// is good until the next edit.
+    pub fn lineSlice(self: *Buffer, index: usize) ![]const u8 {
+        const range = self.lineRange(index);
+        return self.slice(range.from, range.to);
     }
 
     /// Turns an offset within a line, which is what layout and hit-testing both
@@ -139,13 +146,8 @@ pub const Buffer = struct {
     /// Without reading it. A cached line is never fetched, so this is what
     /// checks the cache still lines up with the document.
     pub fn lineLength(self: *const Buffer, index: usize) usize {
-        std.debug.assert(index < self.lineCount());
-        const from = self.starts.items[index];
-        const to = if (index + 1 < self.lineCount())
-            self.starts.items[index + 1] - 1
-        else
-            self.byteLen();
-        return to - from;
+        const range = self.lineRange(index);
+        return range.to - range.from;
     }
 
     /// The offset one character before `offset`, or `offset` at the start of the
