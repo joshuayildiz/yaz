@@ -551,10 +551,7 @@ pub const Document = struct {
     }
 
     pub fn deinit(self: *Document) void {
-        for (self.lines.items) |*entry| {
-            entry.sprites.deinit(self.gpa);
-            entry.carets.deinit(self.gpa);
-        }
+        for (self.lines.items) |*entry| entry.deinit(self.gpa);
         self.lines.deinit(self.gpa);
         self.buffer.deinit();
     }
@@ -611,10 +608,7 @@ fn spliceLines(
     // different length from the document it describes.
     try cache.ensureUnusedCapacity(gpa, added);
 
-    for (cache.items[first..][0..removed]) |*entry| {
-        entry.sprites.deinit(gpa);
-        entry.carets.deinit(gpa);
-    }
+    for (cache.items[first..][0..removed]) |*entry| entry.deinit(gpa);
     std.mem.copyForwards(LineLayout, cache.items[first..], cache.items[first + removed ..]);
     cache.items.len -= removed;
 
@@ -644,10 +638,7 @@ fn testCache(gpa: std.mem.Allocator) !std.ArrayList(LineLayout) {
 }
 
 fn testFree(gpa: std.mem.Allocator, cache: *std.ArrayList(LineLayout)) void {
-    for (cache.items) |*entry| {
-        entry.sprites.deinit(gpa);
-        entry.carets.deinit(gpa);
-    }
+    for (cache.items) |*entry| entry.deinit(gpa);
     cache.deinit(gpa);
 }
 

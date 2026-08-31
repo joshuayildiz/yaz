@@ -54,8 +54,7 @@ const Piece = struct {
 
     fn deinit(self: *Piece, gpa: std.mem.Allocator) void {
         gpa.free(self.text);
-        self.layout.sprites.deinit(gpa);
-        self.layout.carets.deinit(gpa);
+        self.layout.deinit(gpa);
     }
 
     /// How wide the shaped text is. `shapeLine` leaves a last caret at the pen

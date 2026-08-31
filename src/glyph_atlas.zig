@@ -127,6 +127,11 @@ pub const LineLayout = struct {
     bytes: usize = 0,
 
     shaped: bool = false,
+
+    pub fn deinit(self: *LineLayout, gpa: std.mem.Allocator) void {
+        self.sprites.deinit(gpa);
+        self.carets.deinit(gpa);
+    }
 };
 
 /// The atlas texture's dimensions, which the vertex shader needs to turn a

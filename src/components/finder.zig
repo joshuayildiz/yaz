@@ -107,15 +107,11 @@ pub const Finder = struct {
         self.all.deinit(self.gpa);
         self.matches.deinit(self.gpa);
 
-        self.query_layout.sprites.deinit(self.gpa);
-        self.query_layout.carets.deinit(self.gpa);
-        self.count_layout.sprites.deinit(self.gpa);
-        self.count_layout.carets.deinit(self.gpa);
+        self.query_layout.deinit(self.gpa);
+        self.count_layout.deinit(self.gpa);
         for (self.rows.items) |*row| {
-            row.name.sprites.deinit(self.gpa);
-            row.name.carets.deinit(self.gpa);
-            row.directory.sprites.deinit(self.gpa);
-            row.directory.carets.deinit(self.gpa);
+            row.name.deinit(self.gpa);
+            row.directory.deinit(self.gpa);
         }
         self.rows.deinit(self.gpa);
 
