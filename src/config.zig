@@ -21,26 +21,28 @@ pub const text_colour: [4]f32 = .{ 0, 0, 0, 1 };
 pub const caret_colour: [4]f32 = .{ 0, 0, 0, 1 };
 pub const scrollbar_colour: [4]f32 = .{ 0, 0, 0, 0.28 };
 
-// The healthcheck's card and the chip around the command on it.
+// The two things yaz draws that are not a document: the healthcheck's card, and
+// the finder's panel. Both are surfaces laid over the window rather than boxes
+// drawn in it, so they carry their own ground and their own edge.
 
 pub const panel_colour: [4]f32 = .{ 0.965, 0.965, 0.975, 1 };
 pub const chip_colour: [4]f32 = .{ 0.855, 0.855, 0.875, 1 };
 
+/// A hairline round a surface that is floating over something else. Strong
+/// enough to hold an edge against the text behind it, which a rule laid on the
+/// page does not have to do.
+pub const edge_colour: [4]f32 = .{ 0.78, 0.78, 0.81, 1 };
+
+/// The row return would open. A tint rather than a mark, because by the time
+/// there is a panel there are already edges on the screen for it to agree with.
+pub const selection_colour: [4]f32 = .{ 0.855, 0.865, 0.90, 1 };
+
 /// Paths and anything else said quietly.
 pub const muted_colour: [4]f32 = .{ 0.40, 0.40, 0.44, 1 };
-
-/// Hairlines: under the finder's query, and the leader that ties a chosen
-/// filename to the directory it is in.
-pub const rule_colour: [4]f32 = .{ 0, 0, 0, 0.14 };
 
 /// Quieter still: the directory in front of a filename, and a count nobody is
 /// reading unless they went looking for it.
 pub const faint_colour: [4]f32 = .{ 0.62, 0.62, 0.66, 1 };
-
-/// Laid over the document while the finder is up. White rather than black, and
-/// not opaque: what is behind stays legible as a ghost, so the window does not
-/// feel like it went somewhere else.
-pub const scrim_colour: [4]f32 = .{ 1, 1, 1, 0.955 };
 
 /// A tool that runs, and one that does not. Both are said in words as well, so
 /// the colour is a second signal rather than the only one.

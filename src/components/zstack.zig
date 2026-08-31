@@ -1,9 +1,9 @@
 //! A stack of components, back to front.
 //!
-//! Everything in it draws, bottom first, so what is behind shows through what is
-//! over it -- the finder's scrim is a sheet of near-white laid on a document,
-//! not a page that replaced one. Only the component in front is told what
-//! happened, which is what being in front means.
+//! Everything in it draws, bottom first, so what is behind is still there --
+//! the finder is two small surfaces over a document, not a page that replaced
+//! one, and the code either side of them is not dimmed. Only the component in
+//! front is told what happened, which is what being in front means.
 //!
 //! The members are fixed at compile time and their order is not. `raise` and
 //! `lowerFront` move one, and that is the whole of showing a panel and putting

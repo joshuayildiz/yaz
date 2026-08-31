@@ -138,8 +138,16 @@ to open, escape to close.
 **Nothing is offered until something is typed.** A list of every file in the
 repository is not an answer to a question nobody has asked yet, and drawing one
 would be a screenful of shaping done on the way to being replaced by the first
-keystroke. Until then the panel is the line you are typing and how many files
-there are to search.
+keystroke. Until then the panel is one box: the line you are typing, and how many
+files there are to search.
+
+The panel hangs a short way from the top of the window, and the input and the
+list are **two separate surfaces** with a gap between them. Neither dims what is
+behind it. Each is opaque with a hairline edge and asks for exactly the height it
+needs — one line of text for the input, one row per match for the list — so the
+list is absent rather than empty when nothing has been typed, and the panel is
+never taller than what is in it. The row return would open is tinted across the
+full width of the list.
 
 It does no listing and no matching of its own. `rg --files` says what there is
 to choose between, so .gitignore is honoured for free, and `fzf --filter` ranks
@@ -815,9 +823,9 @@ children, so the tree is the type system rather than a vtable.
 **A window is a `ZStack`, and it is the whole of what is on screen.** Its members
 are fixed at compile time and their order is not: *everything in it draws, back
 to front*, and *only the one in front is told what happened*. That is why the
-finder's scrim can be near-white and translucent — the document is genuinely
-still being drawn under it — and why a click cannot reach a view the finder is
-covering. `raise` and `lowerFront` are the whole of opening a panel and putting
+finder can be two small surfaces with the code still at full contrast either
+side of them — the document is genuinely still being drawn — and why a click
+cannot reach a view the finder is covering. `raise` and `lowerFront` are the whole of opening a panel and putting
 it away; there is no separate notion of a thing being open.
 
 **The tool check decides which stack there is, once, in `main`.** With ripgrep or

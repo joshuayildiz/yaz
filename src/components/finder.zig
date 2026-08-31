@@ -5,9 +5,14 @@
 //! against what has been typed. Both are checked at startup, so by the time one
 //! of these exists they are known to run.
 //!
-//! The panel is a `VStack` of two: the line being typed, and what it matched.
-//! The query says how tall it is -- one line, a rule, and the air around it --
-//! and the list takes the rest, so neither has to be told where the other ends.
+//! The panel is a `VStack` of two surfaces: the line being typed, and what it
+//! matched. Each says how tall it is -- the query is one line of text and its
+//! padding, the list is as many rows as it has -- so an empty query is a single
+//! box with nothing under it, and the panel is never larger than what is in it.
+//!
+//! It is laid over the document rather than replacing it, and nothing is dimmed:
+//! the surfaces carry their own ground and their own edge, so the code either
+//! side of them stays at full contrast.
 //!
 //! Nothing is offered until something is typed. A list of every file in the
 //! repository is not an answer to a question nobody has asked yet, and drawing
@@ -36,28 +41,29 @@ const VStack = @import("./vstack.zig").VStack;
 
 const tools = @import("../tools.zig");
 
-/// Above a view's 0, 1 and 2, so the overlay covers the text rather than
-/// interleaving with it.
-const scrim_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = config.scrim_colour };
-const rule_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.rule_colour };
-const accent_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.bad_colour };
-const caret_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.caret_colour };
+/// Above a view's 0, 1 and 2. Each of these covers the one before it, so they
+/// are separate layers rather than an order of drawing: within a layer the
+/// painter is free to reorder, and it does.
+const edge_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = config.edge_colour };
+const surface_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.panel_colour };
+const chosen_key: Key = .{ .layer = 5, .pipeline = .solid, .colour = config.selection_colour };
+const caret_key: Key = .{ .layer = 6, .pipeline = .solid, .colour = config.caret_colour };
 
-/// Words, above both. Which of the three a row is set in is what says whether it
-/// is the chosen one, so the colours are keys rather than an argument.
-const text_key: Key = .{ .layer = 5, .pipeline = .glyphs, .colour = config.text_colour };
-const muted_key: Key = .{ .layer = 5, .pipeline = .glyphs, .colour = config.muted_colour };
-const faint_key: Key = .{ .layer = 5, .pipeline = .glyphs, .colour = config.faint_colour };
+/// Words, above all of it. Which of the three a row is set in is what says
+/// whether it is the chosen one, so the colours are keys rather than an
+/// argument.
+const text_key: Key = .{ .layer = 7, .pipeline = .glyphs, .colour = config.text_colour };
+const muted_key: Key = .{ .layer = 7, .pipeline = .glyphs, .colour = config.muted_colour };
+const faint_key: Key = .{ .layer = 7, .pipeline = .glyphs, .colour = config.faint_colour };
 
-/// The column the whole thing is set in, as a share of the window, and where it
-/// starts down it. Nothing is boxed: the scrim is the ground, and these two
-/// numbers are the whole layout.
-const column_share = 0.38;
-const top_share = 0.20;
+/// How wide the panel is, as a share of the window.
+const column_share = 0.46;
 
-/// In points, scaled like the font.
-const accent = 3;
-const gap = 12;
+/// In points, scaled like the font: how far the panel hangs from the top of the
+/// window, the air inside a surface, and the gap that separates the two.
+const drop = 20;
+const pad = 9;
+const split = 8;
 
 /// Rows are set looser than body text. Air is most of what makes a list read as
 /// set rather than dumped.
@@ -69,6 +75,17 @@ const visible_rows = 12;
 /// A hairline, whatever the display scale.
 fn hairline(atlas: *const GlyphAtlas) f32 {
     return @max(1, @round(atlas.scale));
+}
+
+/// One floating surface: an edge, and a ground inset inside it. Two quads rather
+/// than four sides, which is both fewer and impossible to get out of square.
+fn surface(painter: *Painter, atlas: *const GlyphAtlas, rect: Rect) !void {
+    const line = hairline(atlas);
+    try painter.add(edge_key, .solid(.{ rect.x, rect.y }, .{ rect.width, rect.height }));
+    try painter.add(surface_key, .solid(
+        .{ rect.x + line, rect.y + line },
+        .{ @max(0, rect.width - 2 * line), @max(0, rect.height - 2 * line) },
+    ));
 }
 
 /// The line being typed, with what it matched said quietly at the far end of the
@@ -94,12 +111,22 @@ const Query = struct {
         self.count.deinit(self.gpa);
     }
 
-    /// One line, the rule under it, and the air either side of the rule. Stated
-    /// here rather than by the panel because the panel cannot know that this is
-    /// a line of text.
+    /// One line of text and the air round it, plus the gap that separates this
+    /// surface from the list. Stated here rather than by the panel because the
+    /// panel cannot know that this is a line of text.
     pub fn height(self: *const Query, atlas: *const GlyphAtlas) ?f32 {
         _ = self;
-        return atlas.line_height + 3 * @round(gap * atlas.scale);
+        return @round(atlas.line_height + 2 * @round(pad * atlas.scale) + @round(split * atlas.scale));
+    }
+
+    /// The box itself, which is shorter than the band by the gap below it.
+    fn box(self: *const Query, atlas: *const GlyphAtlas) Rect {
+        return .{
+            .x = self.rect.x,
+            .y = self.rect.y,
+            .width = self.rect.width,
+            .height = @round(atlas.line_height + 2 * @round(pad * atlas.scale)),
+        };
     }
 
     pub fn place(self: *Query, rect: Rect, atlas: *const GlyphAtlas) void {
@@ -160,16 +187,19 @@ const Query = struct {
     }
 
     pub fn draw(self: *Query, atlas: *GlyphAtlas, painter: *Painter) !void {
-        const scale = atlas.scale;
-        const spacing = @round(gap * scale);
-        const right = self.rect.x + self.rect.width;
-        const baseline = @round(self.rect.y + atlas.ascent);
+        const inset = @round(pad * atlas.scale);
+        const field = self.box(atlas);
+        try surface(painter, atlas, field);
+
+        const left = field.x + inset;
+        const right = field.x + field.width - inset;
+        const baseline = @round(field.y + inset + atlas.ascent);
 
         if (!self.layout.shaped) try atlas.shapeLine(self.typed.items, &self.layout);
-        try drawLine(painter, text_key, &self.layout, .{ self.rect.x, baseline });
+        try drawLine(painter, text_key, &self.layout, .{ left, baseline });
 
         try painter.add(caret_key, .solid(
-            .{ @round(self.rect.x + advance(&self.layout)), @round(baseline - atlas.ascent) },
+            .{ @round(left + advance(&self.layout)), @round(baseline - atlas.ascent) },
             .{ hairline(atlas), atlas.line_height },
         ));
 
@@ -184,13 +214,6 @@ const Query = struct {
             try atlas.shapeLine(label, &self.count);
         }
         try drawLine(painter, faint_key, &self.count, .{ @round(right - advance(&self.count)), baseline });
-
-        // A hairline across the measure, which is what says the query above it
-        // and the list below it are one thing.
-        try painter.add(rule_key, .solid(
-            .{ self.rect.x, @round(self.rect.y + atlas.line_height + spacing) },
-            .{ self.rect.width, hairline(atlas) },
-        ));
     }
 };
 
@@ -230,12 +253,14 @@ const Results = struct {
         for (&self.rows) |*row| row.deinit(self.gpa);
     }
 
-    /// Whatever is left under the query: a list is what a window has spare room
-    /// for, not something with a size of its own.
+    /// As many rows as there are, and nothing at all when there are none: an
+    /// empty box under an empty query would be a promise of something that is
+    /// not there.
     pub fn height(self: *const Results, atlas: *const GlyphAtlas) ?f32 {
-        _ = self;
-        _ = atlas;
-        return null;
+        const shown = @min(self.matches.len, visible_rows);
+        if (shown == 0) return 0;
+        const step = @round(atlas.line_height * leading);
+        return @round(@as(f32, @floatFromInt(shown)) * step + 2 * @round(pad * atlas.scale));
     }
 
     pub fn place(self: *Results, rect: Rect, atlas: *const GlyphAtlas) void {
@@ -317,49 +342,37 @@ const Results = struct {
     }
 
     pub fn draw(self: *Results, atlas: *GlyphAtlas, painter: *Painter) !void {
+        if (self.matches.len == 0) return;
         try self.layOut(atlas);
 
-        const scale = atlas.scale;
+        try surface(painter, atlas, self.rect);
+
+        const line = hairline(atlas);
+        const inset = @round(pad * atlas.scale);
         const step = @round(atlas.line_height * leading);
-        const spacing = @round(gap * scale);
-        const left = self.rect.x;
-        const right = self.rect.x + self.rect.width;
+        const left = self.rect.x + inset;
+        const right = self.rect.x + self.rect.width - inset;
 
         for (&self.rows, 0..) |*row, index| {
             const which = self.top_row + index;
             if (which >= self.matches.len) break;
 
             const is_chosen = which == self.selected;
-            const baseline = @round(self.rect.y + @as(f32, @floatFromInt(index)) * step + atlas.ascent);
+            const top = @round(self.rect.y + inset + @as(f32, @floatFromInt(index)) * step);
+            const baseline = @round(top + (step - atlas.line_height) / 2 + atlas.ascent);
 
-            // The selection is the filename going black while the rest stay
-            // grey, and a mark hanging in the margin. No bar behind it: value
-            // carries it, and a bar would be the only box on the screen.
-            if (is_chosen) {
-                const mark = @round(accent * scale);
-                try painter.add(accent_key, .solid(
-                    .{ left - spacing - mark, @round(baseline - atlas.ascent) },
-                    .{ mark, atlas.line_height },
-                ));
-            }
-
-            const directory_width = advance(&row.directory);
-
-            // A leader across the gap, on the chosen row only. Two flush edges
-            // with nothing between them read as two lists; this is what a
-            // contents page does about that. On every row it would be a texture
-            // rather than a connection, so it goes where the eye already is.
-            if (is_chosen and directory_width > 0) {
-                const from = @round(left + advance(&row.name) + spacing);
-                const to = @round(right - directory_width - spacing);
-                if (to > from) try painter.add(rule_key, .solid(
-                    .{ from, @round(baseline - atlas.ascent * 0.32) },
-                    .{ to - from, hairline(atlas) },
-                ));
-            }
+            // Edge to edge inside the border, so the tint reads as the row
+            // rather than as another box inside the one it is already in.
+            if (is_chosen) try painter.add(chosen_key, .solid(
+                .{ self.rect.x + line, top },
+                .{ @max(0, self.rect.width - 2 * line), step },
+            ));
 
             try drawLine(painter, if (is_chosen) text_key else muted_key, &row.name, .{ left, baseline });
-            try drawLine(painter, faint_key, &row.directory, .{ @round(right - directory_width), baseline });
+            try drawLine(painter, faint_key, &row.directory, .{
+                @round(right - advance(&row.directory)),
+                baseline,
+            });
         }
     }
 };
@@ -444,18 +457,19 @@ pub const Finder = struct {
         self.panel.setDirty(value);
     }
 
-    /// The panel is a measure down the middle: a share of the width, a fifth of
-    /// the way down, and as far as the window goes.
+    /// A measure down the middle, hanging a short way from the top of the
+    /// window. Its height is whatever the two surfaces asked for, since neither
+    /// of them wants what is left over.
     pub fn place(self: *Finder, rect: Rect, atlas: *const GlyphAtlas) void {
         self.rect = rect;
 
         const column = @round(rect.width * column_share);
-        const top = @round(rect.y + rect.height * top_share);
+        const top = @round(rect.y + @round(drop * atlas.scale));
         self.panel.place(.{
             .x = @round(rect.x + (rect.width - column) / 2),
             .y = top,
             .width = column,
-            .height = rect.y + rect.height - top,
+            .height = @max(0, rect.y + rect.height - top),
         }, atlas);
     }
 
@@ -571,14 +585,8 @@ pub const Finder = struct {
         painter.clipTo(self.rect);
         defer painter.clipTo(null);
 
-        // The ground the whole thing is set on. Everything below stays legible
-        // through it, which is what keeps this an overlay rather than a
-        // different screen.
-        try painter.add(scrim_key, .solid(
-            .{ self.rect.x, self.rect.y },
-            .{ self.rect.width, self.rect.height },
-        ));
-
+        // Nothing is laid over the document: the panel is two opaque surfaces
+        // and the code either side of them is not dimmed at all.
         try self.panel.draw(atlas, painter);
     }
 };
