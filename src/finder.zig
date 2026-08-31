@@ -228,6 +228,12 @@ pub const Finder = struct {
     /// Re-ranks against the query. An empty one is every candidate in the order
     /// ripgrep gave them; anything else is fzf's order.
     fn rank(self: *Finder) !void {
+        // The query is shaped like any other line, and `shapeLine` marks what
+        // it shaped as done. Nothing else clears that, so without this the
+        // query is drawn once -- empty, on the frame it opened -- and every
+        // character typed after goes on the panel without appearing on it.
+        self.query_layout.shaped = false;
+
         self.matches.clearRetainingCapacity();
         self.selected = 0;
         self.top_row = 0;
