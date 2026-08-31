@@ -84,16 +84,11 @@ Later builds skip it. Targeting macOS costs more the first time; see
 yaz               # an empty document
 yaz notes.md      # notes.md, with the caret at the top
 yaz new.md        # new.md does not exist: an empty document under that name
-yaz a.md b.md     # a.md, with b.md read and one cmd+P away
+yaz a.md b.md     # both, in equal columns
 ```
 
-There is one view, so one file is on screen at a time; the window takes its title
-from it. Naming more than one is a way of saying which files to have **ready**
-rather than how to divide the window — the rest are read now and kept in memory,
-so picking one in the finder is instant and never touches the disk.
-
-A split is a source change and not a runtime one: `Views` in `main.zig` is
-`HStack(&.{TextView})`, and a second `TextView` in that list is a second column.
+Any number of paths, in equal columns left to right in the order named; the
+window takes its title from the first.
 
 `assets/sample.txt` is there to be opened — six lines exercising ligatures, a
 combining mark, `.notdef` and proportional advances.
@@ -757,9 +752,10 @@ change nothing, which is the opposite of what the event loop is for.
 src/
   main.zig         # SDL setup, the window, the event loop, opening a file
   components/      # anything that is given a rect and draws in it
-    zstack.zig     #   the components of a window, back to front
-    hstack.zig     #   the components of a window, left to right
-    vstack.zig     #   the components of a window, top to bottom
+    ztuple.zig     #   the components of a window, back to front
+    htuple.zig     #   the components of a window, left to right
+    vtuple.zig     #   the components of a window, top to bottom
+    hlist.zig      #   however many components of one kind, left to right
     text_view.zig  #   scrolling, the caret, hit-testing
     finder.zig     #   cmd+P, driving rg and fzf
     healthcheck.zig#   what is shown when a tool is missing
@@ -790,10 +786,11 @@ the order to read it in:
 | `text.zig` | glyph_atlas, painter |
 | `renderer.zig` | config, sdl, glyph_atlas, painter |
 | `tools.zig` | nothing of ours |
-| `components/zstack.zig`, `components/hstack.zig`, `components/vstack.zig` | event, glyph_atlas, painter |
+| `components/ztuple.zig`, `components/htuple.zig`, `components/vtuple.zig` | event, glyph_atlas, painter |
+| `components/hlist.zig` | event, glyph_atlas, painter |
 | `components/text_view.zig` | config, document, event, glyph_atlas, painter, text |
 | `components/healthcheck.zig` | config, event, glyph_atlas, painter, text, tools |
-| `components/finder.zig` | config, event, glyph_atlas, painter, text, tools, vstack |
+| `components/finder.zig` | config, event, glyph_atlas, painter, text, tools, vtuple |
 | `main.zig` | all of the above |
 
 **No component imports another.** Each is given a rect, told what happened in it
@@ -820,7 +817,7 @@ parent answers for what it holds, and `invalidate` for the one thing none of the
 survives — the atlas rebuilt at a different scale. A parent calls them on its
 children, so the tree is the type system rather than a vtable.
 
-**A window is a `ZStack`, and it is the whole of what is on screen.** Its members
+**A window is a `ZTuple`, and it is the whole of what is on screen.** Its members
 are fixed at compile time and their order is not: *everything in it draws, back
 to front*, and *only the one in front is told what happened*. That is why the
 finder can be two small surfaces with the code still at full contrast either
@@ -829,9 +826,9 @@ cannot reach a view the finder is covering. `raise` and `lowerFront` are the who
 it away; there is no separate notion of a thing being open.
 
 **The tool check decides which stack there is, once, in `main`.** With ripgrep or
-fzf missing the window is `ZStack(&.{Healthcheck})` and nothing else is built —
+fzf missing the window is `ZTuple(&.{Healthcheck})` and nothing else is built —
 no files are read, no finder exists. Otherwise it is
-`ZStack(&.{ Finder, Views })`, listed back to front, so the finder sits behind
+`ZTuple(&.{ Finder, Views })`, listed back to front, so the finder sits behind
 the text until cmd+P brings it forward. `App` is generic over which one it got,
 so a component that is not in this window is not in this build of it: the
 branches that name one are compiled out where there is none. No code below `main`
@@ -844,7 +841,7 @@ about each other. `App` is the only thing that acts on one, because it is the
 only thing that knows what else is in the stack — and it is where the parked
 documents live, since a row is a layout and knows nothing about files.
 
-**`HStack` is the same idea across.** Same fixed members, and what varies is
+**`HTuple` is the same idea across.** Same fixed members, and what varies is
 which one has the keyboard rather than which one is in front: they sit side by
 side in equal columns, *all of them draw* because none covers another, and *the
 focused one is told what happened*. A press moves the keyboard and takes the
@@ -857,14 +854,24 @@ Focus is not drawn: every view shows the same caret, so with more than one colum
 the way to tell which has the keyboard is to type. That is the first thing a
 border or an active title would fix.
 
-**`VStack` is the third, and the only one whose members are not all the same
-size.** A ZStack gives every member the whole rect and an HStack divides it
+**A Tuple is a composition; a List is a repetition.** The three above take a
+statically determined list of members that may all be different things, so a
+window is `ZTuple(&.{ Finder, Views })` and knows at compile time exactly what is
+in it. When the members are all the same kind and how many there are is not known
+until the program runs, that is a **List** instead: `Views` is `HList(TextView)`,
+because the column count comes off the command line. One member type means
+reaching the nth is an index rather than a selection over a tuple, which is the
+whole of the difference in the code. `VList` and `ZList` are the same file again
+and will be written when something needs them.
+
+**`VTuple` is the third of the tuples, and the only one whose members are not all
+the same size.** A ZTuple gives every member the whole rect and an HTuple divides it
 evenly; here each member is asked how tall it wants to be, and one that does not
 say takes what is left. That is why `place` carries the atlas: a height is nearly
 always a number of lines, and what a line is worth belongs to the font at the
 display's scale rather than to the layout.
 
-The finder is one — `VStack(&.{ Query, Results })`. The query says it is a line,
+The finder is one — `VTuple(&.{ Query, Results })`. The query says it is a line,
 a rule and the air around them; the list says nothing and gets the rest of the
 window. Neither has to be told where the other ends, and the finder itself no
 longer computes a single baseline: it owns the two processes and the bytes they

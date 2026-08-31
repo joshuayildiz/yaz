@@ -16,8 +16,8 @@ const sdl = @import("./sdl.zig");
 const tools = @import("./tools.zig");
 const Healthcheck = @import("./components/healthcheck.zig").Healthcheck;
 const Finder = @import("./components/finder.zig").Finder;
-const ZStack = @import("./components/zstack.zig").ZStack;
-const HStack = @import("./components/hstack.zig").HStack;
+const ZTuple = @import("./components/ztuple.zig").ZTuple;
+const HList = @import("./components/hlist.zig").HList;
 const c = sdl.c;
 
 /// The largest file yaz will open. What still costs per line of the document
@@ -39,79 +39,38 @@ pub fn main(init: std.process.Init) !void {
     if (absent.any()) {
         return run(Stopped, init.gpa, init.io, .init(.{
             try Healthcheck.init(init.gpa, init.minimal.environ, absent),
-        }), .empty);
+        }));
     }
 
     // Read out here rather than inside `run`, so a file that cannot be opened
     // fails before a window has appeared and gone again. Nothing in a stack
     // needs a window to be built.
-    var named = try openNamed(init);
-    errdefer named.deinit(init.gpa);
+    var views = try openViews(init);
+    errdefer views.deinit();
 
     return run(Editing, init.gpa, init.io, .init(.{
         try Finder.init(init.gpa, init.io, init.minimal.environ),
-        .init(.{named.showing}),
-    }), named.parked);
+        views,
+    }));
 }
 
-/// What the command line asked for: the first file named, ready to be looked at,
-/// and the rest kept where cmd+P can reach them without going back to disk.
-///
-/// There is one view, so only one file can be on screen. Naming more of them is
-/// then a way of saying which ones to have ready rather than how to divide the
-/// window.
-const Named = struct {
-    showing: TextView,
-    parked: Parked.Map,
-
-    fn deinit(self: *Named, gpa: std.mem.Allocator) void {
-        self.showing.deinit();
-        var resting = self.parked.iterator();
-        while (resting.next()) |entry| {
-            gpa.free(entry.key_ptr.*);
-            entry.value_ptr.document.deinit();
-        }
-        self.parked.deinit(gpa);
-    }
-};
-
-fn openNamed(init: std.process.Init) !Named {
+/// A column per file named, left to right in the order they were named.
+fn openViews(init: std.process.Init) !Views {
     var opened = try openAll(init);
     defer {
         for (opened.items) |*file| file.deinit(init.gpa);
         opened.deinit(init.gpa);
     }
 
-    // `openAll` answers with at least one, since a document nobody named is
-    // still a document.
-    var named: Named = .{
-        .showing = try TextView.init(init.gpa, opened.items[0].text, opened.items[0].path),
-        .parked = .empty,
-    };
-    errdefer named.deinit(init.gpa);
+    var views: Views = .init(init.gpa);
+    errdefer views.deinit();
 
-    for (opened.items[1..]) |file| {
-        // Only the first can be unnamed, and that is the one on screen.
-        const path = file.path orelse continue;
-
-        const key = try init.gpa.dupe(u8, path);
-        errdefer init.gpa.free(key);
-
-        var document = try Document.init(init.gpa, file.text);
-        errdefer document.deinit();
-
-        const slot = try named.parked.getOrPut(init.gpa, key);
-        if (slot.found_existing) {
-            // The same file twice on one command line.
-            slot.value_ptr.document.deinit();
-            init.gpa.free(key);
-        } else {
-            slot.key_ptr.* = key;
-        }
-        slot.value_ptr.* = .{ .document = document, .position = .{ .cursor = 0, .scroll = 0 } };
+    // Never empty: a document nobody named is still a document.
+    try views.items.ensureTotalCapacity(init.gpa, opened.items.len);
+    for (opened.items) |file| {
+        try views.append(try TextView.init(init.gpa, file.text, file.path));
     }
-
-    return named;
+    return views;
 }
 
 /// A file that is in memory but not on screen, and where its reader was in it.
@@ -126,15 +85,15 @@ const Parked = struct {
 
 /// The window when a tool is missing: one component, and nothing that could go
 /// in front of it.
-const Stopped = ZStack(&.{Healthcheck});
+const Stopped = ZTuple(&.{Healthcheck});
 
-/// Left to right. One view today; a split is another `TextView` in this list and
-/// nothing else.
-const Views = HStack(&.{TextView});
+/// Left to right, one per file named. A list rather than a tuple because how
+/// many there are is not known until the command line has been read.
+const Views = HList(TextView);
 
 /// Back to front. The finder sits behind the text until cmd+P brings it
 /// forward, so opening and closing it is a change of order and nothing else.
-const Editing = ZStack(&.{ Finder, Views });
+const Editing = ZTuple(&.{ Finder, Views });
 
 /// The window, and whatever `main` decided goes in it.
 ///
@@ -245,10 +204,16 @@ fn App(comptime Stack: type) type {
         /// opened, which is both what one expects and the only way two views of
         /// one file cannot drift apart -- they share no document.
         fn reveal(self: *Self, path: []const u8) !void {
-            const view = self.stack.get(Views).focused(TextView) orelse return;
-            if (view.path) |showing| {
-                if (std.mem.eql(u8, showing, path)) return;
+            const views = self.stack.get(Views);
+            for (views.items.items, 0..) |*view, which| {
+                const named = view.path orelse continue;
+                if (!std.mem.eql(u8, named, path)) continue;
+
+                views.focus = which;
+                return;
             }
+
+            const view = views.focused() orelse return;
 
             var document: Document = undefined;
             var was: ?Position = null;
@@ -344,7 +309,7 @@ fn App(comptime Stack: type) type {
 }
 
 /// Puts a window up and runs `stack` in it until it is closed.
-fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack, parked: Parked.Map) !void {
+fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack) !void {
     // macOS makes inertial scroll events of its own and SDL turns them off
     // unless asked. Asking costs nothing while nothing is moving: momentum is
     // more wheel events, and they stop arriving when it stops. Before
@@ -385,7 +350,6 @@ fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack, p
         .renderer = try Renderer.init(gpa, window),
         .painter = .init(gpa),
         .stack = stack,
-        .parked = parked,
     };
     defer app.deinit();
 
@@ -395,7 +359,7 @@ fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack, p
     // allocation is one byte longer than its length, and the parked documents
     // are keyed by exactly that path.
     if (comptime Stack.has(Views)) {
-        if (app.stack.get(Views).get(TextView).path) |named| {
+        if (app.stack.get(Views).items.items[0].path) |named| {
             const title = try gpa.dupeZ(u8, named);
             defer gpa.free(title);
             _ = c.SDL_SetWindowTitle(window, title.ptr);
@@ -681,7 +645,8 @@ test {
     _ = @import("./tools.zig");
     _ = @import("./renderer.zig");
     _ = @import("./components/text_view.zig");
-    _ = @import("./components/zstack.zig");
-    _ = @import("./components/hstack.zig");
-    _ = @import("./components/vstack.zig");
+    _ = @import("./components/ztuple.zig");
+    _ = @import("./components/htuple.zig");
+    _ = @import("./components/hlist.zig");
+    _ = @import("./components/vtuple.zig");
 }

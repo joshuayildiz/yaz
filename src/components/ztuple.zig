@@ -25,7 +25,7 @@ const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
 /// `members` are listed back to front, which is also the order they start in.
-pub fn ZStack(comptime members: []const type) type {
+pub fn ZTuple(comptime members: []const type) type {
     return struct {
         const Self = @This();
         const count = members.len;
@@ -167,7 +167,7 @@ test "everything draws back to front, and only the front is told" {
 
     const Back = Spy('b');
     const Front = Spy('f');
-    var stack: ZStack(&.{ Back, Front }) = .init(.{
+    var stack: ZTuple(&.{ Back, Front }) = .init(.{
         .{ .drawn = &drawn, .told = &told, .gpa = gpa },
         .{ .drawn = &drawn, .told = &told, .gpa = gpa },
     });
@@ -198,7 +198,7 @@ test "a stack knows its members at compile time" {
     const Back = Spy('b');
     const Front = Spy('f');
     const Absent = Spy('x');
-    const Stack = ZStack(&.{ Back, Front });
+    const Stack = ZTuple(&.{ Back, Front });
 
     try std.testing.expect(Stack.has(Back));
     try std.testing.expect(Stack.has(Front));
@@ -213,7 +213,7 @@ test "a stack of one has no front to give up" {
     defer told.deinit(gpa);
 
     const Only = Spy('o');
-    var stack: ZStack(&.{Only}) = .init(.{.{ .drawn = &drawn, .told = &told, .gpa = gpa }});
+    var stack: ZTuple(&.{Only}) = .init(.{.{ .drawn = &drawn, .told = &told, .gpa = gpa }});
 
     stack.lowerFront();
     stack.raise(Only);

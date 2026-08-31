@@ -1,6 +1,6 @@
 //! A row of components, left to right.
 //!
-//! The horizontal counterpart of `ZStack`, and built the same way: the members
+//! The horizontal counterpart of `ZTuple`, and built the same way: the members
 //! are fixed at compile time, and what varies at runtime is which of them is
 //! being used. There they are stacked and one is in front; here they are side by
 //! side and one has the keyboard.
@@ -23,7 +23,7 @@ const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
 /// `members` are listed left to right.
-pub fn HStack(comptime members: []const type) type {
+pub fn HTuple(comptime members: []const type) type {
     return struct {
         const Self = @This();
         pub const count = members.len;
@@ -203,7 +203,7 @@ fn Spy(comptime tag: u8) type {
 
 const Left = Spy('l');
 const Right = Spy('r');
-const Row = HStack(&.{ Left, Right });
+const Row = HTuple(&.{ Left, Right });
 
 fn testRow(gpa: std.mem.Allocator, told: *std.ArrayList(u8)) Row {
     var row: Row = .init(.{

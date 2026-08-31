@@ -5,7 +5,7 @@
 //! against what has been typed. Both are checked at startup, so by the time one
 //! of these exists they are known to run.
 //!
-//! The panel is a `VStack` of two surfaces: the line being typed, and what it
+//! The panel is a `VTuple` of two surfaces: the line being typed, and what it
 //! matched. Each says how tall it is -- the query is one line of text and its
 //! padding, the list is as many rows as it has -- so an empty query is a single
 //! box with nothing under it, and the panel is never larger than what is in it.
@@ -37,7 +37,7 @@ const Rect = painter_mod.Rect;
 const drawLine = @import("../text.zig").draw;
 const advance = @import("../text.zig").advance;
 
-const VStack = @import("./vstack.zig").VStack;
+const VTuple = @import("./vtuple.zig").VTuple;
 
 const tools = @import("../tools.zig");
 
@@ -378,7 +378,7 @@ const Results = struct {
 };
 
 /// The panel: what is being typed, and what it matched.
-const Panel = VStack(&.{ Query, Results });
+const Panel = VTuple(&.{ Query, Results });
 
 pub const Finder = struct {
     gpa: std.mem.Allocator,

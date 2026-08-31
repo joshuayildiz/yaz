@@ -1,7 +1,7 @@
 //! A column of components, top to bottom.
 //!
 //! The third of the three, and the one whose members are not all the same size:
-//! a `ZStack` gives every member the whole rect, an `HStack` divides it evenly,
+//! a `ZTuple` gives every member the whole rect, an `HTuple` divides it evenly,
 //! and here each member says how tall it wants to be. One that says nothing
 //! takes what is left, which is how a list under a heading gets the rest of the
 //! window without either of them knowing the window's size.
@@ -11,7 +11,7 @@
 //! scale rather than of the layout.
 //!
 //! All of them draw, since none covers another. A press moves the keyboard and
-//! takes the pointer until the release, as in `HStack`.
+//! takes the pointer until the release, as in `HTuple`.
 
 const std = @import("std");
 
@@ -27,7 +27,7 @@ const Rect = painter_mod.Rect;
 
 /// `members` are listed top to bottom. Each answers `height` with what it wants,
 /// or null to take a share of whatever is left over.
-pub fn VStack(comptime members: []const type) type {
+pub fn VTuple(comptime members: []const type) type {
     return struct {
         const Self = @This();
         pub const count = members.len;
@@ -207,7 +207,7 @@ test "a member that says nothing takes what is left" {
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(gpa);
 
-    var column: VStack(&.{ Heading, List, Footer }) = .init(.{
+    var column: VTuple(&.{ Heading, List, Footer }) = .init(.{
         .{ .told = &told, .gpa = gpa },
         .{ .told = &told, .gpa = gpa },
         .{ .told = &told, .gpa = gpa },
@@ -229,7 +229,7 @@ test "the bands meet exactly, whatever the fractions" {
     defer told.deinit(gpa);
 
     const Thirds = Band('t', 33.4);
-    var column: VStack(&.{ Thirds, Thirds, List }) = .init(.{
+    var column: VTuple(&.{ Thirds, Thirds, List }) = .init(.{
         .{ .told = &told, .gpa = gpa },
         .{ .told = &told, .gpa = gpa },
         .{ .told = &told, .gpa = gpa },
@@ -250,7 +250,7 @@ test "a column with nothing spare does not stretch anyone" {
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(gpa);
 
-    var column: VStack(&.{ Heading, Footer }) = .init(.{
+    var column: VTuple(&.{ Heading, Footer }) = .init(.{
         .{ .told = &told, .gpa = gpa },
         .{ .told = &told, .gpa = gpa },
     });
@@ -265,7 +265,7 @@ test "asking for more than there is leaves nothing spare rather than a negative 
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(gpa);
 
-    var column: VStack(&.{ Heading, List }) = .init(.{
+    var column: VTuple(&.{ Heading, List }) = .init(.{
         .{ .told = &told, .gpa = gpa },
         .{ .told = &told, .gpa = gpa },
     });
@@ -279,7 +279,7 @@ test "a press moves the keyboard down the column and typing follows it" {
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(gpa);
 
-    var column: VStack(&.{ Heading, List }) = .init(.{
+    var column: VTuple(&.{ Heading, List }) = .init(.{
         .{ .told = &told, .gpa = gpa },
         .{ .told = &told, .gpa = gpa },
     });
