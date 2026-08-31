@@ -15,6 +15,7 @@ const std = @import("std");
 const GlyphAtlas = @import("./glyph_atlas.zig").GlyphAtlas;
 const OpenFile = @import("./open_file.zig").OpenFile;
 const tools = @import("./tools.zig");
+const Effect = @import("./message.zig").Effect;
 
 /// The largest file yaz will open. What still costs per line of the file
 /// rather than per line on screen is the layout cache, which holds a 64-byte
@@ -275,9 +276,196 @@ pub const Model = struct {
         }
     }
 
+    /// The other half of `Effect`: the one place anything here changes.
+    ///
+    /// Every branch is a change, so the frame is asked for once, here, rather
+    /// than by each of them remembering to. `nothing` is the only thing that
+    /// leaves the window as it was.
+    pub fn apply(self: *Model, effect: Effect) !void {
+        switch (effect) {
+            .nothing => return,
+            .nothing_but_draw => {},
+
+            .quit => self.running = false,
+
+            .insert => |what| {
+                const file = self.column(what.column) orelse return;
+                _ = try file.insert(file.cursor, what.text);
+                file.cursor += what.text.len;
+                file.follow_caret = true;
+            },
+            .backspace => |which| {
+                const file = self.column(which) orelse return;
+                const from = file.buffer.stepBack(file.cursor);
+                if (from == file.cursor) return;
+                _ = try file.delete(from, file.cursor - from);
+                file.cursor = from;
+                file.follow_caret = true;
+            },
+            .caret => |where| {
+                const file = self.column(where.column) orelse return;
+                // Putting the caret in a column is choosing that column, which
+                // is why a press does not have to say both.
+                self.focus = where.column;
+                file.cursor = @min(where.at, file.buffer.byteLen());
+            },
+            .scroll => |where| {
+                const file = self.column(where.column) orelse return;
+                file.pending = where.pending;
+                // The fraction moved and nothing else did, so there is nothing
+                // to draw: the window stays as it is until a whole pixel of it
+                // has been asked for.
+                if (file.scroll == where.to) return;
+                file.scroll = where.to;
+            },
+            .grab => |where| {
+                const file = self.column(where.column) orelse return;
+                self.focus = where.column;
+                // Held until the release, so a drag that wanders out of the
+                // column it began in stays with it.
+                self.holding = if (where.at == null) null else where.column;
+                file.drag = where.at;
+            },
+
+            .focus => |which| self.focus = which,
+            .holding => |which| self.holding = which,
+
+            .show => |nth| try self.showOnly(nth),
+            .split => |nth| try self.split(nth),
+            .close => try self.shut(),
+
+            .find => try self.find(),
+            .dismiss => self.stopFinding(),
+            .query => |what| try self.typeInto(what),
+            .rub => try self.rubOut(),
+            .up => self.select(.up),
+            .down => self.select(.down),
+            .choose => try self.choose(),
+        }
+        self.changed();
+    }
+
     /// Says the model has moved on and the window has to be drawn again.
-    pub fn changed(self: *Model) void {
+    fn changed(self: *Model) void {
         self.dirty = true;
+    }
+
+    /// The file the nth column is showing.
+    pub fn column(self: *const Model, which: usize) ?*OpenFile {
+        if (which >= self.columns.items.len) return null;
+        return self.columns.items[which];
+    }
+
+    /// The nth file on the bar, or none when the bar is shorter than that. A
+    /// file nobody named has no tab, so it is not counted.
+    pub fn tab(self: *const Model, which: usize) ?*OpenFile {
+        var counted: usize = 0;
+        for (self.files.items) |file| {
+            if (file.path == null) continue;
+            if (counted == which) return file;
+            counted += 1;
+        }
+        return null;
+    }
+
+    /// Shows the nth file on the bar and nothing else: every other column goes
+    /// back to being open but not on screen.
+    ///
+    /// Choosing one of something is choosing it instead of the rest, which is
+    /// what makes this the plain binding and `cmd+alt` the one that adds.
+    fn showOnly(self: *Model, nth: usize) !void {
+        const wanted = self.tab(nth) orelse return;
+        self.columns.clearRetainingCapacity();
+        try self.columns.append(self.allocator, wanted);
+        self.focus = 0;
+    }
+
+    /// Puts the nth file on the bar beside what is already there, or takes it
+    /// away again when it is already there.
+    ///
+    /// Taking one away is not closing it: the file stays on the bar with its
+    /// caret where it was, so putting it back costs nothing. The last column
+    /// cannot go -- something has to be there to type into.
+    fn split(self: *Model, nth: usize) !void {
+        const wanted = self.tab(nth) orelse return;
+
+        if (self.columnOf(wanted)) |which| {
+            if (self.columns.items.len == 1) return;
+            _ = self.columns.orderedRemove(which);
+            if (self.focus >= self.columns.items.len) self.focus = self.columns.items.len - 1;
+            return;
+        }
+
+        // Columns follow the bar's order, so one put back lands where it was
+        // rather than on the end.
+        const listed = self.indexOf(wanted) orelse return;
+        var at: usize = 0;
+        for (self.columns.items) |shown| {
+            const seen = self.indexOf(shown) orelse continue;
+            if (seen < listed) at += 1;
+        }
+        try self.columns.insert(self.allocator, at, wanted);
+        self.focus = at;
+    }
+
+    /// Takes the file the focused column is showing out of the window and out
+    /// of memory, and puts something else in the column. With nothing left on
+    /// the bar the window goes too.
+    ///
+    /// The column takes the first file nothing else is showing, so closing
+    /// walks back through what is open; when there is nothing left it goes
+    /// empty, which is where a window with no file named starts.
+    fn shut(self: *Model) !void {
+        const closing = self.showing() orelse return;
+
+        // One fewer column to split into. The last one stays, because
+        // something has to be there to type into.
+        if (self.columns.items.len > 1) {
+            _ = self.columns.orderedRemove(self.focus);
+            if (self.focus >= self.columns.items.len) self.focus = self.columns.items.len - 1;
+        } else {
+            var next: ?*OpenFile = null;
+            for (self.files.items) |file| {
+                if (file != closing and file.path != null) {
+                    next = file;
+                    break;
+                }
+            }
+            self.columns.items[0] = next orelse try self.blank();
+        }
+
+        self.close(closing);
+
+        // Nothing open is nothing to come back to. It is also where a window
+        // that was never given a file starts, so cmd+W on one of those is a way
+        // out rather than a keystroke that does nothing.
+        for (self.files.items) |file| {
+            if (file.path != null) break;
+        } else self.running = false;
+    }
+
+    /// Opens what the finder has selected, in the column with the keyboard, and
+    /// puts the finder away. Picking a file is the end of picking.
+    fn choose(self: *Model) !void {
+        const picked = blk: {
+            const finding = &(self.finding orelse return);
+            break :blk finding.chosen() orelse return;
+        };
+
+        // Copied, because opening it frees the listing the path points into.
+        const path = try self.allocator.dupe(u8, picked);
+        defer self.allocator.free(path);
+        self.stopFinding();
+
+        const wanted = try self.open(path);
+        if (self.columnOf(wanted)) |which| {
+            self.focus = which;
+        } else if (self.focus < self.columns.items.len) {
+            self.columns.items[self.focus] = wanted;
+        } else {
+            try self.columns.append(self.allocator, wanted);
+            self.focus = self.columns.items.len - 1;
+        }
     }
 
     /// What the column with the keyboard is showing, or none before there is a

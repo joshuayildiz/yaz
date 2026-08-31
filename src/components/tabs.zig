@@ -9,16 +9,16 @@
 //! asked of the columns every frame rather than remembered here, so the bar
 //! cannot disagree with what is on screen.
 //!
-//! A press answers `Intent.only`, which is what cmd+N means as well, so a tab
-//! reached either way says the same thing: show this and put the rest away.
-//! The workbench holding the bar is what acts on it.
+//! A press answers `Effect.show` and the tab's place on the bar, which is what
+//! cmd+N means as well, so a tab reached either way says the same thing: show
+//! this and put the rest away. Nothing here has to name a file to say it.
 
 const std = @import("std");
 
 const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Intent = message_mod.Intent;
+const Effect = message_mod.Effect;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Model = @import("../model.zig").Model;
@@ -88,25 +88,14 @@ pub const Tabs = struct {
         self.bullet.deinit(model.allocator);
     }
 
-    /// The nth file on the bar, or none when the bar is shorter than that.
-    pub fn nth(_: *const Tabs, model: *Model, which: usize) ?*OpenFile {
-        var counted: usize = 0;
-        for (model.files.items) |file| {
-            if (file.path == null) continue;
-            if (counted == which) return file;
-            counted += 1;
-        }
-        return null;
-    }
-
     /// Nothing at all when no file has been named: a strip with no tabs on it
     /// is a promise of something that is not there.
-    pub fn height(_: *const Tabs, model: *Model) ?f32 {
+    pub fn height(_: *const Tabs, model: *const Model) ?f32 {
         if (listed(model) == 0) return 0;
         return @round(model.atlas.line_height + 2 * @round(down * model.atlas.scale));
     }
 
-    pub fn place(self: *Tabs, _: *Model, rect: Rect) void {
+    pub fn place(self: *Tabs, _: *const Model, rect: Rect) void {
         self.rect = rect;
     }
 
@@ -116,7 +105,7 @@ pub const Tabs = struct {
         self.bullet.shaped = false;
     }
 
-    pub fn update(self: *Tabs, model: *Model, message: Message) !Intent {
+    pub fn update(self: *Tabs, _: *const Model, message: Message) !Effect {
         const at = switch (message) {
             .press => |where| where,
             else => return .nothing,
@@ -124,17 +113,15 @@ pub const Tabs = struct {
 
         for (self.rects.items, 0..) |rect, which| {
             if (!rect.contains(at)) continue;
-            const file = self.nth(model, which) orelse return .nothing;
-            const path = file.path orelse return .nothing;
             // Pressing a tab is choosing that file over the others, which is
-            // what cmd+N means too. The finder answers `open` instead: picking
-            // a file there is not a statement about the ones already on screen.
-            return .{ .only = try model.allocator.dupe(u8, path) };
+            // what cmd+N means too, and it is named the same way: by where it
+            // sits on the bar.
+            return .{ .show = which };
         }
         return .nothing;
     }
 
-    pub fn draw(self: *Tabs, model: *Model, painter: *Painter) !void {
+    pub fn draw(self: *Tabs, model: *const Model, painter: *Painter) !void {
         const count = listed(model);
         if (count == 0) return;
 
@@ -224,7 +211,7 @@ pub const Tabs = struct {
     /// How many files have a name, which is how many tabs there are: a file
     /// nobody named has nothing to write on one, and a window showing one has
     /// no bar at all.
-    fn listed(model: *Model) usize {
+    fn listed(model: *const Model) usize {
         var count: usize = 0;
         for (model.files.items) |file| {
             if (file.path != null) count += 1;

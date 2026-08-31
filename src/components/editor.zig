@@ -13,7 +13,7 @@ const Model = @import("../model.zig").Model;
 
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Intent = message_mod.Intent;
+const Effect = message_mod.Effect;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -33,7 +33,7 @@ pub const Editor = struct {
 
     /// Both get the whole window. The workbench divides it; the finder lies
     /// over it and wants all of it to measure from.
-    pub fn place(self: *Editor, model: *Model, rect: Rect) void {
+    pub fn place(self: *Editor, model: *const Model, rect: Rect) void {
         self.workbench.place(model, rect);
         self.finder.place(model, rect);
     }
@@ -43,7 +43,7 @@ pub const Editor = struct {
         self.finder.invalidate();
     }
 
-    pub fn draw(self: *Editor, model: *Model, painter: *Painter) !void {
+    pub fn draw(self: *Editor, model: *const Model, painter: *Painter) !void {
         try self.workbench.draw(model, painter);
         try self.finder.draw(model, painter);
     }
@@ -52,31 +52,11 @@ pub const Editor = struct {
     /// belongs to neither: it is the keystroke that decides which of them there
     /// is. Pressed while the panel is up it reaches the panel, which asks to be
     /// put away, exactly as escape does.
-    pub fn update(self: *Editor, model: *Model, message: Message) !Intent {
-        if (model.finding != null) {
-            const asked = try self.finder.update(model, message);
-            switch (asked) {
-                .dismiss => {
-                    model.stopFinding();
-                    return .nothing;
-                },
-                // A file was picked. The finder knows that and nothing about
-                // columns; the workbench knows what to do with a file and
-                // nothing about panels. Taking it is also the end of the panel.
-                .open, .only => {
-                    _ = try self.workbench.act(model, asked);
-                    model.stopFinding();
-                    return .nothing;
-                },
-                else => return asked,
-            }
-        }
+    pub fn update(self: *Editor, model: *const Model, message: Message) !Effect {
+        if (model.finding != null) return self.finder.update(model, message);
 
         switch (message) {
-            .find => {
-                try model.find();
-                return .nothing;
-            },
+            .find => return .find,
             else => return self.workbench.update(model, message),
         }
     }

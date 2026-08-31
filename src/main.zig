@@ -73,25 +73,17 @@ fn App(comptime Component: type) type {
         /// Two events belong to the window itself and the rest belong to what
         /// is in it. What changed is not answered here; it is asked for
         /// afterwards, through `Model.dirty`.
-        fn update(self: *Self, event: Message) !void {
-            switch (event) {
-                .quit => {
-                    self.model.running = false;
-                    return;
-                },
-                .resized => {
-                    self.model.changed();
-                    return;
-                },
+        /// One message in, one effect out, one change made. Quit is the
+        /// window's own; a resize changes nothing in the model and only wants
+        /// the frame drawn again.
+        fn update(self: *Self, message: Message) !void {
+            switch (message) {
+                .quit => return self.model.apply(.quit),
+                .resized => return self.model.apply(.nothing_but_draw),
                 else => {},
             }
 
-            // What nobody in the tree took. A path belongs to whoever takes it,
-            // so one that comes all the way back out is this to free.
-            switch (try self.component.update(self.model, event)) {
-                .open, .only => |path| self.model.allocator.free(path),
-                else => {},
-            }
+            try self.model.apply(try self.component.update(self.model, message));
         }
 
         fn redraw(self: *Self) !void {

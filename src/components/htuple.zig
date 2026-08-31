@@ -14,7 +14,7 @@ const std = @import("std");
 
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Intent = message_mod.Intent;
+const Effect = message_mod.Effect;
 
 const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
 const Model = @import("../model.zig").Model;
@@ -90,7 +90,7 @@ pub fn HTuple(comptime members: []const type) type {
         }
 
         /// Equal columns, left to right.
-        pub fn place(self: *Self, model: *Model, rect: Rect) void {
+        pub fn place(self: *Self, model: *const Model, rect: Rect) void {
             var left = rect.x;
             inline for (0..count) |i| {
                 // Each edge from the full width rather than by adding widths up,
@@ -108,11 +108,11 @@ pub fn HTuple(comptime members: []const type) type {
         }
 
         /// All of them: side by side, none covers another.
-        pub fn draw(self: *Self, model: *Model, painter: *Painter) !void {
+        pub fn draw(self: *Self, model: *const Model, painter: *Painter) !void {
             inline for (0..count) |i| try self.items[i].draw(model, painter);
         }
 
-        pub fn update(self: *Self, model: *Model, message: Message) !Intent {
+        pub fn update(self: *Self, model: *Model, message: Message) !Effect {
             switch (message) {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
@@ -154,7 +154,7 @@ pub fn HTuple(comptime members: []const type) type {
 
         /// The members are of different types and `which` is a runtime value, so
         /// reaching one is a selection rather than an index.
-        fn tell(self: *Self, model: *Model, which: usize, message: Message) !Intent {
+        fn tell(self: *Self, model: *Model, which: usize, message: Message) !Effect {
             inline for (0..count) |i| {
                 if (which == i) return self.items[i].update(model, message);
             }
@@ -175,11 +175,11 @@ fn Spy(comptime tag: u8) type {
         pub fn invalidate(_: *Self) void {}
         pub fn draw(_: *Self, _: *Model, _: *Painter) !void {}
 
-        pub fn place(self: *Self, _: *Model, rect: Rect) void {
+        pub fn place(self: *Self, _: *const Model, rect: Rect) void {
             self.rect = rect;
         }
 
-        pub fn update(self: *Self, model: *Model, _: Message) !Intent {
+        pub fn update(self: *Self, model: *Model, _: Message) !Effect {
             try self.told.append(model.allocator, tag);
             return .nothing;
         }

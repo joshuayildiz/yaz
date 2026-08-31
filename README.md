@@ -882,11 +882,22 @@ one thing none of them survives — the atlas rebuilt at a different scale. A
 parent calls them on its children, so the tree is the type system rather than a
 vtable.
 
-**Nothing answers for whether it has changed.** There is one flag, on the
-Model, and anything that changes it says so through `model.changed()`.
-The loop draws when it is set and clears it after. That is not damage tracking
-— the whole window is redrawn — but presenting blocks on the swapchain, so the
-question worth asking is only ever *whether* to draw.
+**`update` is handed the model to read and nothing more.** Its signature says
+so — `*const Model` — and what it returns is an `Effect`: the change it worked
+out should happen, named rather than made. `Model.apply` is the other half, and
+it is the only place in the program where any of this moves.
+
+That is what makes the redraw question answer itself. An effect is a change, so
+the frame is asked for once, in `apply`, rather than by every component
+remembering to say it changed something; `nothing` is the absence of a change
+and leaves the window alone. There is no damage tracking — the whole window is
+redrawn — but presenting blocks on the swapchain, so the question worth asking
+is only ever *whether* to draw.
+
+The one seam is `place`. Fitting a file to the room a column has — clamping a
+scroll to a shorter column, bringing the caret back on screen after typing —
+needs a height that nothing knew when the keystroke arrived, so layout is
+allowed to write that much back. Everything else goes through an effect.
 
 **A window is one component, and that component is the whole of what is on
 screen.** With ripgrep or fzf missing it is a `Healthcheck` and nothing else is
@@ -904,12 +915,15 @@ That is why the finder can be two small surfaces with the code still at full
 contrast either side of them — the file underneath is genuinely still being
 drawn — and why a click cannot reach a column the panel is covering.
 
-**A component answers a message with an `Intent`** — `nothing`, `dismiss`,
-`open` with a path, or `only` with one. It is how the finder reaches the
-workbench without either knowing the other exists: the finder knows a file was
-picked and nothing about columns, and the workbench knows what to do with a file
-and nothing about panels. The `Editor` above them hands one to the other and
-closes the panel, since picking a file is also the end of picking.
+**An `Effect` owns no memory.** A tab is named by where it sits on the bar and
+a match by the fact that it is the selected one, so nothing here is a path that
+somebody has to free — which is the whole of what the finder and the workbench
+have to say to each other. The finder knows a file was picked and nothing about
+columns; `apply` knows what a picked file means and nothing about panels.
+
+Some effects carry what only the component could work out. A click becomes the
+byte offset it landed on, a wheel becomes the whole pixel to scroll to and the
+fraction left over, because resolving either needs the layout and the room.
 
 **The columns divide the window between them.** They sit side by side in equal
 shares, *all of them draw* because none covers another, and *the one with the
@@ -930,8 +944,9 @@ typed into rather than with the bar holding it.
 
 `Tabs` lays its own tabs out rather than dividing the bar evenly, because a row
 of equal shares is the wrong shape for a row of words: each tab is as wide as
-the name in it. It answers a press with `Intent.only`, the same thing cmd+N means, so a tab
-reached either way says the same thing.
+the name in it. It answers a press with `Effect.show` and the tab's place on the
+bar, which is exactly what cmd+N means, so a tab reached either way says the
+same thing and neither has to name a file.
 
 **`VTuple` stacks members top to bottom, and is the one place where they are
 not all the same size.** Each is asked how tall it wants to be, and one that

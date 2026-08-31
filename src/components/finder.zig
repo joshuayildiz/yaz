@@ -23,7 +23,7 @@ const std = @import("std");
 const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Intent = message_mod.Intent;
+const Effect = message_mod.Effect;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const model_mod = @import("../model.zig");
@@ -113,12 +113,12 @@ const Query = struct {
     /// One line of text and the air round it, plus the gap that separates this
     /// surface from the list. Stated here rather than by the panel because the
     /// panel cannot know that this is a line of text.
-    pub fn height(_: *const Query, model: *Model) ?f32 {
+    pub fn height(_: *const Query, model: *const Model) ?f32 {
         return @round(model.atlas.line_height + 2 * @round(pad * model.atlas.scale) + @round(split * model.atlas.scale));
     }
 
     /// The box itself, which is shorter than the band by the gap below it.
-    fn box(self: *const Query, model: *Model) Rect {
+    fn box(self: *const Query, model: *const Model) Rect {
         return .{
             .x = self.rect.x,
             .y = self.rect.y,
@@ -127,7 +127,7 @@ const Query = struct {
         };
     }
 
-    pub fn place(self: *Query, _: *Model, rect: Rect) void {
+    pub fn place(self: *Query, _: *const Model, rect: Rect) void {
         self.rect = rect;
     }
 
@@ -136,11 +136,11 @@ const Query = struct {
         self.count.shaped = false;
     }
 
-    pub fn update(_: *Query, _: *Model, _: Message) !Intent {
+    pub fn update(_: *Query, _: *Model, _: Message) !Effect {
         return .nothing;
     }
 
-    pub fn draw(self: *Query, model: *Model, painter: *Painter) !void {
+    pub fn draw(self: *Query, model: *const Model, painter: *Painter) !void {
         const finding = &(model.finding orelse return);
         const inset = @round(pad * model.atlas.scale);
         const field = self.box(model);
@@ -214,7 +214,7 @@ const Results = struct {
     /// As many rows as there are, and nothing at all when there are none: an
     /// empty box under an empty query would be a promise of something that is
     /// not there.
-    pub fn height(_: *const Results, model: *Model) ?f32 {
+    pub fn height(_: *const Results, model: *const Model) ?f32 {
         const finding = &(model.finding orelse return 0);
         const shown = @min(finding.matches.items.len, visible_rows);
         if (shown == 0) return 0;
@@ -222,7 +222,7 @@ const Results = struct {
         return @round(@as(f32, @floatFromInt(shown)) * step + 2 * @round(pad * model.atlas.scale));
     }
 
-    pub fn place(self: *Results, _: *Model, rect: Rect) void {
+    pub fn place(self: *Results, _: *const Model, rect: Rect) void {
         self.rect = rect;
     }
 
@@ -230,12 +230,12 @@ const Results = struct {
         self.listed = null;
     }
 
-    pub fn update(_: *Results, _: *Model, _: Message) !Intent {
+    pub fn update(_: *Results, _: *Model, _: Message) !Effect {
         return .nothing;
     }
 
     /// Shapes the rows on screen, and only those.
-    fn layOut(self: *Results, model: *Model) !void {
+    fn layOut(self: *Results, model: *const Model) !void {
         const finding = &(model.finding orelse return);
         const matches = finding.matches.items;
         if (self.listed == matches.ptr and self.count == matches.len and self.top == finding.top) return;
@@ -262,7 +262,7 @@ const Results = struct {
         self.top = finding.top;
     }
 
-    pub fn draw(self: *Results, model: *Model, painter: *Painter) !void {
+    pub fn draw(self: *Results, model: *const Model, painter: *Painter) !void {
         const finding = &(model.finding orelse return);
         const matches = finding.matches.items;
         if (matches.len == 0) return;
@@ -314,7 +314,7 @@ pub const Finder = struct {
     /// A measure down the middle, hanging a short way from the top of the
     /// window. Its height is whatever the two surfaces asked for, since neither
     /// of them wants what is left over.
-    pub fn place(self: *Finder, model: *Model, rect: Rect) void {
+    pub fn place(self: *Finder, model: *const Model, rect: Rect) void {
         self.rect = rect;
 
         const column = @round(rect.width * column_share);
@@ -336,24 +336,19 @@ pub const Finder = struct {
     ///
     /// The path it answers with is copied out of the listing, which closing
     /// frees, so whoever takes it owns it.
-    pub fn update(_: *Finder, model: *Model, message: Message) !Intent {
-        const finding = &(model.finding orelse return .nothing);
-        switch (message) {
-            .cancel, .find => return .dismiss,
-            .newline => {
-                const picked = finding.chosen() orelse return .nothing;
-                return .{ .open = try model.allocator.dupe(u8, picked) };
-            },
-            .up => model.select(.up),
-            .down => model.select(.down),
-            .text => |what| try model.typeInto(what),
-            .backspace => try model.rubOut(),
-            else => {},
-        }
-        return .nothing;
+    pub fn update(_: *Finder, _: *const Model, message: Message) !Effect {
+        return switch (message) {
+            .cancel, .find => .dismiss,
+            .newline => .choose,
+            .up => .up,
+            .down => .down,
+            .text => |what| .{ .query = what },
+            .backspace => .rub,
+            else => .nothing,
+        };
     }
 
-    pub fn draw(self: *Finder, model: *Model, painter: *Painter) !void {
+    pub fn draw(self: *Finder, model: *const Model, painter: *Painter) !void {
         if (model.finding == null) return;
 
         painter.clipTo(self.rect);

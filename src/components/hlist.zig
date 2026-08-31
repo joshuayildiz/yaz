@@ -17,7 +17,7 @@ const std = @import("std");
 
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Intent = message_mod.Intent;
+const Effect = message_mod.Effect;
 
 const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
 const Model = @import("../model.zig").Model;
@@ -89,13 +89,13 @@ pub fn HList(comptime Member: type) type {
         /// Whatever it is given. How wide the columns are is a row's business;
         /// how tall they are is not, so it never asks for a height of its own.
         /// Only meaningful where a row is a member of a column.
-        pub fn height(self: *const Self, model: *Model) ?f32 {
+        pub fn height(self: *const Self, model: *const Model) ?f32 {
             _ = self;
             _ = model.atlas;
             return null;
         }
 
-        pub fn place(self: *Self, model: *Model, rect: Rect) void {
+        pub fn place(self: *Self, model: *const Model, rect: Rect) void {
             self.rect = rect;
 
             var left = rect.x;
@@ -115,11 +115,11 @@ pub fn HList(comptime Member: type) type {
             for (self.items.items) |*member| member.invalidate();
         }
 
-        pub fn draw(self: *Self, model: *Model, painter: *Painter) !void {
+        pub fn draw(self: *Self, model: *const Model, painter: *Painter) !void {
             for (self.items.items) |*member| try member.draw(model, painter);
         }
 
-        pub fn update(self: *Self, model: *Model, message: Message) !Intent {
+        pub fn update(self: *Self, model: *Model, message: Message) !Effect {
             switch (message) {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
@@ -171,11 +171,11 @@ const Spy = struct {
     pub fn invalidate(_: *Spy) void {}
     pub fn draw(_: *Spy, _: *Model, _: *Painter) !void {}
 
-    pub fn place(self: *Spy, _: *Model, rect: Rect) void {
+    pub fn place(self: *Spy, _: *const Model, rect: Rect) void {
         self.rect = rect;
     }
 
-    pub fn update(self: *Spy, model: *Model, _: Message) !Intent {
+    pub fn update(self: *Spy, model: *Model, _: Message) !Effect {
         try self.told.append(model.allocator, self.tag);
         return .nothing;
     }

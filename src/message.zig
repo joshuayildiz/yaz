@@ -4,18 +4,67 @@ const std = @import("std");
 
 const c = @import("./sdl.zig").c;
 
-/// What a component wants done that it cannot do itself, answered to whatever
-/// is holding it -- the only thing that knows what else there is.
-pub const Intent = union(enum) {
-    /// Dealt with, or not mine. Nothing for anyone above to do.
+/// A change to the model, named by whichever component worked out that it
+/// should happen.
+///
+/// A component cannot make the change itself -- `update` is handed the model to
+/// read and nothing more -- so this is the only way anything moves. `Model.apply`
+/// is the other half, and the two together are why nothing has to remember to
+/// say that it changed something: an effect is that, and `nothing` is its
+/// absence.
+///
+/// Nothing here owns memory. What used to be a path copied out of the finder's
+/// listing is now the index of the thing that was chosen, which the model can
+/// look up for itself.
+pub const Effect = union(enum) {
+    /// Nothing happened, or nothing that shows. The window does not draw again.
     nothing,
-    /// I am done being in front. Put me back where I was.
+
+    /// Nothing in the model moved, but the window has to be drawn again anyway
+    /// -- which is only ever true of a resize, where what changed is the room
+    /// rather than anything in it.
+    nothing_but_draw,
+
+    /// Put the window away.
+    quit,
+
+    /// Type into the file the nth column is showing, or take a character back
+    /// out of it.
+    insert: struct { column: usize, text: []const u8 },
+    backspace: usize,
+
+    /// Put the caret at a byte offset, or the top of the view at a pixel. Both
+    /// are worked out by the column, which is the only thing that knows where
+    /// its lines are and how much room it has.
+    caret: struct { column: usize, at: usize },
+    /// `pending` is what is left of a gesture too small to have moved a whole
+    /// pixel yet, carried in the effect rather than kept by whatever worked it
+    /// out. A scroll that only moves the fraction changes nothing on screen.
+    scroll: struct { column: usize, to: f32, pending: f32 = 0 },
+
+    /// Which column has the keyboard, and which has the pointer until the
+    /// release. Null lets go.
+    focus: usize,
+    holding: ?usize,
+
+    /// Where on the scrollbar's thumb a press took hold. Null lets go.
+    grab: struct { column: usize, at: ?f32 },
+
+    /// Show the nth file on the bar and nothing else, or put it beside what is
+    /// already there, or take the focused one out of the window altogether.
+    show: usize,
+    split: usize,
+    close,
+
+    /// Open the finder, put it away, and what happens while it is up.
+    find,
     dismiss,
-    /// Put this file in front of the reader, in whichever column has the
-    /// keyboard. Whoever takes it owns the path.
-    open: []u8,
-    /// Show this file and nothing else. Whoever takes it owns the path.
-    only: []u8,
+    query: []const u8,
+    rub,
+    up,
+    down,
+    /// Open what the finder has selected, in the column with the keyboard.
+    choose,
 };
 
 /// Already in pixels by the time one of these is made, so nothing that handles

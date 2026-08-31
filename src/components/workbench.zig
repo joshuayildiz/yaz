@@ -18,7 +18,7 @@ const OpenFile = @import("../open_file.zig").OpenFile;
 
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Intent = message_mod.Intent;
+const Effect = message_mod.Effect;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -49,11 +49,11 @@ pub const Views = struct {
 
     /// Whatever it is given. How wide the columns are is a row's business; how
     /// tall they are is not, so it never asks for a height of its own.
-    pub fn height(_: *const Views, _: *Model) ?f32 {
+    pub fn height(_: *const Views, _: *const Model) ?f32 {
         return null;
     }
 
-    pub fn place(self: *Views, model: *Model, rect: Rect) void {
+    pub fn place(self: *Views, model: *const Model, rect: Rect) void {
         self.rect = rect;
 
         // Room for one more than there are, so `place` can fail to grow the
@@ -66,55 +66,56 @@ pub const Views = struct {
             slot.* = .{ .x = left, .y = rect.y, .width = right - left, .height = rect.height };
             left = right;
 
-            var column: TextView = .init(file, slot.*);
-            column.place(model, slot.*);
+            // The one thing layout writes back: what a column can show depends
+            // on the room it has, which nothing knew when the message arrived.
+            const column: TextView = .init(nth - 1, file, slot.*);
+            column.settle(model);
         }
     }
 
-    pub fn draw(self: *Views, model: *Model, painter: *Painter) !void {
+    pub fn draw(self: *Views, model: *const Model, painter: *Painter) !void {
         for (model.columns.items, 0..) |file, which| {
             if (which >= self.rects.items.len) break;
-            var column: TextView = .init(file, self.rects.items[which]);
+            var column: TextView = .init(which, file, self.rects.items[which]);
             try column.draw(model, painter);
         }
     }
 
-    pub fn update(self: *Views, model: *Model, message: Message) !Intent {
+    pub fn update(self: *Views, model: *const Model, message: Message) !Effect {
         switch (message) {
             .press => |at| {
                 const which = self.over(at) orelse return .nothing;
-                if (model.focus != which) {
-                    model.focus = which;
-                    model.changed();
-                }
-                model.holding = which;
-                return self.tell(model, which, message);
+                // Landing the caret or taking hold of the scrollbar both say
+                // which column they are in, and both mean that column now has
+                // the keyboard. A press that means neither -- an empty file --
+                // still moves it.
+                const asked = try self.tell(model, which, message);
+                return switch (asked) {
+                    .nothing => .{ .focus = which },
+                    else => asked,
+                };
             },
             // Held, so a drag that wanders out of the column it began in stays
             // with it. Only the pointer is caught that way: typing goes to the
             // focused column even mid-drag.
             .move => |at| return self.tell(model, model.holding orelse self.over(at) orelse return .nothing, message),
-            .release => {
-                const which = model.holding orelse return .nothing;
-                model.holding = null;
-                return self.tell(model, which, message);
-            },
+            .release => return self.tell(model, model.holding orelse return .nothing, message),
             // Turns whatever it is under without deciding where typing lands.
             .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .nothing, message),
             else => return self.tell(model, model.focus, message),
         }
     }
 
-    fn tell(self: *Views, model: *Model, which: usize, message: Message) !Intent {
+    fn tell(self: *const Views, model: *const Model, which: usize, message: Message) !Effect {
         if (which >= model.columns.items.len or which >= self.rects.items.len) return .nothing;
-        var column: TextView = .init(model.columns.items[which], self.rects.items[which]);
+        const column: TextView = .init(which, model.columns.items[which], self.rects.items[which]);
         return column.update(model, message);
     }
 
     /// Where the nth column ends, counted from one. Worked out rather than
     /// remembered so that the columns always meet exactly, whatever the
     /// fractions, and so `place` and `over` cannot disagree.
-    fn edge(self: *const Views, model: *Model, nth: usize) f32 {
+    fn edge(self: *const Views, model: *const Model, nth: usize) f32 {
         const count = model.columns.items.len;
         if (count == 0) return self.rect.x;
         const share = self.rect.width * @as(f32, @floatFromInt(nth)) / @as(f32, @floatFromInt(count));
@@ -149,185 +150,37 @@ pub const Workbench = struct {
         self.stack.invalidate();
     }
 
-    pub fn place(self: *Workbench, model: *Model, rect: Rect) void {
+    pub fn place(self: *Workbench, model: *const Model, rect: Rect) void {
         self.stack.place(model, rect);
     }
 
-    pub fn draw(self: *Workbench, model: *Model, painter: *Painter) !void {
+    pub fn draw(self: *Workbench, model: *const Model, painter: *Painter) !void {
         try self.stack.draw(model, painter);
     }
 
     /// The bindings that are about which files are where, and then whatever is
     /// left over to the member with the keyboard.
-    pub fn update(self: *Workbench, model: *Model, message: Message) !Intent {
+    ///
+    /// A tab is named by its place on the bar rather than by its path, so
+    /// nothing here has to copy a string out of the model to say which file it
+    /// means.
+    pub fn update(self: *Workbench, model: *const Model, message: Message) !Effect {
         switch (message) {
-            .tab => |which| {
-                const file = self.tabs().nth(model, which) orelse return .nothing;
-                try self.showOnly(model, file.path orelse return .nothing);
-                return .nothing;
-            },
-            .split => |which| {
-                try self.toggleSplit(model, which);
-                return .nothing;
-            },
-            .close => {
-                try self.shut(model);
-                return .nothing;
-            },
+            .tab => |which| return .{ .show = which },
+            .split => |which| return .{ .split = which },
+            .close => return .close,
             else => {},
         }
 
         const asked = try self.stack.update(model, message);
 
         // A press on the bar moves the keyboard to it, and nothing would move
-        // it back: pressing a tab ends in `showOnly`, but pressing the empty
-        // strip beside the tabs would leave typing going nowhere.
+        // it back: pressing a tab ends in showing that file, but pressing the
+        // empty strip beside the tabs would leave typing going nowhere.
         switch (message) {
             .press => self.stack.focusOn(Views),
             else => {},
         }
-
-        return self.act(model, asked);
-    }
-
-    /// What a path means, wherever it came from. Anything else is not this to
-    /// answer and goes back the way it came.
-    pub fn act(self: *Workbench, model: *Model, intent: Intent) !Intent {
-        switch (intent) {
-            .open => |path| {
-                defer model.allocator.free(path);
-                try self.reveal(model, path);
-
-                // Choosing a file is choosing to read it, so the keyboard
-                // follows it into the column it landed in -- wherever the press
-                // that chose it happened.
-                self.stack.focusOn(Views);
-                model.changed();
-                return .nothing;
-            },
-            .only => |path| {
-                defer model.allocator.free(path);
-                try self.showOnly(model, path);
-                return .nothing;
-            },
-            else => return intent,
-        }
-    }
-
-    fn tabs(self: *Workbench) *Tabs {
-        return self.stack.get(Tabs);
-    }
-
-    fn views(self: *Workbench) *Views {
-        return self.stack.get(Views);
-    }
-
-    /// What the bar says, asked of the columns rather than remembered, so it
-    /// cannot disagree with what is on screen -- a press that moves the
-    /// keyboard to another column moves the tab in front with it, and nothing
-    /// had to tell the bar so.
-    /// Puts `path` in front of the reader, in the column with the keyboard.
-    ///
-    /// A column already showing it is left alone rather than a second copy
-    /// opened, which is both what one expects and the only way two columns
-    /// cannot drift apart -- there is one of each file, so they would be two
-    /// views of the same caret.
-    fn reveal(_: *Workbench, model: *Model, path: []const u8) !void {
-        const wanted = try model.open(path);
-
-        if (model.columnOf(wanted)) |which| {
-            model.focus = which;
-        } else if (model.focus < model.columns.items.len) {
-            model.columns.items[model.focus] = wanted;
-        } else {
-            try model.columns.append(model.allocator, wanted);
-            model.focus = model.columns.items.len - 1;
-        }
-        model.changed();
-    }
-
-    /// Shows `path` and nothing else: every other column goes back to being
-    /// open but not on screen.
-    ///
-    /// Choosing one of something is choosing it instead of the rest, which is
-    /// what makes this the plain binding and `cmd+alt` the one that adds.
-    fn showOnly(self: *Workbench, model: *Model, path: []const u8) !void {
-        const wanted = try model.open(path);
-
-        model.columns.clearRetainingCapacity();
-        try model.columns.append(model.allocator, wanted);
-        model.focus = 0;
-        self.stack.focusOn(Views);
-        model.changed();
-    }
-
-    /// Puts the nth file on the bar beside what is already split, or takes it
-    /// away again when it is already there.
-    ///
-    /// Taking one away is not closing it: the file stays on the bar with its
-    /// caret where it was, so putting it back costs nothing. The last column
-    /// cannot go -- something has to be there to type into.
-    fn toggleSplit(self: *Workbench, model: *Model, which: usize) !void {
-        const wanted = self.tabs().nth(model, which) orelse return;
-
-        if (model.columnOf(wanted)) |column| {
-            if (model.columns.items.len == 1) return;
-            _ = model.columns.orderedRemove(column);
-            if (model.focus >= model.columns.items.len) model.focus = model.columns.items.len - 1;
-        } else {
-            // Columns follow the bar's order, so one put back lands where it
-            // was rather than on the end.
-            const listed = model.indexOf(wanted) orelse return;
-            var at: usize = 0;
-            for (model.columns.items) |shown| {
-                const seen = model.indexOf(shown) orelse continue;
-                if (seen < listed) at += 1;
-            }
-            try model.columns.insert(model.allocator, at, wanted);
-            model.focus = at;
-        }
-
-        self.stack.focusOn(Views);
-        model.changed();
-    }
-
-    /// Takes the file the focused column is showing out of the window and out
-    /// of memory, and puts something else in the column. With nothing left on
-    /// the bar the window goes too.
-    ///
-    /// The column takes the first file nothing else is showing, so closing
-    /// walks back through what is open; when there is nothing left it goes
-    /// empty, which is where a window with no file named starts.
-    fn shut(_: *Workbench, model: *Model) !void {
-        const closing = model.showing() orelse return;
-
-        // One fewer column to split into. The last one stays, because
-        // something has to be there to type into.
-        if (model.columns.items.len > 1) {
-            _ = model.columns.orderedRemove(model.focus);
-            if (model.focus >= model.columns.items.len) model.focus = model.columns.items.len - 1;
-        } else {
-            // Being the only one, it takes the first file nothing else is
-            // showing instead, or a blank one when there is none.
-            var next: ?*OpenFile = null;
-            for (model.files.items) |file| {
-                if (file != closing and file.path != null) {
-                    next = file;
-                    break;
-                }
-            }
-            model.columns.items[0] = next orelse try model.blank();
-        }
-
-        model.close(closing);
-
-        // Nothing open is nothing to come back to. It is also where a window
-        // that was never given a file starts, so cmd+W on one of those is a way
-        // out rather than a keystroke that does nothing.
-        for (model.files.items) |file| {
-            if (file.path != null) break;
-        } else model.running = false;
-
-        model.changed();
+        return asked;
     }
 };
