@@ -1,12 +1,11 @@
 //! What the window shows when yaz cannot run.
 //!
-//! ripgrep and fzf are not optional -- the finder is built on them -- so a
-//! startup that cannot run both puts this up instead of an editor and turns
-//! everything else off. It says which tool is missing, where it was looked for,
-//! and what to type.
+//! The library the finder is built on is not optional, so a startup that cannot
+//! load it puts this up instead of an editor and turns everything else off. It
+//! says what is missing, where it was looked for, and what to type.
 //!
-//! It never changes while it is up: the probe runs once, at startup, so
-//! installing the tools in another terminal means starting yaz again.
+//! It never changes while it is up: the check runs once, at startup, so
+//! installing in another terminal means starting yaz again.
 
 const std = @import("std");
 

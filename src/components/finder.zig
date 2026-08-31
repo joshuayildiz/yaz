@@ -1,9 +1,9 @@
 //! The file finder: cmd+P, type, arrow keys, return.
 //!
-//! It does no listing and no matching of its own. `rg --files` says what there
-//! is to choose between, honouring .gitignore, and `fzf --filter` ranks it
-//! against what has been typed. Both are checked at startup, so by the time one
-//! of these exists they are known to run.
+//! It does no listing and no matching of its own, and nothing is spawned to do
+//! it either. The model holds an index of the tree -- built at startup, kept
+//! fresh by a watcher -- and a search against it is a function call. See
+//! src/fff.zig.
 //!
 //! The panel is a `VTuple` of two surfaces: the line being typed, and what it
 //! matched. Each says how tall it is -- the query is one line of text and its
@@ -163,8 +163,8 @@ const Query = struct {
             .{ hairline(model.atlas), model.atlas.line_height },
         ));
 
-        const shown = finding.matches.items.len;
-        const total = finding.all.items.len;
+        const shown = finding.count();
+        const total = finding.files;
         if (!self.count.shaped or self.shown != shown or self.total != total) {
             var buffer: [32]u8 = undefined;
             // Nothing typed, or everything matched: the total on its own, which
@@ -194,14 +194,14 @@ const Row = struct {
     }
 };
 
-/// What the query matched, in fzf's order.
+/// What the query matched, best first.
 const Results = struct {
     rows: [visible_rows]Row = @splat(.{}),
 
-    /// What `rows` was shaped from. The match list is one allocation that is
-    /// replaced whole on every keystroke, so its bytes and its length together
-    /// say whether these glyphs are still the right ones.
-    listed: ?[*]const []const u8 = null,
+    /// Which set of matches `rows` was shaped from. A search answers with a new
+    /// one every time, so its identity and its length together say whether
+    /// these glyphs are still the right ones.
+    listed: ?*anyopaque = null,
     count: usize = 0,
     top: usize = 0,
 
@@ -216,7 +216,7 @@ const Results = struct {
     /// not there.
     pub fn height(_: *const Results, model: *const Model) ?f32 {
         const finding = &(model.finding orelse return 0);
-        const shown = @min(finding.matches.items.len, visible_rows);
+        const shown = @min(finding.count(), visible_rows);
         if (shown == 0) return 0;
         const step = @round(model.atlas.line_height * leading);
         return @round(@as(f32, @floatFromInt(shown)) * step + 2 * @round(pad * model.atlas.scale));
@@ -237,18 +237,16 @@ const Results = struct {
     /// Shapes the rows on screen, and only those.
     fn layOut(self: *Results, model: *const Model) !void {
         const finding = &(model.finding orelse return);
-        const matches = finding.matches.items;
-        if (self.listed == matches.ptr and self.count == matches.len and self.top == finding.top) return;
+        const count = finding.count();
+        if (self.listed == finding.token() and self.count == count and self.top == finding.top) return;
 
         for (&self.rows, 0..) |*row, index| {
-            const which = finding.top + index;
-            if (which >= matches.len) {
+            const path = finding.path(finding.top + index) orelse {
                 row.name.sprites.clearRetainingCapacity();
                 row.directory.sprites.clearRetainingCapacity();
                 continue;
-            }
+            };
 
-            const path = matches[which];
             try model.atlas.shapeLine(std.fs.path.basename(path), &row.name);
 
             // Everything up to the last separator, kept: two files of the same
@@ -257,15 +255,14 @@ const Results = struct {
             try model.atlas.shapeLine(std.fs.path.dirname(path) orelse "", &row.directory);
         }
 
-        self.listed = matches.ptr;
-        self.count = matches.len;
+        self.listed = finding.token();
+        self.count = count;
         self.top = finding.top;
     }
 
     pub fn draw(self: *Results, model: *const Model, painter: *Painter) !void {
         const finding = &(model.finding orelse return);
-        const matches = finding.matches.items;
-        if (matches.len == 0) return;
+        if (finding.count() == 0) return;
         try self.layOut(model);
 
         try surface(painter, model.atlas, self.rect);
@@ -278,7 +275,7 @@ const Results = struct {
 
         for (&self.rows, 0..) |*row, index| {
             const which = finding.top + index;
-            if (which >= matches.len) break;
+            if (which >= finding.count()) break;
 
             const is_chosen = which == finding.selected;
             const top = @round(self.rect.y + inset + @as(f32, @floatFromInt(index)) * step);

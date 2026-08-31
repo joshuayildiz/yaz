@@ -31,33 +31,41 @@ binaries are cross-compiled.
 SDL, FreeType and HarfBuzz are built from source by the Zig build system and
 linked statically, so no system `-dev` packages are needed.
 
-## The two tools
+## The one library
 
-yaz runs on two external binaries — **ripgrep** to list the files the finder
-chooses between, and **fzf** to rank them against what has been typed. Neither
-is bundled. Install them with:
+The finder is built on **[fff](https://github.com/dmtrKovalenko/fff)**, which
+indexes the directory yaz was run in, honours .gitignore, ranks paths against
+what has been typed, and keeps the index current with a watcher of its own. It
+is not bundled. Install it with:
 
 ```sh
 yaz setup
 ```
 
-They land in `~/.config/yaz/bin/`, and that is the only place yaz looks. `PATH`
-is deliberately not consulted: yaz runs what it installed and checked, so
-another `rg` earlier on the path cannot quietly change what the finder does.
+It lands in `~/.config/yaz/lib/`, and that is the only place yaz looks. No
+search path is consulted: yaz loads what it installed and checked, so another
+copy elsewhere cannot quietly change what the finder does.
 
-Versions are **pinned and checksummed**. `setup` refuses to install an archive
-whose bytes do not hash to the SHA-256 recorded in `src/tools.zig`, taken from
-the checksum files published beside each release — the same rule
-`vendor/setup-macos-sdk.sh` applies to the macOS SDK, for the same reason: a
-downloaded binary is code about to be run.
+The version is **pinned and checksummed**. `setup` refuses to install bytes that
+do not hash to the SHA-256 recorded in `src/tools.zig`, taken from the `.sha256`
+published beside the release — the same rule `vendor/setup-macos-sdk.sh` applies
+to the macOS SDK, for the same reason: a downloaded library is code about to be
+run.
 
 `yaz setup` is the only thing in yaz that touches the network, and it does so
-because it was asked to. It is idempotent, and skips a tool that already runs.
+because it was asked to. It is idempotent, and skips a library that already
+loads.
 
-**Nothing else runs until both are there.** On startup yaz spawns each binary
-with `--version` and requires it to exit cleanly; if either does not, the window
-shows what is missing and where it looked, and no file on the command line is
-even read — a bad path would otherwise report the wrong problem first.
+**Nothing else runs until it is there.** On startup yaz opens the library and
+resolves every symbol it calls; if that fails, the window shows what is missing
+and where it looked, and no file on the command line is even read — a bad path
+would otherwise report the wrong problem first.
+
+It is loaded with `std.DynLib` rather than linked, so it is not part of the
+build: no Rust toolchain, no rpath, nothing for a cross-compile to arrange.
+This replaced ripgrep and fzf, which were two binaries yaz spawned as
+processes — `rg --files` on every cmd+P and `fzf --filter` on every keystroke,
+with the whole listing piped through it each time.
 
 Spawning rather than checking the file exists is deliberate: a truncated
 download or a binary for the wrong architecture is present and executable, and
@@ -189,15 +197,16 @@ list is absent rather than empty when nothing has been typed, and the panel is
 never taller than what is in it. The row return would open is tinted across the
 full width of the list.
 
-It does no listing and no matching of its own. `rg --files` says what there is
-to choose between, so .gitignore is honoured for free, and `fzf --filter` ranks
-it against what has been typed — the same ranking as fzf itself, because it *is*
-fzf.
+It does no listing and no matching of its own, and nothing is spawned to do it
+either. The index is built when the window opens and kept current by a watcher,
+so cmd+P has nothing to read and a keystroke is a call into memory: **0.02ms on
+this repository and 1.8ms on a tree of 19,542 files**, measured on an M2.
 
-That second one costs a process: **about 6.5ms per character typed**, measured
-on an M2. The listing is read once per opening rather than per keystroke, so
-that part does not grow with the repository; what a bigger one costs is fzf's
-own matching, 63ms for 50,000 candidates, which is the work fzf does anywhere.
+Matching is typo-resistant, which is worth more here than an exact prefix:
+`txtvw` finds `text_view.zig`, `opnfl` finds `open_file.zig`.
+
+A file created while yaz is running is in the index without a restart. That is
+the watcher, and it is the reason for the whole arrangement.
 
 Returning on a file that is **already open focuses that view** rather than
 opening a second copy of it. Otherwise the focused view is pointed at the new
@@ -597,8 +606,9 @@ from the atlas — and the same day will fix both.
 Every component draws into one `Painter`. A quad goes in under a **key** — a
 layer, a pipeline and a colour — and `present` sorts the runs by that key and
 issues one call per distinct one, so quads wanting the same thing end up in one
-call however many components produced them. A screenful is three calls with one
-text view, and still three with a dozen.
+call however many components produced them. A screenful is nine calls — three
+for a column, six for the bar — and sixteen with the finder over it. It is still
+nine with a dozen columns, since they share their colours.
 
 **The layer is what makes the sort safe.** These quads are alpha blended, so
 reordering them is only correct where they do not overlap, and the layer states
@@ -804,17 +814,18 @@ change nothing, which is the opposite of what the event loop is for.
 src/
   main.zig         # SDL setup, the window, the event loop, the command line
   model.zig        # the state the window is showing, and reading a file
+  fff.zig          # the file index, and the library it is kept in
   components/      # anything that is given a rect and draws in it
     vtuple.zig     #   the components of a window, top to bottom
     editor.zig     #   the files, and the finder over them
     workbench.zig  #   the files that are open, and where each one is
     tabs.zig       #   a tab per file open in the window
     text_view.zig  #   scrolling, the caret, hit-testing
-    finder.zig     #   cmd+P, driving rg and fzf
+    finder.zig     #   cmd+P: the query, and what it matched
     healthcheck.zig#   what is shown when a tool is missing
   painter.zig      # what a frame is made of, before the GPU hears about it
   text.zig         # placing a shaped line, and how wide one is
-  tools.zig        # the pinned binaries, and installing them
+  tools.zig        # the pinned library, and installing it
   message.zig      # what happened, in our words rather than SDL's
   open_file.zig    # the gap buffer, the line index, the layout cache, the caret
   renderer.zig     # GPU device, the two pipelines, drawing
@@ -838,8 +849,9 @@ the order to read it in:
 | `painter.zig` | glyph_atlas |
 | `text.zig` | glyph_atlas, painter |
 | `renderer.zig` | config, sdl, glyph_atlas, painter |
-| `tools.zig` | nothing of ours |
-| `model.zig` | glyph_atlas, open_file |
+| `fff.zig` | nothing of ours |
+| `tools.zig` | fff |
+| `model.zig` | fff, glyph_atlas, open_file, tools |
 | `components/vtuple.zig` | model, message, painter |
 | `components/tabs.zig` | config, model, message, glyph_atlas, open_file, painter, text |
 | `components/text_view.zig` | config, model, message, glyph_atlas, open_file, painter, text |
@@ -900,7 +912,7 @@ needs a height that nothing knew when the keystroke arrived, so layout is
 allowed to write that much back. Everything else goes through an effect.
 
 **A window is one component, and that component is the whole of what is on
-screen.** With ripgrep or fzf missing it is a `Healthcheck` and nothing else is
+screen.** With the library missing it is a `Healthcheck` and nothing else is
 built: no files are read, no finder exists. Otherwise it is an `Editor`, which
 is the files with the finder over them. `App` is generic over which one it got,
 so a component that is not in this window is not in this build of it, and no

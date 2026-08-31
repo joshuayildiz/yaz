@@ -22,8 +22,9 @@ still unmeasured on it. What is left to settle is in [FIXME.md](FIXME.md).
 | 9 | [One call for the text](#9-one-draw-call-for-the-text) | runs | runs | measured |
 | 10 | [Per-line layout cache](#10-per-line-layout-cache) | runs | runs | runs |
 | 11 | [Only the lines on screen](#11-only-the-lines-on-screen) | runs | runs | measured |
-| 12 | [Resolving the tool paths once](#12-resolving-the-tool-paths-once) | unrun | unrun | measured |
+| 12 | [Opening the library once](#12-opening-the-library-once-instead-of-spawning-two-binaries) | unrun | unrun | measured |
 | 13 | [Keeping a file that was looked away from](#13-keeping-a-file-that-was-looked-away-from) | unrun | unrun | measured |
+| 14 | [An index in memory](#14-an-index-in-memory-instead-of-two-processes-per-keystroke) | unrun | unrun | measured |
 
 "runs" means the build starts and draws, not that anything was measured.
 "measured" means the numbers below were taken on that platform. "unrun" means
@@ -183,8 +184,9 @@ indexes by `gl_InstanceIndex`.
 
 Components add quads to a painter under a key -- a layer, a pipeline and a colour
 -- and `present` sorts by it, so one call covers every quad wanting the same
-thing however many components produced them. A frame is three keys today, and
-would still be three with a hundred text views.
+thing however many components produced them. A frame is nine keys today -- three
+for a column, six for the bar -- and sixteen with the finder up. It would still
+be nine with a hundred columns, since they share their colours.
 
 **Rests on:** `first_instance` reaching the shader through `gl_InstanceIndex` on
 Metal as it does on Vulkan. Metal's `[[instance_id]]` counts from zero whatever
@@ -245,11 +247,13 @@ asserts that; the symptom if it ever stops holding is text that shimmers rather
 than moves. Checked by scrolling a pixel at a time and comparing frames: at 1, 2
 and 30 pixels the image is the one before it translated by exactly that much.
 
-## 12. Resolving the tool paths once
+## 12. Opening the library once, instead of spawning two binaries
 
-Startup spawns `rg --version` and `fzf --version` to check both tools work, and
-that check is on the path to the first frame. Measured on an M2, it cost
-**26.5ms** -- and only 11ms of that was the two spawns.
+Startup has to know the finder will work before it decides what kind of window
+to put up, and that check is on the path to the first frame.
+
+It used to spawn `rg --version` and `fzf --version`. Measured on an M2, that
+cost **26.5ms** -- and only 11ms of it was the two spawns.
 
 The other 15.5ms was ours. `path` asked the environment for `HOME` through
 `Environ.getAlloc`, which builds a hash map of the whole environment before
@@ -261,11 +265,22 @@ What is left is process creation for two statically linked binaries of 4MB and
 4.8MB, and it does not move: ReleaseFast measures 12-13ms, the same as Debug,
 because none of it is our code. A shell doing the same two spawns takes 8.8ms.
 
+There are no binaries to spawn now. The check is that the library the finder is
+about to use opens and that every symbol yaz calls resolves, which is stricter
+than an exit code and costs **2.7-3.4ms**, measured on an M2 in ReleaseFast --
+and that figure includes starting the index, which the old path did not do at
+all. It then charged another 4.6ms for `rg --files` on the first cmd+P.
+
+It is opened once. `Model.locate` is both the check and the thing that keeps
+the handle, because opening a 9.3MB library twice cost 3ms of the 7 it used to
+take when the check and the use were separate.
+
 **Rests on:** `getPosix` being implemented on the host. It is not on Windows,
 which still pays for `getAlloc` -- once now, rather than twice.
 
-**Check:** time `tools.missing` around the call. Anything near 26ms means the
-per-tool path lookup is back.
+**Check:** time `Model.locate` around the call. Anything near 11ms means
+something is spawning again; anything near 7ms means the library is being
+opened twice.
 
 ## 13. Keeping a file that was looked away from
 
@@ -287,6 +302,40 @@ were. A session that visits a hundred files would hold a few MB.
 **Check:** count `shapeLine` calls across a return trip. Anything above zero
 means the file is being read again rather than pointed at.
 
+## 14. An index in memory, instead of two processes per keystroke
+
+The finder used to spawn `rg --files` when it opened and `fzf --filter` on every
+character typed, writing the whole listing down a pipe each time. It now asks a
+library that already holds the tree and keeps it current with a watcher.
+
+Measured on an M2, median of the runs stated:
+
+| | old: `rg --files` per cmd+P | old: `fzf --filter` per keystroke | new: search per keystroke |
+| --- | ---: | ---: | ---: |
+| this repository, 37 files | 4.6ms | 3.3ms | **0.02ms** |
+| a tree of 19,542 files | 24.4ms | 9.7ms | **1.8ms** |
+
+The first walk costs 5.6ms here and 92ms on the larger tree, and neither is on
+the path to anything: it runs on a thread of the library's own while the window
+comes up, and a cmd+P before it finishes searches what has been found so far.
+
+Memory is what it costs: **+3.5MB** for this repository and **+10.4MB** for
+19,542 files, on top of a 9.3MB library.
+
+**Rests on:** the search being safe to call while the watcher writes. It takes a
+read lock on the index; the watcher takes the write lock. Checked by hammering
+it -- 23,698 searches against a tree while 2,889 files were created and removed
+underneath, with no failure and a clean teardown.
+
+**Check:** create a file from a shell while yaz is running, then open cmd+P and
+type its name. It should be there, and the count beside the query should have
+gone up by one. Anything else means the watcher is not running.
+
+Threads are the library's to choose: `max_threads` is passed as 0. Fanning out
+costs about 75us, which on a tree of 37 files is most of the search and on one
+of 19,542 saves 1.4ms of 3.2 -- and the second is the number that decides
+whether a keystroke feels immediate.
+
 ## Not optimizations yet
 
 Stated so they are not mistaken for finished work:
@@ -294,10 +343,6 @@ Stated so they are not mistaken for finished work:
 - **Nothing evicts an open file.** Every file visited stays in memory for
   the life of the window, whether or not a column is showing it. Fine for a working set of a few dozen files; a cap
   would be the fix if it stops being.
-- **Startup pays ~11ms to spawn both tools.** The check is that they *run*,
-  which is what catches a truncated download or a wrong-architecture binary --
-  a stat would pass both. Recording the result and re-checking only when the
-  file changes would make it nearly free after the first launch.
 - **The whole window redraws.** There is no damage tracking, so a one-character
   edit will repaint everything.
 - **Blending is done on sRGB-encoded values**, not in linear light. With the

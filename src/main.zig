@@ -27,11 +27,18 @@ pub fn main(init: std.process.Init) !void {
     // The tools before anything else: with either of them missing nothing but
     // the healthcheck runs, and reading a file first would report the wrong
     // problem when the path is also bad.
-    const absent = try tools.missing(model.allocator, model.io, init.minimal.environ);
-    if (absent.any()) {
-        const stopped = try Healthcheck.init(model.allocator, init.minimal.environ, absent);
-        return run(&model, Healthcheck, stopped, null);
-    }
+    //
+    // Opening the library is the check. It used to be two `--version` spawns
+    // of two 4MB binaries, which cost 11ms of every launch (OPTIMIZATIONS 12);
+    // this is the same library the finder is about to use, opened once, and
+    // every symbol has to resolve before it counts as working.
+    model.locate(init.minimal.environ) catch |err| switch (err) {
+        error.CannotOpenLibrary, error.MissingSymbol, error.CannotIndex => {
+            const stopped = try Healthcheck.init(model.allocator, init.minimal.environ, .{ .fff = true });
+            return run(&model, Healthcheck, stopped, null);
+        },
+        else => |other| return other,
+    };
 
     // Read out here rather than inside `run`, so a file that cannot be opened
     // fails before a window has appeared and gone again. Nothing a component is
@@ -45,7 +52,6 @@ pub fn main(init: std.process.Init) !void {
     // the context outlives the call.
     const title = model.files.items[0].path;
 
-    try model.locate(init.minimal.environ);
     return run(&model, Editor, .{}, title);
 }
 
@@ -254,7 +260,7 @@ fn setup(init: std.process.Init) !void {
         const exe = try tools.path(init.gpa, init.minimal.environ, tool);
         defer init.gpa.free(exe);
 
-        if (tools.probe(init.gpa, init.io, exe)) {
+        if (tools.probe(exe)) {
             std.log.info("{s} is already installed at {s}", .{ tool.title(), exe });
             continue;
         }
@@ -267,9 +273,9 @@ fn setup(init: std.process.Init) !void {
         };
 
         // What was written, not what was downloaded: the whole point of the
-        // check is that the thing now on disk runs.
-        if (!tools.probe(init.gpa, init.io, exe)) {
-            std.log.err("{s}: installed at {s} but it does not run", .{ tool.title(), exe });
+        // check is that the thing now on disk loads.
+        if (!tools.probe(exe)) {
+            std.log.err("{s}: installed at {s} but it does not load", .{ tool.title(), exe });
             failed = true;
             continue;
         }
@@ -297,6 +303,7 @@ test {
     _ = @import("./renderer.zig");
     _ = @import("./components/text_view.zig");
     _ = @import("./components/editor.zig");
+    _ = @import("./fff.zig");
     _ = @import("./components/htuple.zig");
     _ = @import("./components/hlist.zig");
     _ = @import("./components/tabs.zig");

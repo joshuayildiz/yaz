@@ -1,50 +1,49 @@
-//! ripgrep and fzf: the two binaries yaz is built on, and how they arrive.
+//! fff: the library the finder is built on, and how it arrives.
 //!
-//! Neither is bundled, and neither is looked for on `PATH` -- yaz runs what it
-//! installed itself, so a different `rg` earlier on the path cannot quietly
-//! change what the finder does.
+//! Not bundled, and not looked for on any search path -- yaz loads what it
+//! installed itself, so another copy elsewhere cannot quietly change what the
+//! finder does.
 //!
-//! `yaz setup` downloads a pinned release of each and refuses anything whose
-//! bytes do not hash to what is recorded below. That is the rule
+//! `yaz setup` downloads a pinned release and refuses anything whose bytes do
+//! not hash to what is recorded below. That is the rule
 //! vendor/setup-macos-sdk.sh already applies to the macOS SDK, for the same
-//! reason: a downloaded binary is code we are about to run.
+//! reason: a downloaded library is code we are about to run.
+//!
+//! It replaced ripgrep and fzf, which were two binaries spawned as processes --
+//! `rg --files` on every cmd+P and `fzf --filter` on every keystroke, with the
+//! whole listing down a pipe each time. See src/fff.zig.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
+const fff = @import("./fff.zig");
+
 const windows = builtin.target.os.tag == .windows;
 
 pub const Tool = enum {
-    /// Lists the files the finder chooses between, honouring .gitignore.
-    rg,
-    /// Ranks them against what has been typed.
-    fzf,
+    /// Indexes the tree, keeps it fresh, and ranks it against what is typed.
+    fff,
 
-    pub const all = [_]Tool{ .rg, .fzf };
+    pub const all = [_]Tool{.fff};
 
-    /// What it is called on disk, which is also what it is called inside the
-    /// archive it arrives in.
+    /// What it is called on disk. An asset arrives named for the target it was
+    /// built for, and is written under this.
     pub fn binary(self: Tool) []const u8 {
         return switch (self) {
-            .rg => if (windows) "rg.exe" else "rg",
-            .fzf => if (windows) "fzf.exe" else "fzf",
+            .fff => fff.library_name,
         };
     }
 
     /// The project's name, for anything a person reads.
     pub fn title(self: Tool) []const u8 {
         return switch (self) {
-            .rg => "ripgrep",
-            .fzf => "fzf",
+            .fff => "fff",
         };
     }
 };
 
-const rg_version = "15.2.0";
-const fzf_version = "0.74.3";
-
-const rg_base = "https://github.com/BurntSushi/ripgrep/releases/download/" ++ rg_version ++ "/";
-const fzf_base = "https://github.com/junegunn/fzf/releases/download/v" ++ fzf_version ++ "/";
+const fff_version = "0.10.6";
+const fff_base = "https://github.com/dmtrKovalenko/fff/releases/download/v" ++ fff_version ++ "/";
 
 /// The pin's hash as bytes. Comptime, so a mistyped constant is a build error
 /// rather than a download that can never verify.
@@ -65,82 +64,51 @@ const Pin = struct {
     sha256: [32]u8,
 };
 
-const Pins = struct { rg: Pin, fzf: Pin };
+const Pins = struct { fff: Pin };
 
-/// Taken from the checksum files published beside each release: ripgrep ships
-/// one `.sha256` per asset, fzf one file for all of them.
+/// Taken from the `.sha256` published beside each asset. The assets are bare
+/// libraries rather than archives, so what is downloaded is what is written.
 ///
-/// A target with no entry here is one whose tools yaz cannot install, which is
-/// better as a build error than as a surprise on someone's machine.
+/// A target with no entry here is one whose library yaz cannot install, which
+/// is better as a build error than as a surprise on someone's machine.
 const pinned: Pins = switch (builtin.target.os.tag) {
     .macos => switch (builtin.target.cpu.arch) {
-        .aarch64 => .{
-            .rg = .{
-                .url = rg_base ++ "ripgrep-" ++ rg_version ++ "-aarch64-apple-darwin.tar.gz",
-                .sha256 = digestOf("3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4"),
-            },
-            .fzf = .{
-                .url = fzf_base ++ "fzf-" ++ fzf_version ++ "-darwin_arm64.tar.gz",
-                .sha256 = digestOf("1f8501cea4f9c0c2d6110d0ff75d0ec9451cd9d7524d9a26244a154ea89f3bd5"),
-            },
-        },
-        .x86_64 => .{
-            .rg = .{
-                .url = rg_base ++ "ripgrep-" ++ rg_version ++ "-x86_64-apple-darwin.tar.gz",
-                .sha256 = digestOf("af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1"),
-            },
-            .fzf = .{
-                .url = fzf_base ++ "fzf-" ++ fzf_version ++ "-darwin_amd64.tar.gz",
-                .sha256 = digestOf("b8a231250eedec244539ade3dc437bcd60e545a099c6cc0c8a11bdbd8574b9bc"),
-            },
-        },
-        else => @compileError("no pinned ripgrep and fzf for this macOS architecture"),
+        .aarch64 => .{ .fff = .{
+            .url = fff_base ++ "c-lib-aarch64-apple-darwin.dylib",
+            .sha256 = digestOf("5d66ccbe80d9506ef55f5fa0c3f05fb97a024de4c6d00cb6428d22155cad01aa"),
+        } },
+        .x86_64 => .{ .fff = .{
+            .url = fff_base ++ "c-lib-x86_64-apple-darwin.dylib",
+            .sha256 = digestOf("e4c055909fe59c9c441e949a6f7c0ea21638965821fc2385e4d4a391579bc5a2"),
+        } },
+        else => @compileError("no pinned fff for this macOS architecture"),
     },
+    // musl rather than gnu: the same library then runs whatever libc the
+    // machine has, which is the point of installing one ourselves.
     .linux => switch (builtin.target.cpu.arch) {
-        // musl rather than gnu: the same binary then runs whatever libc the
-        // machine has, which is the point of installing one ourselves.
-        .x86_64 => .{
-            .rg = .{
-                .url = rg_base ++ "ripgrep-" ++ rg_version ++ "-x86_64-unknown-linux-musl.tar.gz",
-                .sha256 = digestOf("33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c"),
-            },
-            .fzf = .{
-                .url = fzf_base ++ "fzf-" ++ fzf_version ++ "-linux_amd64.tar.gz",
-                .sha256 = digestOf("3501a595e4b5c40a6b047340a0e8f805c46fd4e61ef95ef8a136ba8c61cf6f22"),
-            },
-        },
-        .aarch64 => .{
-            .rg = .{
-                .url = rg_base ++ "ripgrep-" ++ rg_version ++ "-aarch64-unknown-linux-musl.tar.gz",
-                .sha256 = digestOf("800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915"),
-            },
-            .fzf = .{
-                .url = fzf_base ++ "fzf-" ++ fzf_version ++ "-linux_arm64.tar.gz",
-                .sha256 = digestOf("4a17a17b46bd0c4873e995533de508995c11572c0be0664a5dbcf13f60463046"),
-            },
-        },
-        else => @compileError("no pinned ripgrep and fzf for this Linux architecture"),
+        .x86_64 => .{ .fff = .{
+            .url = fff_base ++ "c-lib-x86_64-unknown-linux-musl.so",
+            .sha256 = digestOf("7f4335963f629ec00ac2e4764d16f82d48b973e136afb0102bd22f1e0bd7ac62"),
+        } },
+        .aarch64 => .{ .fff = .{
+            .url = fff_base ++ "c-lib-aarch64-unknown-linux-musl.so",
+            .sha256 = digestOf("2d49d947478494b559493eb01d1e0d6be08e6d74ed7361487a79524592af30f2"),
+        } },
+        else => @compileError("no pinned fff for this Linux architecture"),
     },
     .windows => switch (builtin.target.cpu.arch) {
-        .x86_64 => .{
-            .rg = .{
-                .url = rg_base ++ "ripgrep-" ++ rg_version ++ "-x86_64-pc-windows-msvc.zip",
-                .sha256 = digestOf("71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5"),
-            },
-            .fzf = .{
-                .url = fzf_base ++ "fzf-" ++ fzf_version ++ "-windows_amd64.zip",
-                .sha256 = digestOf("cf5c137d9b391c3988c54af8f5fc490ffbef6f70444651e7d57fdb45ad04c8bd"),
-            },
-        },
-        else => @compileError("no pinned ripgrep and fzf for this Windows architecture"),
+        .x86_64 => .{ .fff = .{
+            .url = fff_base ++ "c-lib-x86_64-pc-windows-msvc.dll",
+            .sha256 = digestOf("7da6fd485b8d8a3398cc403d37e5f1d0c5d7771840970576298e36e61e13249d"),
+        } },
+        else => @compileError("no pinned fff for this Windows architecture"),
     },
-    else => @compileError("no pinned ripgrep and fzf for this operating system"),
+    else => @compileError("no pinned fff for this operating system"),
 };
 
 fn pin(tool: Tool) Pin {
     return switch (tool) {
-        .rg => pinned.rg,
-        .fzf => pinned.fzf,
+        .fff => pinned.fff,
     };
 }
 
@@ -168,71 +136,53 @@ fn home(allocator: std.mem.Allocator, environ: std.process.Environ) ![]u8 {
 
 /// Apart from the environment so it can be tested without one.
 fn pathUnder(allocator: std.mem.Allocator, where: []const u8, tool: Tool) ![]u8 {
-    return std.fs.path.join(allocator, &.{ where, ".config", "yaz", "bin", tool.binary() });
+    return std.fs.path.join(allocator, &.{ where, ".config", "yaz", "lib", tool.binary() });
 }
 
-/// Whether the binary at `exe` runs.
+/// Whether the library at `exe` loads and has everything yaz calls.
 ///
-/// Spawned rather than stat-ed. A stat calls a truncated download, a
-/// wrong-architecture binary, or one missing a shared library healthy, and the
-/// finder would then be what discovered otherwise -- in the middle of a
-/// keystroke, rather than at startup where it can be reported.
-pub fn probe(allocator: std.mem.Allocator, io: std.Io, exe: []const u8) bool {
-    const result = std.process.run(allocator, io, .{ .argv = &.{ exe, "--version" } }) catch return false;
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    return switch (result.term) {
-        .exited => |code| code == 0,
-        else => false,
-    };
+/// Opened rather than stat-ed. A stat calls a truncated download or a library
+/// built for another architecture healthy, and the finder would then be what
+/// discovered otherwise -- in the middle of a keystroke, rather than at startup
+/// where it can be reported.
+///
+/// This used to spawn `--version`, back when the tools were executables, and
+/// two spawns of a 4MB binary cost 11ms of every launch (OPTIMIZATIONS 12).
+/// Loading a library yaz is about to load anyway costs a fraction of that and
+/// checks more: every symbol has to resolve, not just the entry point.
+pub fn probe(exe: []const u8) bool {
+    var lib = fff.Library.open(exe) catch return false;
+    lib.close();
+    return true;
 }
 
 /// Which tools are not working. Everything but the healthcheck is off while any
 /// of them are.
 pub const Missing = struct {
-    rg: bool,
-    fzf: bool,
+    fff: bool,
 
     pub fn any(self: Missing) bool {
-        return self.rg or self.fzf;
+        return self.fff;
     }
 
     pub fn has(self: Missing, tool: Tool) bool {
         return switch (tool) {
-            .rg => self.rg,
-            .fzf => self.fzf,
+            .fff => self.fff,
         };
     }
 };
 
-pub fn missing(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ) !Missing {
-    // Asked once rather than once per tool: it is the same answer both times.
-    const where = try home(allocator, environ);
-    defer allocator.free(where);
-
-    var out: Missing = .{ .rg = true, .fzf = true };
-    for (Tool.all) |tool| {
-        const exe = try pathUnder(allocator, where, tool);
-        defer allocator.free(exe);
-
-        const working = probe(allocator, io, exe);
-        switch (tool) {
-            .rg => out.rg = !working,
-            .fzf => out.fzf = !working,
-        }
-    }
-    return out;
-}
-
 test "a tool's path is under the home directory it was given" {
     const allocator = std.testing.allocator;
 
-    const rg = try pathUnder(allocator, "/Users/someone", .rg);
-    defer allocator.free(rg);
+    const found = try pathUnder(allocator, "/Users/someone", .fff);
+    defer allocator.free(found);
     try std.testing.expectEqualStrings(
-        if (windows) "/Users/someone\\.config\\yaz\\bin\\rg.exe" else "/Users/someone/.config/yaz/bin/rg",
-        rg,
+        if (windows)
+            "/Users/someone\\.config\\yaz\\lib\\" ++ fff.library_name
+        else
+            "/Users/someone/.config/yaz/lib/" ++ fff.library_name,
+        found,
     );
 }
 
@@ -243,34 +193,36 @@ test "every pinned url names the version it is pinned to" {
         try std.testing.expectEqual(@as(usize, 32), p.sha256.len);
 
         const version = switch (tool) {
-            .rg => rg_version,
-            .fzf => fzf_version,
+            .fff => fff_version,
         };
         try std.testing.expect(std.mem.indexOf(u8, p.url, version) != null);
     }
 }
 
-/// Downloads the pinned release for `tool` and installs its binary.
+/// Downloads the pinned release for `tool` and installs it.
 ///
-/// Nothing is written until the archive hashes to the pin, and what is written
+/// Nothing is written until the bytes hash to the pin, and what is written
 /// lands under a temporary name and is renamed into place -- so an install that
-/// fails part way through leaves either the old binary or none, never half of a
-/// new one for `probe` to have to explain.
+/// fails part way through leaves either the old library or none, never half of
+/// a new one for `probe` to have to explain.
+///
+/// The asset is the library itself rather than an archive holding it, so there
+/// is nothing to unpack: what was verified is what is written.
 pub fn install(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ, tool: Tool) !void {
     const p = pin(tool);
 
     const exe = try path(allocator, environ, tool);
     defer allocator.free(exe);
 
-    var archive: std.Io.Writer.Allocating = .init(allocator);
-    defer archive.deinit();
+    var body: std.Io.Writer.Allocating = .init(allocator);
+    defer body.deinit();
 
     var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
 
     const answer = client.fetch(.{
         .location = .{ .url = p.url },
-        .response_writer = &archive.writer,
+        .response_writer = &body.writer,
     }) catch |err| {
         std.log.err("{s}: {s}: {s}", .{ tool.title(), p.url, @errorName(err) });
         return error.DownloadFailed;
@@ -280,7 +232,7 @@ pub fn install(allocator: std.mem.Allocator, io: std.Io, environ: std.process.En
         return error.DownloadFailed;
     }
 
-    const bytes = archive.written();
+    const bytes = body.written();
 
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
@@ -299,88 +251,12 @@ pub fn install(allocator: std.mem.Allocator, io: std.Io, environ: std.process.En
     defer allocator.free(partial);
     errdefer dir.deleteFile(io, partial) catch {};
 
-    try unpack(allocator, io, dir, bytes, tool, partial);
-    try dir.rename(partial, dir, tool.binary(), io);
-}
-
-/// Writes the one file we came for out of the archive, and ignores the rest:
-/// ripgrep ships its binary inside a versioned directory alongside a README, a
-/// licence and man pages, fzf ships the binary alone. Matching on the name
-/// rather than a path is what lets one rule cover both.
-fn unpack(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    dir: std.Io.Dir,
-    bytes: []const u8,
-    tool: Tool,
-    into: []const u8,
-) !void {
-    if (windows) return unpackZip(allocator, io, dir, bytes, tool, into);
-
-    var input: std.Io.Reader = .fixed(bytes);
-    var window: [64 * 1024]u8 = undefined;
-    var gzip: std.compress.flate.Decompress = .init(&input, .gzip, &window);
-
-    var name_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    var link_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    var entries: std.tar.Iterator = .init(&gzip.reader, .{
-        .file_name_buffer = &name_buffer,
-        .link_name_buffer = &link_buffer,
+    // Executable, even though nothing runs it: a library loaded by `dlopen`
+    // needs the bit on macOS, and it costs nothing where it does not.
+    try dir.writeFile(io, .{
+        .sub_path = partial,
+        .data = bytes,
+        .flags = .{ .permissions = .executable_file },
     });
-
-    while (try entries.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.eql(u8, std.fs.path.basename(entry.name), tool.binary())) continue;
-
-        var file = try dir.createFile(io, into, .{ .permissions = .executable_file });
-        defer file.close(io);
-
-        var buffer: [64 * 1024]u8 = undefined;
-        var out = file.writer(io, &buffer);
-        try entries.streamRemaining(entry, &out.interface);
-        try out.interface.flush();
-        return;
-    }
-
-    std.log.err("{s}: no '{s}' inside the archive", .{ tool.title(), tool.binary() });
-    return error.BinaryNotInArchive;
-}
-
-/// Windows releases are zips, which `std.zip` reads by seeking rather than by
-/// streaming, so the bytes go to a file first.
-fn unpackZip(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    dir: std.Io.Dir,
-    bytes: []const u8,
-    tool: Tool,
-    into: []const u8,
-) !void {
-    const staging = "unpacking";
-    try dir.writeFile(io, .{ .sub_path = staging ++ ".zip", .data = bytes });
-    defer dir.deleteFile(io, staging ++ ".zip") catch {};
-
-    var opened = try dir.openFile(io, staging ++ ".zip", .{});
-    defer opened.close(io);
-
-    var read_buffer: [64 * 1024]u8 = undefined;
-    var reader = opened.reader(io, &read_buffer);
-
-    var unpacked = try dir.createDirPathOpen(io, staging, .{ .open_options = .{ .iterate = true } });
-    defer unpacked.close(io);
-    defer dir.deleteTree(io, staging) catch {};
-
-    try std.zip.extract(unpacked, &reader, .{});
-
-    var walker = try unpacked.walk(allocator);
-    defer walker.deinit();
-    while (try walker.next(io)) |found| {
-        if (found.kind != .file) continue;
-        if (!std.mem.eql(u8, std.fs.path.basename(found.path), tool.binary())) continue;
-        try unpacked.rename(found.path, dir, into, io);
-        return;
-    }
-
-    std.log.err("{s}: no '{s}' inside the archive", .{ tool.title(), tool.binary() });
-    return error.BinaryNotInArchive;
+    try dir.rename(partial, dir, tool.binary(), io);
 }
