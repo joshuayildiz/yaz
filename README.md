@@ -123,6 +123,26 @@ show a `.notdef` box at the end of every line. The bytes in memory then stop
 matching the file exactly, which is a trade to revisit when there is a way to
 save.
 
+## Finding a file
+
+**cmd+P** (ctrl+P elsewhere; either works on any platform) opens a finder over
+whatever is on screen. Type to narrow, up and down to move the selection, return
+to open, escape to close.
+
+It does no listing and no matching of its own. `rg --files` says what there is
+to choose between, so .gitignore is honoured for free, and `fzf --filter` ranks
+it against what has been typed — the same ranking as fzf itself, because it *is*
+fzf.
+
+That second one costs a process: **about 6.5ms per character typed**, measured
+on an M2. The listing is read once per opening rather than per keystroke, so
+that part does not grow with the repository; what a bigger one costs is fzf's
+own matching, 63ms for 50,000 candidates, which is the work fzf does anywhere.
+
+Returning on a file that is **already open focuses that view** rather than
+opening a second copy of it. Otherwise the focused view is pointed at the new
+file, and the old document, its layout cache, its caret and its scroll all go.
+
 ## Platform notes
 
 The GPU backend is **Vulkan** on Linux and Windows, and **Metal** on macOS.
@@ -711,6 +731,9 @@ change nothing, which is the opposite of what the event loop is for.
 src/
   main.zig         # SDL setup, the window, the event loop, opening a file
   text_view.zig    # scrolling, the caret, hit-testing
+  finder.zig       # cmd+P, driving rg and fzf
+  healthcheck.zig  # what is shown when a tool is missing
+  tools.zig        # the pinned binaries, and installing them
   event.zig        # what happened, in our words rather than SDL's
   document.zig     # the gap buffer, the line index, the layout cache
   renderer.zig     # GPU device, the two pipelines, drawing
@@ -733,7 +756,9 @@ the order to read it in:
 | `document.zig` | glyph_atlas |
 | `renderer.zig` | config, sdl, glyph_atlas |
 | `text_view.zig` | document, event, glyph_atlas |
-| `main.zig` | event, renderer, text_view, sdl |
+| `tools.zig` | nothing of ours |
+| `finder.zig`, `healthcheck.zig` | config, event, glyph_atlas, painter, tools |
+| `main.zig` | all of the above |
 
 Where to start depends on what you are changing: what a keystroke does is
 `TextView.handle`; where text lands on screen is `TextView.layout`; what a glyph

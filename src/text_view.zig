@@ -56,6 +56,11 @@ pub const TextView = struct {
     gpa: std.mem.Allocator,
     document: Document,
 
+    /// What this view is showing, as it was named, or null for a document
+    /// nobody named. Owned. Kept so the finder can tell whether a file is
+    /// already open somewhere rather than opening a second copy of it.
+    path: ?[]u8 = null,
+
     /// Where the next character lands, as a byte offset into the document, and
     /// where the caret is drawn. One number rather than a line and a column:
     /// every edit already speaks in offsets, and a pair would be a second thing
@@ -91,16 +96,44 @@ pub const TextView = struct {
 
     /// The caret starts at the top: nothing scrolls yet, so a caret at the end
     /// of a long file is one nobody can see.
-    pub fn init(gpa: std.mem.Allocator, text: []const u8) !TextView {
+    pub fn init(gpa: std.mem.Allocator, text: []const u8, path: ?[]const u8) !TextView {
+        var document = try Document.init(gpa, text);
+        errdefer document.deinit();
+
         return .{
             .gpa = gpa,
-            .document = try Document.init(gpa, text),
+            .document = document,
+            .path = if (path) |named| try gpa.dupe(u8, named) else null,
             .cursor = 0,
         };
     }
 
+    /// Points this view at another file.
+    ///
+    /// Nothing of the old one survives but the room the view was given: the
+    /// document goes, and its layout cache with it, and the caret and the
+    /// scroll go back to the top, because they described somewhere else.
+    pub fn reopen(self: *TextView, text: []const u8, path: []const u8) !void {
+        var document = try Document.init(self.gpa, text);
+        errdefer document.deinit();
+        const named = try self.gpa.dupe(u8, path);
+
+        self.document.deinit();
+        if (self.path) |old| self.gpa.free(old);
+
+        self.document = document;
+        self.path = named;
+        self.cursor = 0;
+        self.scroll = 0;
+        self.pending = 0;
+        self.follow_caret = false;
+        self.drag = null;
+        self.dirty = true;
+    }
+
     pub fn deinit(self: *TextView) void {
         self.document.deinit();
+        if (self.path) |named| self.gpa.free(named);
     }
 
     pub fn insert(self: *TextView, text: []const u8) !void {

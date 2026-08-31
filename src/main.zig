@@ -9,6 +9,7 @@ const Rect = @import("./painter.zig").Rect;
 const sdl = @import("./sdl.zig");
 const tools = @import("./tools.zig");
 const Healthcheck = @import("./healthcheck.zig").Healthcheck;
+const Finder = @import("./finder.zig").Finder;
 const c = sdl.c;
 
 /// The largest file yaz will open. What still costs per line of the document
@@ -76,17 +77,23 @@ pub fn main(init: std.process.Init) !void {
 
     var app: App = .{
         .gpa = init.gpa,
+        .io = init.io,
         .health = if (absent.any())
             try Healthcheck.init(init.gpa, init.minimal.environ, absent)
         else
             null,
         .renderer = try Renderer.init(init.gpa, window),
         .painter = .init(init.gpa),
+        // Only where there is an editor to find files for. With a tool missing
+        // its paths cannot even be resolved.
+        .finder = if (absent.any()) null else try Finder.init(init.gpa, init.io, init.minimal.environ),
     };
     defer app.deinit();
 
     try app.views.ensureTotalCapacity(init.gpa, opened.items.len);
-    for (opened.items) |file| app.views.appendAssumeCapacity(try TextView.init(init.gpa, file.text));
+    for (opened.items) |file| {
+        app.views.appendAssumeCapacity(try TextView.init(init.gpa, file.text, file.path));
+    }
 
     if (!c.SDL_AddEventWatch(redrawWhileResizing, &app)) {
         std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
@@ -134,9 +141,14 @@ const App = struct {
     gpa: std.mem.Allocator,
     renderer: Renderer,
 
+    io: std.Io = undefined,
+
     /// When set, one of the two tools does not run, and this is the whole
     /// window: no views, no files read, nothing routed anywhere else.
     health: ?Healthcheck = null,
+
+    /// Null only alongside `health`, for the same reason.
+    finder: ?Finder = null,
 
     /// Left to right across the window. Empty only while `health` is set; a
     /// document nobody named is still a document.
@@ -155,6 +167,7 @@ const App = struct {
     dirty: bool = true,
 
     fn deinit(self: *App) void {
+        if (self.finder) |*finder| finder.deinit();
         if (self.health) |*health| health.deinit();
         for (self.views.items) |*view| view.deinit();
         self.views.deinit(self.gpa);
@@ -165,6 +178,9 @@ const App = struct {
     /// Answers for everything it holds, so the loop asks one thing.
     fn isDirty(self: *const App) bool {
         if (self.health) |*health| return self.dirty or health.isDirty();
+        if (self.finder) |*finder| {
+            if (finder.isDirty()) return true;
+        }
         for (self.views.items) |*view| {
             if (view.isDirty()) return true;
         }
@@ -174,6 +190,7 @@ const App = struct {
     fn setDirty(self: *App, value: bool) void {
         self.dirty = value;
         if (self.health) |*health| return health.setDirty(value);
+        if (self.finder) |*finder| finder.setDirty(value);
         for (self.views.items) |*view| view.setDirty(value);
     }
 
@@ -181,6 +198,9 @@ const App = struct {
     /// left to right.
     fn place(self: *App, rect: Rect) void {
         if (self.health) |*health| return health.place(rect);
+
+        // The whole window: it is an overlay, not one of the columns.
+        if (self.finder) |*finder| finder.place(rect);
 
         const count: f32 = @floatFromInt(self.views.items.len);
         var left = rect.x;
@@ -211,6 +231,21 @@ const App = struct {
 
         // Nothing below the window works while a tool is missing.
         if (self.health) |*health| return health.update(event);
+
+        if (self.finder) |*finder| {
+            if (event == .find and !finder.isOpen()) return finder.show();
+
+            // While it is up it has the keyboard entirely, and the pointer is
+            // not routed to it at all -- clicking a view behind it would be a
+            // way to type into something the panel is covering.
+            if (finder.isOpen()) {
+                if (try finder.update(event)) |path| {
+                    defer self.gpa.free(path);
+                    try self.reveal(path);
+                }
+                return;
+            }
+        }
 
         const atlas = &self.renderer.atlas;
 
@@ -261,6 +296,30 @@ const App = struct {
     fn draw(self: *App, painter: *Painter) !void {
         if (self.health) |*health| return health.draw(&self.renderer.atlas, painter);
         for (self.views.items) |*view| try view.draw(&self.renderer.atlas, painter);
+        if (self.finder) |*finder| try finder.draw(&self.renderer.atlas, painter);
+    }
+
+    /// Puts `path` in front of the reader.
+    ///
+    /// A view already showing it is focused rather than a second copy opened,
+    /// which is both what one expects and the only way two views of one file
+    /// cannot drift apart -- they share no document.
+    fn reveal(self: *App, path: []const u8) !void {
+        for (self.views.items, 0..) |*view, which| {
+            const named = view.path orelse continue;
+            if (!std.mem.eql(u8, named, path)) continue;
+
+            self.focus = which;
+            return;
+        }
+
+        // Through `open`, so a file picked here meets the same rules as one
+        // named on the command line: the size limit, the UTF-8 check, and CRLF
+        // turned into LF.
+        var file = try open(self.gpa, self.io, path);
+        defer file.deinit(self.gpa);
+
+        try self.views.items[self.focus].reopen(file.text, path);
     }
 
     fn redraw(self: *App) !void {
@@ -270,6 +329,7 @@ const App = struct {
         const scale = displayScale(self.renderer.window);
         if (try self.renderer.atlas.setScale(scale)) {
             if (self.health) |*health| health.invalidate();
+            if (self.finder) |*finder| finder.invalidate();
             for (self.views.items) |*view| view.invalidate();
         }
 
@@ -393,7 +453,7 @@ fn openAll(init: std.process.Init) !std.ArrayList(Opened) {
 
     // Read one at a time rather than gathering the paths first: the iterator
     // owns what it returns until the next call, and `open` copies it.
-    while (args.next()) |named| try opened.append(init.gpa, try open(init, named));
+    while (args.next()) |named| try opened.append(init.gpa, try open(init.gpa, init.io, named));
 
     if (opened.items.len == 0) {
         try opened.append(init.gpa, .{ .text = try init.gpa.alloc(u8, 0), .path = null });
@@ -406,12 +466,12 @@ fn openAll(init: std.process.Init) !std.ArrayList(Opened) {
 /// A path that does not exist opens empty under that name, the way a new file
 /// starts. Anything else stops the program: an empty window otherwise looks
 /// exactly like an empty file.
-fn open(init: std.process.Init, named: []const u8) !Opened {
-    const path = try init.gpa.dupeZ(u8, named);
-    errdefer init.gpa.free(path);
+fn open(gpa: std.mem.Allocator, io: std.Io, named: []const u8) !Opened {
+    const path = try gpa.dupeZ(u8, named);
+    errdefer gpa.free(path);
 
-    const contents = std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .limited(file_limit)) catch |err| switch (err) {
-        error.FileNotFound => return .{ .text = try init.gpa.alloc(u8, 0), .path = path },
+    const contents = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(file_limit)) catch |err| switch (err) {
+        error.FileNotFound => return .{ .text = try gpa.alloc(u8, 0), .path = path },
         error.StreamTooLong => {
             std.log.err(
                 "{s} is larger than the {d}MB yaz will open: the layout cache holds an entry for every line of it, on screen or not",
@@ -424,14 +484,14 @@ fn open(init: std.process.Init, named: []const u8) !Opened {
             return other;
         },
     };
-    errdefer init.gpa.free(contents);
+    errdefer gpa.free(contents);
 
     if (firstInvalidUtf8(contents)) |offset| {
         std.log.err("{s} is not UTF-8: the byte at offset {d} does not begin or continue a character", .{ path, offset });
         return error.InvalidUtf8;
     }
 
-    return .{ .text = try stripCarriageReturns(init.gpa, contents), .path = path };
+    return .{ .text = try stripCarriageReturns(gpa, contents), .path = path };
 }
 
 /// An offset rather than a yes or no, because the offset is the part a caller
