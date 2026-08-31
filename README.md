@@ -862,8 +862,8 @@ release — and answers null for the rest, which is most of it. Window coordinat
 become pixels there, once, so nothing downstream knows what a display scale is.
 
 What comes out goes to `App` first: it acts on what belongs to the window — quit,
-resize, cmd+P — and hands the rest to its stack. Nothing below takes an
-`SDL_Event`.
+resize, cmd+P — and hands the rest to the one component it was given. Nothing
+below takes an `SDL_Event`.
 
 Every component shares the same six: `place` to be given room, `update` to be
 told what happened, `draw` to add quads to a painter, `isDirty`/`setDirty` so a
@@ -871,29 +871,30 @@ parent answers for what it holds, and `invalidate` for the one thing none of the
 survives — the atlas rebuilt at a different scale. A parent calls them on its
 children, so the tree is the type system rather than a vtable.
 
-**A window is a `ZTuple`, and it is the whole of what is on screen.** Its members
-are fixed at compile time and their order is not: *everything in it draws, back
-to front*, and *only the one in front is told what happened*. That is why the
+**A window is one component, and that component is the whole of what is on
+screen.** It is a `ZTuple` when more than one thing is in it, whose members are
+fixed at compile time and whose order is not: *everything in it draws, back to
+front*, and *only the one in front is told what happened*. That is why the
 finder can be two small surfaces with the code still at full contrast either
 side of them — the document is genuinely still being drawn — and why a click
 cannot reach a view the finder is covering. `raise` and `lowerFront` are the whole of opening a panel and putting
 it away; there is no separate notion of a thing being open.
 
-**The tool check decides which stack there is, once, in `main`.** With ripgrep or
-fzf missing the window is `ZTuple(&.{Healthcheck})` and nothing else is built —
-no files are read, no finder exists. Otherwise it is
-`ZTuple(&.{ Finder, Views })`, listed back to front, so the finder sits behind
-the text until cmd+P brings it forward. `App` is generic over which one it got,
-so a component that is not in this window is not in this build of it: the
-branches that name one are compiled out where there is none. No code below `main`
+**The tool check decides what the window is, once, in `main`.** With ripgrep or
+fzf missing the window *is* a `Healthcheck` — not a stack containing one — and
+nothing else is built: no files are read, no finder exists. Otherwise it is
+`ZTuple(&.{ Finder, Workspace })`, listed back to front, so the finder sits
+behind the text until cmd+P brings it forward. `App` is generic over which one
+it got, so a component that is not in this window is not in this build of it:
+the branches that name one are compiled out where there is none. No code below `main`
 can ask whether a tool is missing, because nothing below `main` is told.
 
-**A component answers an event with an `Intent`** — `nothing`, `dismiss`, or
-`open` with a path. It is how the finder, which knows what was picked, reaches
-`App`, which knows what to do with it, without the finder and the views knowing
-about each other. `App` is the only thing that acts on one, because it is the
-only thing that knows what else is in the stack — and it is where the parked
-documents live, since a row is a layout and knows nothing about files.
+**A component answers an event with an `Intent`** — `nothing`, `dismiss`, `open`
+with a path, or `only` with one. It is how the finder, which knows what was
+picked, reaches `App`, which knows what to do with it, without the finder and
+the views knowing about each other. `App` is the only thing that acts on one,
+because it is the only thing that knows what else is in the window — and it is
+where the parked documents live, since a row is a layout and knows nothing about files.
 
 **`HTuple` is the same idea across.** Same fixed members, and what varies is
 which one has the keyboard rather than which one is in front: they sit side by
@@ -926,8 +927,8 @@ the document ready to be typed into rather than with the bar holding it.
 
 `Tabs` lays its own tabs out rather than being an `HList`, because a row of equal
 shares is the wrong shape for a row of words: each tab is as wide as the name in
-it. It answers a press with `Intent.open`, exactly as the finder does, so one
-piece of code above acts on both.
+it. It answers a press with `Intent.only`, the same thing cmd+N means, so a tab
+reached either way says the same thing.
 
 **`VTuple` is the third of the tuples, and the only one whose members are not all
 the same size.** A ZTuple gives every member the whole rect and an HTuple divides it

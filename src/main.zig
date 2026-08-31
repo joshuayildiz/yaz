@@ -39,14 +39,13 @@ pub fn main(init: std.process.Init) !void {
     // problem when the path is also bad.
     const absent = try tools.missing(init.gpa, init.io, init.minimal.environ);
     if (absent.any()) {
-        return run(Stopped, init.gpa, init.io, .init(.{
-            try Healthcheck.init(init.gpa, init.minimal.environ, absent),
-        }));
+        const stopped = try Healthcheck.init(init.gpa, init.minimal.environ, absent);
+        return run(Healthcheck, init.gpa, init.io, stopped);
     }
 
     // Read out here rather than inside `run`, so a file that cannot be opened
-    // fails before a window has appeared and gone again. Nothing in a stack
-    // needs a window to be built.
+    // fails before a window has appeared and gone again. Nothing a component is
+    // built from needs a window.
     var views = try openViews(init);
     errdefer views.deinit();
 
@@ -91,10 +90,6 @@ const Parked = struct {
     const Map = std.StringHashMapUnmanaged(Parked);
 };
 
-/// The window when a tool is missing: one component, and nothing that could go
-/// in front of it.
-const Stopped = ZTuple(&.{Healthcheck});
-
 /// Left to right, one per file named. A list rather than a tuple because how
 /// many there are is not known until the command line has been read.
 const Views = HList(TextView);
@@ -107,13 +102,23 @@ const Workspace = VTuple(&.{ Tabs, Views });
 /// forward, so opening and closing it is a change of order and nothing else.
 const Editing = ZTuple(&.{ Finder, Workspace });
 
-/// The window, and whatever `main` decided goes in it.
+/// Whether `T` is in this window, asked of the component `main` gave it.
 ///
-/// Generic over the stack rather than holding one of each kind, so a component
-/// that is not in this window does not exist in this build of it: the branches
-/// below that name one are compiled out where there is none. The tool check
-/// happens once, in `main`, and nothing here can ask again.
-fn App(comptime Stack: type) type {
+/// A component that composes others answers for its members; one that does not
+/// is only itself, which is what makes a bare `Healthcheck` a whole window
+/// rather than something that has to be wrapped in a stack of one to be run.
+fn holds(comptime Component: type, comptime T: type) bool {
+    if (Component == T) return true;
+    return @hasDecl(Component, "has") and Component.has(T);
+}
+
+/// The window, and the one component `main` put in it.
+///
+/// Generic over that component rather than holding one of each kind, so a
+/// component that is not in this window does not exist in this build of it: the
+/// branches below that name one are compiled out where there is none. The tool
+/// check happens once, in `main`, and nothing here can ask again.
+fn App(comptime Component: type) type {
     return struct {
         const Self = @This();
 
@@ -121,7 +126,7 @@ fn App(comptime Stack: type) type {
         io: std.Io,
         renderer: Renderer,
         painter: Painter,
-        stack: Stack,
+        component: Component,
 
         /// Files that have been looked at and are not on screen now.
         ///
@@ -136,8 +141,8 @@ fn App(comptime Stack: type) type {
 
         running: bool = true,
 
-        /// What has changed at this level, as against inside the stack. True to
-        /// begin with: the first frame has never been drawn.
+        /// What has changed at this level, as against inside the component.
+        /// True to begin with: the first frame has never been drawn.
         dirty: bool = true,
 
         fn deinit(self: *Self) void {
@@ -148,18 +153,18 @@ fn App(comptime Stack: type) type {
             }
             self.parked.deinit(self.gpa);
 
-            self.stack.deinit();
+            self.component.deinit();
             self.painter.deinit();
             self.renderer.deinit();
         }
 
         fn isDirty(self: *const Self) bool {
-            return self.dirty or self.stack.isDirty();
+            return self.dirty or self.component.isDirty();
         }
 
         fn setDirty(self: *Self, value: bool) void {
             self.dirty = value;
-            self.stack.setDirty(value);
+            self.component.setDirty(value);
         }
 
         /// Takes what belongs to the window and hands the rest to whatever is in
@@ -178,19 +183,19 @@ fn App(comptime Stack: type) type {
                 // The one thing that changes what is in front. Pressed again it
                 // falls through to the finder itself, which asks to be put away
                 // exactly as escape makes it.
-                .split => |which| if (comptime Stack.has(Workspace)) {
+                .split => |which| if (comptime holds(Component, Workspace)) {
                     try self.toggleSplit(which);
                     return;
                 },
-                .close => if (comptime Stack.has(Workspace)) {
+                .close => if (comptime holds(Component, Workspace)) {
                     try self.shut();
                     return;
                 },
                 // The bar is not the thing with the keyboard, so this cannot
                 // reach it by being routed; it is a binding on the window, the
                 // same as cmd+P.
-                .tab => |which| if (comptime Stack.has(Workspace)) {
-                    const tabs = self.stack.get(Workspace).get(Tabs);
+                .tab => |which| if (comptime holds(Component, Workspace)) {
+                    const tabs = self.component.get(Workspace).get(Tabs);
                     if (tabs.nth(which)) |path| {
                         // Copied, because pointing a column at it frees the
                         // bar's copy when the file it displaces is parked.
@@ -200,10 +205,10 @@ fn App(comptime Stack: type) type {
                     }
                     return;
                 },
-                .find => if (comptime Stack.has(Finder)) {
-                    if (!self.stack.inFront(Finder)) {
-                        try self.stack.get(Finder).show();
-                        self.stack.raise(Finder);
+                .find => if (comptime holds(Component, Finder)) {
+                    if (!self.component.inFront(Finder)) {
+                        try self.component.get(Finder).show();
+                        self.component.raise(Finder);
                         self.dirty = true;
                         return;
                     }
@@ -211,24 +216,29 @@ fn App(comptime Stack: type) type {
                 else => {},
             }
 
-            try self.act(try self.stack.update(event, &self.renderer.atlas));
+            try self.act(try self.component.update(event, &self.renderer.atlas));
         }
 
         /// Does what the component in front asked for and could not do itself,
-        /// because only this knows what else is in the stack.
+        /// because only this knows what else is in the window.
         fn act(self: *Self, intent: Intent) !void {
             switch (intent) {
                 .nothing => {},
                 .dismiss => {
-                    self.stack.lowerFront();
-                    self.dirty = true;
+                    // Only a stack has a front to give up. A window that is a
+                    // single component has nothing behind it to show instead --
+                    // and nothing that is one ever asks.
+                    if (comptime @hasDecl(Component, "lowerFront")) {
+                        self.component.lowerFront();
+                        self.dirty = true;
+                    }
                 },
                 .open => |path| {
                     defer self.gpa.free(path);
                     self.dismissPanel();
                     self.dirty = true;
-                    if (comptime Stack.has(Workspace)) {
-                        const workspace = self.stack.get(Workspace);
+                    if (comptime holds(Component, Workspace)) {
+                        const workspace = self.component.get(Workspace);
                         try self.reveal(path);
 
                         // Choosing a file is choosing to read it, so the
@@ -240,7 +250,7 @@ fn App(comptime Stack: type) type {
                 .only => |path| {
                     defer self.gpa.free(path);
                     self.dirty = true;
-                    if (comptime Stack.has(Workspace)) try self.selectOnly(path);
+                    if (comptime holds(Component, Workspace)) try self.selectOnly(path);
                 },
             }
         }
@@ -251,7 +261,7 @@ fn App(comptime Stack: type) type {
         /// opened, which is both what one expects and the only way two views of
         /// one file cannot drift apart -- they share no document.
         fn reveal(self: *Self, path: []const u8) !void {
-            const workspace = self.stack.get(Workspace);
+            const workspace = self.component.get(Workspace);
             try workspace.get(Tabs).opened(path);
 
             const views = workspace.get(Views);
@@ -290,8 +300,8 @@ fn App(comptime Stack: type) type {
         /// panel, and lowering the workspace would put the finder in front of
         /// it, so this asks which is in front rather than lowering whatever is.
         fn dismissPanel(self: *Self) void {
-            if (comptime Stack.has(Finder)) {
-                if (self.stack.inFront(Finder)) self.stack.lowerFront();
+            if (comptime holds(Component, Finder)) {
+                if (self.component.inFront(Finder)) self.component.lowerFront();
             }
         }
 
@@ -301,7 +311,7 @@ fn App(comptime Stack: type) type {
         /// Choosing one of something is choosing it instead of the rest, which
         /// is what makes this the plain binding and `cmd+alt` the one that adds.
         fn selectOnly(self: *Self, path: []const u8) !void {
-            const workspace = self.stack.get(Workspace);
+            const workspace = self.component.get(Workspace);
             const views = workspace.get(Views);
 
             self.dismissPanel();
@@ -334,7 +344,7 @@ fn App(comptime Stack: type) type {
         /// document is parked, so putting it back costs nothing. The last column
         /// cannot go -- something has to be there to type into.
         fn toggleSplit(self: *Self, which: usize) !void {
-            const workspace = self.stack.get(Workspace);
+            const workspace = self.component.get(Workspace);
             const views = workspace.get(Views);
             const tabs = workspace.get(Tabs);
 
@@ -389,7 +399,7 @@ fn App(comptime Stack: type) type {
         /// back through what is open; when there is nothing left it goes empty,
         /// which is where a window with no file named starts.
         fn shut(self: *Self) !void {
-            const workspace = self.stack.get(Workspace);
+            const workspace = self.component.get(Workspace);
             const views = workspace.get(Views);
             const tabs = workspace.get(Tabs);
 
@@ -478,14 +488,14 @@ fn App(comptime Stack: type) type {
             // scale changed, and dragging to another display happens inside the
             // modal loop, where only the watch below runs.
             const scale = displayScale(self.renderer.window);
-            if (try self.renderer.atlas.setScale(scale)) self.stack.invalidate();
+            if (try self.renderer.atlas.setScale(scale)) self.component.invalidate();
 
             // Asked of the columns rather than remembered, so the bar cannot
             // disagree with what is on screen -- a press that moves the keyboard
             // to another column moves the tab in front with it, and nothing had
             // to tell the bar so.
-            if (comptime Stack.has(Workspace)) {
-                const workspace = self.stack.get(Workspace);
+            if (comptime holds(Component, Workspace)) {
+                const workspace = self.component.get(Workspace);
                 const views = workspace.get(Views);
                 const tabs = workspace.get(Tabs);
                 tabs.showing(if (views.focused()) |view| view.path else null);
@@ -516,7 +526,7 @@ fn App(comptime Stack: type) type {
             // Everything gets the whole window. A component that divides it --
             // the columns -- does that itself; one that lies over it -- the
             // finder -- wants all of it.
-            self.stack.place(.{
+            self.component.place(.{
                 .x = 0,
                 .y = 0,
                 .width = @floatFromInt(width),
@@ -524,7 +534,7 @@ fn App(comptime Stack: type) type {
             }, &self.renderer.atlas);
 
             self.painter.clear();
-            try self.stack.draw(&self.renderer.atlas, &self.painter);
+            try self.component.draw(&self.renderer.atlas, &self.painter);
             try self.renderer.present(&self.painter);
         }
 
@@ -546,8 +556,8 @@ fn App(comptime Stack: type) type {
     };
 }
 
-/// Puts a window up and runs `stack` in it until it is closed.
-fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack) !void {
+/// Puts a window up and runs `component` in it until it is closed.
+fn run(comptime Component: type, gpa: std.mem.Allocator, io: std.Io, component: Component) !void {
     // macOS makes inertial scroll events of its own and SDL turns them off
     // unless asked. Asking costs nothing while nothing is moving: momentum is
     // more wheel events, and they stop arriving when it stops. Before
@@ -585,12 +595,12 @@ fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack) !
     }
     defer _ = c.SDL_StopTextInput(window);
 
-    var app: App(Stack) = .{
+    var app: App(Component) = .{
         .gpa = gpa,
         .io = io,
         .renderer = try Renderer.init(gpa, window),
         .painter = .init(gpa),
-        .stack = stack,
+        .component = component,
     };
     defer app.deinit();
 
@@ -599,19 +609,19 @@ fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack) !
     // rather than carried around by the view -- where it would be a path whose
     // allocation is one byte longer than its length, and the parked documents
     // are keyed by exactly that path.
-    if (comptime Stack.has(Workspace)) {
-        if (app.stack.get(Workspace).get(Views).items.items[0].path) |named| {
+    if (comptime holds(Component, Workspace)) {
+        if (app.component.get(Workspace).get(Views).items.items[0].path) |named| {
             const title = try gpa.dupeZ(u8, named);
             defer gpa.free(title);
             _ = c.SDL_SetWindowTitle(window, title.ptr);
         }
     }
 
-    if (!c.SDL_AddEventWatch(App(Stack).redrawWhileResizing, &app)) {
+    if (!c.SDL_AddEventWatch(App(Component).redrawWhileResizing, &app)) {
         std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
         return error.SdlAddEventWatch;
     }
-    defer c.SDL_RemoveEventWatch(App(Stack).redrawWhileResizing, &app);
+    defer c.SDL_RemoveEventWatch(App(Component).redrawWhileResizing, &app);
 
     // Blocking wait, not a poll loop: idle costs nothing. Waking up is not a
     // reason to draw, though; only a change to what is on screen is.
