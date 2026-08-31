@@ -139,7 +139,10 @@ pub const TextView = struct {
     /// been dealt with before this is called.
     pub fn update(self: *TextView, event: Event, atlas: *GlyphAtlas) !void {
         switch (event) {
-            .quit, .resized => {},
+            // The window's, or the finder's. Arrows and escape reach a view
+            // only when nothing is over it, and there is no cursor movement to
+            // give them to yet.
+            .quit, .resized, .find, .up, .down, .cancel => {},
             .text => |typed| {
                 try self.insert(typed);
                 self.dirty = true;

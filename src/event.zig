@@ -15,6 +15,16 @@ pub const Event = union(enum) {
     newline,
     backspace,
 
+    /// Show the file finder. Cmd on macOS, Ctrl elsewhere -- either is accepted
+    /// everywhere, so one binding is right on every platform and nothing has to
+    /// ask which one it is on.
+    find,
+    /// Move a selection, not a caret: nothing in a document reads these yet.
+    up,
+    down,
+    /// Escape. Put back whatever was in front of this.
+    cancel,
+
     /// Pixels to move a view by, positive downwards, and where the pointer was
     /// while it happened -- which is what decides whose view moves.
     wheel: struct { delta: f32, at: [2]f32 },
@@ -37,6 +47,14 @@ pub const Event = union(enum) {
             c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
                 c.SDLK_RETURN => .newline,
                 c.SDLK_BACKSPACE => .backspace,
+                c.SDLK_UP => .up,
+                c.SDLK_DOWN => .down,
+                c.SDLK_ESCAPE => .cancel,
+                c.SDLK_P => if (event.key.mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL) != 0)
+                    .find
+                else
+                    // Plain `p` is a character, and arrives as text input.
+                    null,
                 else => null,
             },
 
