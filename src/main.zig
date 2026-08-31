@@ -676,8 +676,14 @@ test "stripCarriageReturns handles a trailing carriage return" {
 }
 
 test {
-    // `main` is never called in a test build, so nothing references these and
-    // their tests would be compiled out of the binary entirely.
+    // A test build analyses only what a test reaches. Without the first line
+    // nothing below `main` in this file is compiled at all, which is how a green
+    // `zig build test` has twice been followed by a failing `zig build`.
+    //
+    // The imports are separate from it: reaching a file's functions is not the
+    // same as collecting its tests, and tools.zig's had never run.
+    _ = &main;
+    _ = @import("./tools.zig");
     _ = @import("./renderer.zig");
     _ = @import("./components/text_view.zig");
 }
