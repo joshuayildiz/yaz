@@ -16,7 +16,7 @@ const Shader = struct {
 };
 
 /// Only the target's own bytecode is built. Keep in step with `shader_target`
-/// in src/main.zig, which declares the format to SDL.
+/// in src/renderer.zig, which declares the format to SDL.
 const Format = enum { spirv, msl };
 
 fn shaderFormat(os: std.Target.Os.Tag) Format {

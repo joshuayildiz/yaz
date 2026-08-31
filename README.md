@@ -10,8 +10,8 @@ macOS, and Windows.
 Early. Lines of text shaped by HarfBuzz and drawn from a glyph atlas FreeType
 fills as glyphs are asked for: proportional, kerned, with a per-line layout cache
 so a keystroke reshapes one line rather than the screen. The text comes out of a
-gap buffer, there is a caret, and you can type or click to move it. It opens a
-file named on the command line.
+gap buffer, there is a caret, and you can type or click to move it. Files are
+opened by naming them on the command line or by picking them with cmd+P.
 
 **There is no way to save.** Anything typed is lost when the window closes, and
 that includes edits to a file that was opened. Nothing is written to disk.
@@ -480,14 +480,14 @@ that edit would have invalidated the whole document.
 
 Two things follow. The origin has to be a whole number of pixels or the
 translation would change which subpixel variant each glyph points at, which
-`layout` asserts. And each line's baseline is rounded once for the line rather
+`draw` asserts. And each line's baseline is rounded once for the line rather
 than per glyph, which is the same answer for anything without a fractional
 vertical offset — everything in this font.
 
 Only the lines that intersect the window are placed, and a line outside it is not
-shaped either — which is where the cost of opening a long file went. `layout`
-takes the window's pixel height and `visibleCount` turns it into a line count;
-the existing `if (!entry.shaped)` does the rest. The caret is the exception: its
+shaped either — which is where the cost of opening a long file went. `draw`
+takes the window's pixel height and `visibleLines` turns it into a range of line
+indices; the existing `if (!entry.shaped)` does the rest. The caret is the exception: its
 line is shaped and its quad built even when it is outside the range, because the
 renderer draws one unconditionally. The numbers are in
 [OPTIMIZATIONS.md](OPTIMIZATIONS.md).
@@ -516,10 +516,10 @@ then copied into the frame's — the one case the cache cannot help and does hav
 to pay for.
 
 What remains is that copy: at 2,000 lines it is essentially all of the 120 µs,
-about a nanosecond a glyph. It is also work spent on lines nobody can see, since
-the window holds twenty of them. Laying out only what is on screen is the next
-thing worth doing and the cache is what makes it possible, but it is not done
-yet.
+about a nanosecond a glyph. It was also work spent on lines nobody could see,
+since the window holds twenty of them — these numbers were taken before only the
+visible ones were placed, which the cache is what made possible and which has its
+own measurements in [OPTIMIZATIONS.md](OPTIMIZATIONS.md) 11.
 
 The cost is memory: 24 bytes a glyph, so 37KB for a screenful and 3.7MB for a
 2,000-line document. Nothing is evicted, for the same reason nothing is evicted
@@ -776,7 +776,7 @@ and asked for its quads; `App` in `main.zig` is the only thing that knows there
 is more than one. That is what the directory is saying.
 
 Where to start depends on what you are changing: what a keystroke does is
-`TextView.handle`; where text lands on screen is `TextView.layout`; what a glyph
+`TextView.update`; where text lands on screen is `TextView.draw`; what a glyph
 looks like is `glyph_atlas.zig`; how big or what colour anything is is
 `config.zig`.
 
@@ -789,11 +789,12 @@ What comes out goes to `App` first: it acts on what belongs to the window and
 hands the rest to the view, which is given a `Rect` and told what happened in it.
 Neither takes an `SDL_Event`.
 
-`App` and `TextView` share the same five: `place` to be given room, `update` to
-be told what happened, `draw` to add quads to a painter, and `isDirty`/`setDirty`
-so a parent answers for what it holds. A parent calls them on its children, so
-the tree is the type system rather than a vtable; that is enough until the set of
-children has to vary at runtime.
+`App` and every component share the same five: `place` to be given room, `update`
+to be told what happened, `draw` to add quads to a painter, and
+`isDirty`/`setDirty` so a parent answers for what it holds. A sixth, `invalidate`,
+is for the one thing no component can survive: the atlas rebuilt at a different
+scale. A parent calls them on its children, so the tree is the type system rather
+than a vtable; that is enough until the set of children has to vary at runtime.
 
 **A keystroke goes to `App.focus`, and a press is the only thing that moves it.**
 The pointer never consults it — the wheel turns whatever it is under and a

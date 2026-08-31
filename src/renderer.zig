@@ -301,6 +301,7 @@ pub const Renderer = struct {
 
     /// Both halves cycle: the previous frame may still be in flight, and waiting
     /// for it would stall the middle of a redraw.
+    ///
     /// Copies run by run rather than in one go, so that the buffer ends up in
     /// the order the runs were sorted into and a run's quads are contiguous --
     /// which is what lets one call cover several runs. Each run is left saying

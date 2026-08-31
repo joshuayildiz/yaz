@@ -22,9 +22,13 @@ still unmeasured on it. What is left to settle is in [FIXME.md](FIXME.md).
 | 9 | [One call for the text](#9-one-draw-call-for-the-text) | runs | runs | measured |
 | 10 | [Per-line layout cache](#10-per-line-layout-cache) | runs | runs | runs |
 | 11 | [Only the lines on screen](#11-only-the-lines-on-screen) | runs | runs | measured |
+| 12 | [Resolving the tool paths once](#12-resolving-the-tool-paths-once) | unrun | unrun | measured |
+| 13 | [Keeping a file that was looked away from](#13-keeping-a-file-that-was-looked-away-from) | unrun | unrun | measured |
 
 "runs" means the build starts and draws, not that anything was measured.
-"measured" means the numbers below were taken on that platform.
+"measured" means the numbers below were taken on that platform. "unrun" means
+yaz has not been started there since the row landed — 12 and 13 arrived with the
+two external tools, and nothing but macOS has been launched since.
 
 Row 4 is unverified because the check for it is a live resize drag, which has to
 be done by hand; everything else here has at least been run on an M2.
