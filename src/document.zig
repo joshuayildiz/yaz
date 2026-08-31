@@ -548,6 +548,12 @@ pub const Document = struct {
     /// which is where it learns how many lines there are.
     lines: std.ArrayList(LineLayout) = .empty,
 
+    /// Whether the text has been changed since it was read. Nothing clears it,
+    /// because nothing can yet: there is no way to save. It is here rather than
+    /// on a view because it is a fact about the text, and a document that is
+    /// parked has it too.
+    modified: bool = false,
+
     pub fn init(gpa: std.mem.Allocator, text: []const u8) !Document {
         return .{ .gpa = gpa, .buffer = try Buffer.init(gpa, text) };
     }
@@ -560,12 +566,14 @@ pub const Document = struct {
 
     pub fn insert(self: *Document, at: usize, text: []const u8) !Edit {
         const edit = try self.buffer.insert(at, text);
+        if (text.len != 0) self.modified = true;
         try self.splice(edit);
         return edit;
     }
 
     pub fn delete(self: *Document, at: usize, count: usize) !Edit {
         const edit = self.buffer.delete(at, count);
+        if (count != 0) self.modified = true;
         try self.splice(edit);
         return edit;
     }

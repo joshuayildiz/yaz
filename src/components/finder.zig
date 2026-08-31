@@ -41,20 +41,21 @@ const VTuple = @import("./vtuple.zig").VTuple;
 
 const tools = @import("../tools.zig");
 
-/// Above a view's 0, 1 and 2. Each of these covers the one before it, so they
-/// are separate layers rather than an order of drawing: within a layer the
-/// painter is free to reorder, and it does.
-const edge_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = config.edge_colour };
-const surface_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.panel_colour };
-const chosen_key: Key = .{ .layer = 5, .pipeline = .solid, .colour = config.selection_colour };
-const caret_key: Key = .{ .layer = 6, .pipeline = .solid, .colour = config.caret_colour };
+/// Above a view's 0, 1 and 2 and the tab bar's 0 to 3 -- the panel hangs from the
+/// top of the window and overlaps the bar. Each of these covers the one before
+/// it, so they are separate layers rather than an order of drawing: within a
+/// layer the painter is free to reorder, and it does.
+const edge_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.edge_colour };
+const surface_key: Key = .{ .layer = 5, .pipeline = .solid, .colour = config.panel_colour };
+const chosen_key: Key = .{ .layer = 6, .pipeline = .solid, .colour = config.selection_colour };
+const caret_key: Key = .{ .layer = 7, .pipeline = .solid, .colour = config.caret_colour };
 
 /// Words, above all of it. Which of the three a row is set in is what says
 /// whether it is the chosen one, so the colours are keys rather than an
 /// argument.
-const text_key: Key = .{ .layer = 7, .pipeline = .glyphs, .colour = config.text_colour };
-const muted_key: Key = .{ .layer = 7, .pipeline = .glyphs, .colour = config.muted_colour };
-const faint_key: Key = .{ .layer = 7, .pipeline = .glyphs, .colour = config.faint_colour };
+const text_key: Key = .{ .layer = 8, .pipeline = .glyphs, .colour = config.text_colour };
+const muted_key: Key = .{ .layer = 8, .pipeline = .glyphs, .colour = config.muted_colour };
+const faint_key: Key = .{ .layer = 8, .pipeline = .glyphs, .colour = config.faint_colour };
 
 /// How wide the panel is, as a share of the window.
 const column_share = 0.46;

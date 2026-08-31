@@ -93,6 +93,13 @@ tab per file open in the window — the ones named here and the ones picked with
 cmd+P — and pressing a tab puts that file in the column that has the keyboard.
 A file already in a column is focused rather than opened twice.
 
+A tab carries a **mark to the left of its name when the file has been changed and
+not saved**, which is every file that has been typed into, since there is still
+no way to save. The mark's room is reserved whether it is drawn or not, so typing
+into a file does not shift the bar along. It stays on a file that has been parked
+behind another, which is what makes an unsaved edit visible rather than hidden —
+see [FIXME.md](FIXME.md).
+
 `assets/sample.txt` is there to be opened — six lines exercising ligatures, a
 combining mark, `.notdef` and proportional advances.
 

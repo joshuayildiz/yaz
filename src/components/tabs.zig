@@ -36,14 +36,25 @@ const advance = @import("../text.zig").advance;
 /// share a layer; the tab in front covers both and needs one of its own.
 const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.panel_colour };
 const rule_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.edge_colour };
-const front_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.background };
-const name_key: Key = .{ .layer = 2, .pipeline = .glyphs, .colour = config.text_colour };
-const other_key: Key = .{ .layer = 2, .pipeline = .glyphs, .colour = config.muted_colour };
+const seam_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.edge_colour };
+const front_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.background };
+const name_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = config.text_colour };
+const other_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = config.muted_colour };
 
-/// In points, scaled like the font: the air either side of a name, and above and
-/// below it.
-const across = 14;
-const down = 6;
+/// In points, scaled like the font: the air either side of a tab, above and
+/// below the name, and between the mark and the name.
+///
+/// Tight, because a bar of names is scanned rather than read. What keeps two
+/// names apart at this spacing is the seam between their tabs rather than the
+/// space, which is why the seam is here at all.
+const across = 6;
+const down = 4;
+const beside = 4;
+
+/// What says a file has been changed and not saved. One glyph, shaped once and
+/// set down again for every tab that needs it -- a round mark, which a quad
+/// cannot be.
+const unsaved_mark = "\u{2022}";
 
 pub const Tabs = struct {
     gpa: std.mem.Allocator,
@@ -53,6 +64,14 @@ pub const Tabs = struct {
     /// replaced as files move between them.
     paths: std.ArrayList([]u8) = .empty,
     names: std.ArrayList(LineLayout) = .empty,
+
+    /// Whether each file has been changed since it was read. Told to the bar
+    /// rather than worked out here: which documents exist is not its business.
+    unsaved: std.ArrayList(bool) = .empty,
+
+    /// The mark itself, shaped once. Its width is reserved on every tab whether
+    /// it is drawn or not, so a file does not shift the bar by being typed into.
+    bullet: LineLayout = .{},
 
     /// Where each one ended up, worked out while drawing, which is the only
     /// time the labels can be measured. A press comes after a frame, so there
@@ -74,7 +93,9 @@ pub const Tabs = struct {
         self.paths.deinit(self.gpa);
         for (self.names.items) |*name| name.deinit(self.gpa);
         self.names.deinit(self.gpa);
+        self.unsaved.deinit(self.gpa);
         self.rects.deinit(self.gpa);
+        self.bullet.deinit(self.gpa);
     }
 
     /// Lists `path` if it is not listed already.
@@ -89,8 +110,23 @@ pub const Tabs = struct {
         try self.paths.append(self.gpa, owned);
         errdefer _ = self.paths.pop();
         try self.names.append(self.gpa, .{});
+        errdefer _ = self.names.pop();
+        try self.unsaved.append(self.gpa, false);
         try self.rects.append(self.gpa, .{ .x = 0, .y = 0, .width = 0, .height = 0 });
         self.dirty = true;
+    }
+
+    /// Whether `path` has been changed since it was read. A file the bar has
+    /// never heard of is not an error: it is one nobody has opened.
+    pub fn mark(self: *Tabs, path: []const u8, unsaved: bool) void {
+        for (self.paths.items, 0..) |listed, which| {
+            if (!std.mem.eql(u8, listed, path)) continue;
+            if (self.unsaved.items[which] != unsaved) {
+                self.unsaved.items[which] = unsaved;
+                self.dirty = true;
+            }
+            return;
+        }
     }
 
     /// Which file the column with the keyboard is showing, or none for a
@@ -131,6 +167,7 @@ pub const Tabs = struct {
 
     pub fn invalidate(self: *Tabs) void {
         for (self.names.items) |*name| name.shaped = false;
+        self.bullet.shaped = false;
         self.dirty = true;
     }
 
@@ -155,6 +192,10 @@ pub const Tabs = struct {
 
         const line = @max(1, @round(atlas.scale));
         const inset = @round(across * atlas.scale);
+        const gap = @round(beside * atlas.scale);
+
+        if (!self.bullet.shaped) try atlas.shapeLine(unsaved_mark, &self.bullet);
+        const slot = advance(&self.bullet);
 
         // The strip, and the rule that closes it off. Cut so they do not
         // overlap, which is what lets them share a layer.
@@ -172,7 +213,7 @@ pub const Tabs = struct {
             const name = &self.names.items[which];
             if (!name.shaped) try atlas.shapeLine(std.fs.path.basename(path), name);
 
-            const width = @round(advance(name) + 2 * inset);
+            const width = @round(advance(name) + slot + gap + 2 * inset);
             self.rects.items[which] = .{
                 .x = left,
                 .y = self.rect.y,
@@ -183,18 +224,28 @@ pub const Tabs = struct {
             // The one in front is the colour of the page, so it joins the
             // document below rather than sitting on a shelf above it. It covers
             // the rule, which is the whole of what makes a tab look attached.
+            // Down the right edge of every tab, and covered by the fill of the
+            // one in front, which is why the two are on separate layers.
+            try painter.add(seam_key, .solid(
+                .{ left + width - line, self.rect.y },
+                .{ line, @max(0, self.rect.height - line) },
+            ));
+
             const in_front = which == self.front;
             if (in_front) try painter.add(front_key, .solid(
                 .{ left, self.rect.y },
                 .{ width, self.rect.height },
             ));
 
-            try drawLine(
-                painter,
-                if (in_front) name_key else other_key,
-                name,
-                .{ @round(left + inset), @round(self.rect.y + @round(down * atlas.scale) + atlas.ascent) },
-            );
+            const key = if (in_front) name_key else other_key;
+            const baseline = @round(self.rect.y + @round(down * atlas.scale) + atlas.ascent);
+
+            // The mark's room is taken whether or not it is drawn, so a file
+            // being typed into does not push the rest of the bar along.
+            if (self.unsaved.items[which]) {
+                try drawLine(painter, key, &self.bullet, .{ @round(left + inset), baseline });
+            }
+            try drawLine(painter, key, name, .{ @round(left + inset + slot + gap), baseline });
 
             left += width;
         }

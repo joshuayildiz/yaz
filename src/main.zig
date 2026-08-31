@@ -305,8 +305,20 @@ fn App(comptime Stack: type) type {
             // to tell the bar so.
             if (comptime Stack.has(Workspace)) {
                 const workspace = self.stack.get(Workspace);
-                const showing = if (workspace.get(Views).focused()) |view| view.path else null;
-                workspace.get(Tabs).showing(showing);
+                const views = workspace.get(Views);
+                const tabs = workspace.get(Tabs);
+                tabs.showing(if (views.focused()) |view| view.path else null);
+
+                // Which files have been changed, asked of the documents that
+                // hold them: a document is either in a column or parked, and
+                // the bar lists both.
+                for (views.items.items) |*view| {
+                    if (view.path) |named| tabs.mark(named, view.document.modified);
+                }
+                var resting = self.parked.iterator();
+                while (resting.next()) |entry| {
+                    tabs.mark(entry.key_ptr.*, entry.value_ptr.document.modified);
+                }
             }
 
             // The window rather than the swapchain, which is not acquired until

@@ -3,37 +3,39 @@
 Known problems, written down when found rather than when fixed. Each one says
 what is wrong, why it has been left alone, and what would settle it.
 
-The first entry below is real and reproducible. The other two have not been
-observed: one is reasoned from what the atlas costs at a scale nobody here has
-run it at, the other from reading SDL's headers, so the first step for each is
-to find out whether it is real.
+The first entry below is real and reproducible, and half of what it described has
+since been fixed. The other two have not been observed: one is reasoned from what
+the atlas costs at a scale nobody here has run it at, the other from reading
+SDL's headers, so the first step for each is to find out whether it is real.
 
 ---
 
-## Edits can hide in a file that is not on screen
+## Edits are visible, and still cannot be kept
 
-**Where:** `src/main.zig`, `App.park`.
+**Where:** `src/document.zig`, `Document.modified`.
 
-There is still no way to save, and a document now survives being looked away
-from. Together those mean typing into a file, opening another, and losing the
-first edit on close without ever seeing a sign of it. Before documents were
-parked the edit died at the switch, which was worse but at least visible.
+There is no way to save. A document survives being looked away from, so typing
+into a file, opening another, and closing the window loses the first edit.
 
-Nothing anywhere says a parked file has been changed. The finder lists paths and
-the window titles the first one, and neither knows the difference between a file
-as it is on disk and a file with an hour of typing in it.
+What that used to mean is that the edit disappeared without a sign. It no longer
+does: every file open in the window has a tab, an unsaved one carries a mark, and
+the mark stays on a file that has been parked behind another. So the loss is in
+front of the reader the whole time -- which is the half of this that was worth
+fixing before saving existed, since the flag it needed is the one saving will
+clear.
 
-**Left alone because** the answer is saving, not a warning about not saving.
-Marking modified files would be work thrown away the moment writing to disk
-exists, and a warning that a file cannot be saved is not much of a warning.
+What is left is the loss itself, and nothing warns about it on the way out.
 
-**To assess:** type into a file, open another through the finder, and close the
-window. Nothing asks, and nothing is written.
+**Left alone because** the answer is saving, not a better warning about not
+saving. `Document.modified` is now set by every edit and read by the bar, so the
+piece a save would need is already here and already exercised.
+
+**To assess:** type into a file and close the window. The tab says the file has
+changed; nothing asks, and nothing is written.
 
 **Likely fix:** writing to disk, which is what the README already says is
-missing. Once a document can be saved, a modified flag on it has somewhere to
-be shown -- the finder's rows and the window title are both already built out of
-per-file information.
+missing. `Document.modified` is where a save would clear, and the bar is already
+watching it.
 
 ---
 
