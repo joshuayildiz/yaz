@@ -31,67 +31,22 @@ pub const std_options: std.Options = .{ .log_level = .info };
 pub fn main(init: std.process.Init) !void {
     if (try wantsSetup(init)) return setup(init);
 
-    // macOS makes inertial scroll events of its own and SDL turns them off
-    // unless asked. Asking costs nothing while nothing is moving: momentum is
-    // more wheel events, and they stop arriving when it stops. Before
-    // `SDL_Init`, which is when SDL reads it.
-    _ = c.SDL_SetHint(c.SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
-
-    // The tools before the files: when either is missing nothing but the
-    // healthcheck runs, and reading a file first would report the wrong problem
-    // when the path is also bad.
+    // The tools before anything else: with either of them missing nothing but
+    // the healthcheck runs, and reading a file first would report the wrong
+    // problem when the path is also bad.
     const absent = try tools.missing(init.gpa, init.io, init.minimal.environ);
-
-    // Before SDL, so a file that cannot be opened fails without a window having
-    // appeared and gone again.
-    var opened: std.ArrayList(Opened) = if (absent.any()) .empty else try openAll(init);
-    defer {
-        for (opened.items) |*file| file.deinit(init.gpa);
-        opened.deinit(init.gpa);
-    }
-
-    if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
-        std.log.err("SDL_Init: {s}", .{sdl.lastError()});
-        return error.SdlInit;
-    }
-    defer c.SDL_Quit();
-
-    // The size is in window coordinates. Without `HIGH_PIXEL_DENSITY` the back
-    // buffer is that size too and the finished frame is scaled up to the
-    // display, which no amount of care in the text pipeline survives.
-    const flags = c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    const window = c.SDL_CreateWindow("yaz", 1024, 768, flags) orelse {
-        std.log.err("SDL_CreateWindow: {s}", .{sdl.lastError()});
-        return error.SdlCreateWindow;
-    };
-    defer c.SDL_DestroyWindow(window);
-
-    std.log.info("video driver: {s}", .{std.mem.span(c.SDL_GetCurrentVideoDriver())});
-
-    // Text arrives as finished characters rather than keys. The platform's
-    // input method gets the keystrokes first, so a dead key, a compose
-    // sequence or a CJK conversion has already become the character it means
-    // by the time it reaches us.
-    if (!c.SDL_StartTextInput(window)) {
-        std.log.err("SDL_StartTextInput: {s}", .{sdl.lastError()});
-        return error.SdlStartTextInput;
-    }
-    defer _ = c.SDL_StopTextInput(window);
-
-    if (opened.items.len > 0) {
-        if (opened.items[0].path) |path| _ = c.SDL_SetWindowTitle(window, path.ptr);
-    }
-
-    // What the tool check decides, and the only thing it decides: which
-    // components there are. Nothing past here asks about it again.
     if (absent.any()) {
-        return run(Stopped, init, window, .init(.{
+        return run(Stopped, init.gpa, .init(.{
             try Healthcheck.init(init.gpa, init.minimal.environ, absent),
         }));
     }
-    return run(Editing, init, window, .init(.{
+
+    // Read out here rather than inside `run`, so a file that cannot be opened
+    // fails before a window has appeared and gone again. Nothing in a stack
+    // needs a window to be built.
+    return run(Editing, init.gpa, .init(.{
         try Finder.init(init.gpa, init.io, init.minimal.environ),
-        try Columns.init(init.gpa, init.io, opened.items),
+        try Columns.init(init.gpa, init.io, try openAll(init)),
     }));
 }
 
@@ -136,15 +91,30 @@ const Columns = struct {
     /// a document is either here or in exactly one view, never both.
     parked: std.StringHashMapUnmanaged(Parked) = .empty,
 
-    fn init(gpa: std.mem.Allocator, io: std.Io, opened: []const Opened) !Columns {
+    /// Takes `opened` and frees it: the bytes end up in gap buffers and the
+    /// paths in the views, so keeping the originals would hold every file twice
+    /// for as long as the window is up.
+    fn init(gpa: std.mem.Allocator, io: std.Io, opened: std.ArrayList(Opened)) !Columns {
+        var files = opened;
+        defer {
+            for (files.items) |*file| file.deinit(gpa);
+            files.deinit(gpa);
+        }
+
         var self: Columns = .{ .gpa = gpa, .io = io };
         errdefer self.deinit();
 
-        try self.views.ensureTotalCapacity(gpa, opened.len);
-        for (opened) |file| {
+        try self.views.ensureTotalCapacity(gpa, files.items.len);
+        for (files.items) |file| {
             self.views.appendAssumeCapacity(try TextView.init(gpa, file.text, file.path));
         }
         return self;
+    }
+
+    /// What the window is called: the file the first column is showing, or
+    /// nothing when none was named.
+    pub fn title(self: *const Columns) ?[:0]const u8 {
+        return self.views.items[0].path;
     }
 
     pub fn deinit(self: *Columns) void {
@@ -444,15 +414,54 @@ fn App(comptime Stack: type) type {
     };
 }
 
-/// Opens the window's one stack and runs it until it is closed.
-fn run(comptime Stack: type, init: std.process.Init, window: *c.SDL_Window, stack: Stack) !void {
+/// Puts a window up and runs `stack` in it until it is closed.
+fn run(comptime Stack: type, gpa: std.mem.Allocator, stack: Stack) !void {
+    // macOS makes inertial scroll events of its own and SDL turns them off
+    // unless asked. Asking costs nothing while nothing is moving: momentum is
+    // more wheel events, and they stop arriving when it stops. Before
+    // `SDL_Init`, which is when SDL reads it.
+    _ = c.SDL_SetHint(c.SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
+
+    if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
+        std.log.err("SDL_Init: {s}", .{sdl.lastError()});
+        return error.SdlInit;
+    }
+    defer c.SDL_Quit();
+
+    // The size is in window coordinates. Without `HIGH_PIXEL_DENSITY` the back
+    // buffer is that size too and the finished frame is scaled up to the
+    // display, which no amount of care in the text pipeline survives.
+    const flags = c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    const window = c.SDL_CreateWindow("yaz", 1024, 768, flags) orelse {
+        std.log.err("SDL_CreateWindow: {s}", .{sdl.lastError()});
+        return error.SdlCreateWindow;
+    };
+    defer c.SDL_DestroyWindow(window);
+
+    std.log.info("video driver: {s}", .{std.mem.span(c.SDL_GetCurrentVideoDriver())});
+
+    // Text arrives as finished characters rather than keys. The platform's
+    // input method gets the keystrokes first, so a dead key, a compose
+    // sequence or a CJK conversion has already become the character it means
+    // by the time it reaches us.
+    if (!c.SDL_StartTextInput(window)) {
+        std.log.err("SDL_StartTextInput: {s}", .{sdl.lastError()});
+        return error.SdlStartTextInput;
+    }
+    defer _ = c.SDL_StopTextInput(window);
+
     var app: App(Stack) = .{
-        .gpa = init.gpa,
-        .renderer = try Renderer.init(init.gpa, window),
-        .painter = .init(init.gpa),
+        .gpa = gpa,
+        .renderer = try Renderer.init(gpa, window),
+        .painter = .init(gpa),
         .stack = stack,
     };
     defer app.deinit();
+
+    // Only a window with files in it has anything to be called.
+    if (comptime Stack.has(Columns)) {
+        if (app.stack.get(Columns).title()) |named| _ = c.SDL_SetWindowTitle(window, named.ptr);
+    }
 
     if (!c.SDL_AddEventWatch(App(Stack).redrawWhileResizing, &app)) {
         std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
