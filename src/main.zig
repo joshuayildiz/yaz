@@ -178,6 +178,16 @@ fn App(comptime Stack: type) type {
                 // The one thing that changes what is in front. Pressed again it
                 // falls through to the finder itself, which asks to be put away
                 // exactly as escape makes it.
+                // The bar is not the thing with the keyboard, so this cannot
+                // reach it by being routed; it is a binding on the window, the
+                // same as cmd+P.
+                .tab => |which| if (comptime Stack.has(Workspace)) {
+                    const tabs = self.stack.get(Workspace).get(Tabs);
+                    if (tabs.nth(which)) |path| {
+                        try self.act(.{ .open = try self.gpa.dupe(u8, path) });
+                    }
+                    return;
+                },
                 .find => if (comptime Stack.has(Finder)) {
                     if (!self.stack.inFront(Finder)) {
                         try self.stack.get(Finder).show();

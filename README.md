@@ -91,7 +91,10 @@ Any number of paths, in equal columns left to right in the order named; the
 window takes its title from the first. A **tab bar** runs along the top with one
 tab per file open in the window — the ones named here and the ones picked with
 cmd+P — and pressing a tab puts that file in the column that has the keyboard.
-A file already in a column is focused rather than opened twice.
+**cmd+1** to **cmd+9** do the same for the first nine of them (ctrl elsewhere,
+and either works on any platform). A file already in a column is focused rather
+than opened twice, so on a window that is showing three files the bindings move
+the keyboard between the columns.
 
 A tab carries a **mark to the left of its name when the file has been changed and
 not saved**, which is every file that has been typed into, since there is still

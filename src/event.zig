@@ -26,10 +26,10 @@ pub const Event = union(enum) {
     newline,
     backspace,
 
-    /// Show the file finder. Cmd on macOS, Ctrl elsewhere -- either is accepted
-    /// everywhere, so one binding is right on every platform and nothing has to
-    /// ask which one it is on.
+    /// Show the file finder.
     find,
+    /// Show the nth file open in the window, counted from zero: cmd+1 to cmd+9.
+    tab: u8,
     /// Move a selection, not a caret: nothing in a document reads these yet.
     up,
     down,
@@ -42,6 +42,14 @@ pub const Event = union(enum) {
     press: [2]f32,
     move: [2]f32,
     release,
+
+    /// Whether a key was pressed with the modifier that means "this is a
+    /// command". Cmd on macOS, Ctrl elsewhere -- either is accepted everywhere,
+    /// so one binding is right on every platform and nothing has to ask which
+    /// one it is on.
+    fn commanded(mod: c.SDL_Keymod) bool {
+        return mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL) != 0;
+    }
 
     /// Null for what nothing here acts on, which is most of what SDL sends.
     ///
@@ -61,10 +69,17 @@ pub const Event = union(enum) {
                 c.SDLK_UP => .up,
                 c.SDLK_DOWN => .down,
                 c.SDLK_ESCAPE => .cancel,
-                c.SDLK_P => if (event.key.mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL) != 0)
+                c.SDLK_P => if (commanded(event.key.mod))
                     .find
                 else
                     // Plain `p` is a character, and arrives as text input.
+                    null,
+                // The digits are contiguous and in order, so the key is its own
+                // index. Nine of them because a tenth would be cmd+0, which is
+                // not next to cmd+9 on the keyboard or in the bar.
+                c.SDLK_1...c.SDLK_9 => if (commanded(event.key.mod))
+                    .{ .tab = @intCast(event.key.key - c.SDLK_1) }
+                else
                     null,
                 else => null,
             },

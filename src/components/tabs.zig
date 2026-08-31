@@ -125,6 +125,12 @@ pub const Tabs = struct {
         self.dirty = true;
     }
 
+    /// The nth file listed, or none when the bar is shorter than that.
+    pub fn nth(self: *const Tabs, which: usize) ?[]const u8 {
+        if (which >= self.paths.items.len) return null;
+        return self.paths.items[which];
+    }
+
     /// Whether `path` has been changed since it was read. A file the bar has
     /// never heard of is not an error: it is one nobody has opened.
     pub fn mark(self: *Tabs, path: []const u8, unsaved: bool) void {

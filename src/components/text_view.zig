@@ -227,7 +227,7 @@ pub const TextView = struct {
             // The window's, or the finder's. Arrows and escape reach a view
             // only when nothing is over it, and there is no cursor movement to
             // give them to yet.
-            .quit, .resized, .find, .up, .down, .cancel => {},
+            .quit, .resized, .find, .tab, .up, .down, .cancel => {},
             .text => |typed| {
                 try self.insert(typed);
                 self.dirty = true;
