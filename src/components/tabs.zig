@@ -70,7 +70,9 @@ pub const Tabs = struct {
     unsaved: std.ArrayList(bool) = .empty,
 
     /// The mark itself, shaped once. Its width is reserved on every tab whether
-    /// it is drawn or not, so a file does not shift the bar by being typed into.
+    /// it is drawn or not, so a file does not shift the bar by being typed into,
+    /// and again on the other side of the name, so the name sits in the middle
+    /// of the tab rather than hard against its right edge.
     bullet: LineLayout = .{},
 
     /// Where each one ended up, worked out while drawing, which is the only
@@ -213,7 +215,7 @@ pub const Tabs = struct {
             const name = &self.names.items[which];
             if (!name.shaped) try atlas.shapeLine(std.fs.path.basename(path), name);
 
-            const width = @round(advance(name) + slot + gap + 2 * inset);
+            const width = @round(advance(name) + 2 * (slot + gap) + 2 * inset);
             self.rects.items[which] = .{
                 .x = left,
                 .y = self.rect.y,
@@ -241,7 +243,8 @@ pub const Tabs = struct {
             const baseline = @round(self.rect.y + @round(down * atlas.scale) + atlas.ascent);
 
             // The mark's room is taken whether or not it is drawn, so a file
-            // being typed into does not push the rest of the bar along.
+            // being typed into does not push the rest of the bar along; the
+            // same room again on the right is what centres the name.
             if (self.unsaved.items[which]) {
                 try drawLine(painter, key, &self.bullet, .{ @round(left + inset), baseline });
             }
