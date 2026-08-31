@@ -805,10 +805,8 @@ src/
   main.zig         # SDL setup, the window, the event loop, the command line
   model.zig        # the state the window is showing, and reading a file
   components/      # anything that is given a rect and draws in it
-    ztuple.zig     #   the components of a window, back to front
-    htuple.zig     #   the components of a window, left to right
     vtuple.zig     #   the components of a window, top to bottom
-    hlist.zig      #   however many components of one kind, left to right
+    editor.zig     #   the files, and the finder over them
     workbench.zig  #   the files that are open, and where each one is
     tabs.zig       #   a tab per file open in the window
     text_view.zig  #   scrolling, the caret, hit-testing
@@ -842,13 +840,13 @@ the order to read it in:
 | `renderer.zig` | config, sdl, glyph_atlas, painter |
 | `tools.zig` | nothing of ours |
 | `model.zig` | glyph_atlas, open_file |
-| `components/ztuple.zig`, `components/htuple.zig`, `components/vtuple.zig` | model, message, painter |
-| `components/hlist.zig` | model, message, painter |
+| `components/vtuple.zig` | model, message, painter |
 | `components/tabs.zig` | config, model, message, glyph_atlas, open_file, painter, text |
 | `components/text_view.zig` | config, model, message, glyph_atlas, open_file, painter, text |
 | `components/healthcheck.zig` | config, model, message, glyph_atlas, painter, text, tools |
-| `components/finder.zig` | config, model, message, glyph_atlas, painter, text, tools, vtuple |
-| `components/workbench.zig` | model, message, open_file, painter, hlist, tabs, text_view, vtuple |
+| `components/finder.zig` | config, model, message, glyph_atlas, painter, text, vtuple |
+| `components/editor.zig` | model, message, painter, finder, workbench |
+| `components/workbench.zig` | model, message, open_file, painter, tabs, text_view, vtuple |
 | `main.zig` | all of the above |
 
 **The only components that import another are the ones whose whole job is
@@ -891,45 +889,31 @@ The loop draws when it is set and clears it after. That is not damage tracking
 question worth asking is only ever *whether* to draw.
 
 **A window is one component, and that component is the whole of what is on
-screen.** It is a `ZTuple` when more than one thing is in it, whose members are
-fixed at compile time and whose order is not: *everything in it draws, back to
-front*, and *only the one in front is told what happened*. That is why the
-finder can be two small surfaces with the code still at full contrast either
-side of them — the document is genuinely still being drawn — and why a click
-cannot reach a view the finder is covering. There is no separate notion of a
-thing being open: showing a panel and putting it away are a change of order and
-nothing else.
+screen.** With ripgrep or fzf missing it is a `Healthcheck` and nothing else is
+built: no files are read, no finder exists. Otherwise it is an `Editor`, which
+is the files with the finder over them. `App` is generic over which one it got,
+so a component that is not in this window is not in this build of it, and no
+code below `main` can ask whether a tool is missing because nothing below `main`
+is told.
 
-**The stack is what makes that change, not `App`.** cmd+P reaches the panel
-wherever it is in the order, because a panel is a member that can be `show`n and
-the keystroke that shows one is a fact about the window rather than about
-whatever is in front. Pressed again it falls through to the panel itself, which
-asks to be put away exactly as escape makes it.
+**Which of the two the `Editor` is showing is not something it remembers.**
+`model.finding` is null or it is not, and that is the whole of what "the panel
+is open" means. A keystroke goes to the panel while there is one and to the
+files while there is not; both draw, panel last, because it lies over them.
+That is why the finder can be two small surfaces with the code still at full
+contrast either side of them — the file underneath is genuinely still being
+drawn — and why a click cannot reach a column the panel is covering.
 
-**The tool check decides what the window is, once, in `main`.** With ripgrep or
-fzf missing the window *is* a `Healthcheck` — not a stack containing one — and
-nothing else is built: no files are read, no finder exists. Otherwise it is
-`ZTuple(&.{ Finder, Workbench })`, listed back to front, so the finder sits
-behind the text until cmd+P brings it forward. `App` is generic over which one
-it got, so a component that is not in this window is not in this build of it. No
-code below `main` can ask whether a tool is missing, because nothing below
-`main` is told — and no code above the tree can ask what is in it either, which
-is why a window that is one component needs no special case anywhere.
+**A component answers a message with an `Intent`** — `nothing`, `dismiss`,
+`open` with a path, or `only` with one. It is how the finder reaches the
+workbench without either knowing the other exists: the finder knows a file was
+picked and nothing about columns, and the workbench knows what to do with a file
+and nothing about panels. The `Editor` above them hands one to the other and
+closes the panel, since picking a file is also the end of picking.
 
-**A component answers an event with an `Intent`** — `nothing`, `dismiss`, `open`
-with a path, or `only` with one. What the front of a stack asks for is offered
-to the members behind it in turn, and the first one that takes it ends the walk.
-That is how the finder reaches the workbench without either knowing the other
-exists: the finder knows a file was picked and nothing about columns, and the
-workbench knows what to do with a file and nothing about panels. Taking a path
-is also the end of whatever asked, so the workbench answers `dismiss` and the
-stack puts the panel back. What nobody takes comes back out to `App`, which
-frees it, since a path belongs to whoever takes it.
-
-**`HTuple` is the same idea across.** Same fixed members, and what varies is
-which one has the keyboard rather than which one is in front: they sit side by
-side in equal columns, *all of them draw* because none covers another, and *the
-focused one is told what happened*. A press moves the keyboard and takes the
+**The columns divide the window between them.** They sit side by side in equal
+shares, *all of them draw* because none covers another, and *the one with the
+keyboard is told what happened*. A press moves the keyboard and takes the
 pointer until the release, so a scrollbar drag that wanders out of the column it
 began in stays with it. Only the pointer is caught that way — typing goes to the
 focused column even mid-drag, and the wheel turns whatever it is under without
@@ -940,30 +924,18 @@ but the bar above them says it twice over: a tab is lifted out of the strip when
 its file is in a column, and its name is black rather than grey when that column
 has the keyboard.
 
-**A Tuple is a composition; a List is a repetition.** The three above take a
-statically determined list of members that may all be different things, so a
-window is `ZTuple(&.{ Finder, Workbench })` and knows at compile time exactly
-what is in it. When the members are all the same kind and how many there are is
-not known until the program runs, that is a **List** instead: `Views` is
-`HList(TextView)`,
-because the column count comes off the command line. One member type means
-reaching the nth is an index rather than a selection over a tuple, which is the
-whole of the difference in the code. `VList` and `ZList` are the same file again
-and will be written when something needs them.
-
 Choosing a file — from the bar or from the finder — hands the keyboard to the
 column the file landed in, so a tab press ends with the document ready to be
 typed into rather than with the bar holding it.
 
-`Tabs` lays its own tabs out rather than being an `HList`, because a row of equal
-shares is the wrong shape for a row of words: each tab is as wide as the name in
-it. It answers a press with `Intent.only`, the same thing cmd+N means, so a tab
+`Tabs` lays its own tabs out rather than dividing the bar evenly, because a row
+of equal shares is the wrong shape for a row of words: each tab is as wide as
+the name in it. It answers a press with `Intent.only`, the same thing cmd+N means, so a tab
 reached either way says the same thing.
 
-**`VTuple` is the third of the tuples, and the only one whose members are not
-all the same size.** A ZTuple gives every member the whole rect and an HTuple
-divides it evenly; here each member is asked how tall it wants to be, and one
-that does not say takes what is left. That is what the atlas in the `Model` is
+**`VTuple` stacks members top to bottom, and is the one place where they are
+not all the same size.** Each is asked how tall it wants to be, and one that
+does not say takes what is left. That is what the atlas in the `Model` is
 for during `place`: a height is nearly always a number of lines, and what a line
 is worth belongs to the font at the display's scale rather than to the layout.
 

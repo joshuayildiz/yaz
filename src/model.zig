@@ -14,11 +14,44 @@ const std = @import("std");
 
 const GlyphAtlas = @import("./glyph_atlas.zig").GlyphAtlas;
 const OpenFile = @import("./open_file.zig").OpenFile;
+const tools = @import("./tools.zig");
 
 /// The largest file yaz will open. What still costs per line of the file
 /// rather than per line on screen is the layout cache, which holds a 64-byte
 /// entry for each of them, and the line index behind it.
 const file_limit = 1 << 20;
+
+/// How many matches the finder shows at once. Here rather than with the panel
+/// that draws them because moving the selection has to keep it on screen, and
+/// that is a change to the state rather than to the drawing of it.
+pub const visible_matches = 12;
+
+/// The file finder, while it is open. Null when it is not, which is the whole
+/// of what "the panel is open" means.
+pub const Finding = struct {
+    /// What has been typed into it.
+    typed: std.ArrayList(u8) = .empty,
+
+    /// `rg --files` verbatim, with `all` pointing into it. One allocation for
+    /// the whole listing rather than one per path.
+    listing: []u8 = &.{},
+    all: std.ArrayList([]const u8) = .empty,
+
+    /// `fzf --filter` verbatim, with `matches` pointing into it.
+    ranked: []u8 = &.{},
+    matches: std.ArrayList([]const u8) = .empty,
+
+    /// Which match return would open, and which is the first on screen. The
+    /// second follows the first rather than leading it.
+    selected: usize = 0,
+    top: usize = 0,
+
+    /// What return would open.
+    pub fn chosen(self: *const Finding) ?[]const u8 {
+        if (self.selected >= self.matches.items.len) return null;
+        return self.matches.items[self.selected];
+    }
+};
 
 pub const Model = struct {
     allocator: std.mem.Allocator,
@@ -55,6 +88,14 @@ pub const Model = struct {
     /// is being held. Both are indices into `columns`.
     focus: usize = 0,
     holding: ?usize = null,
+
+    /// Where the two tools are. Resolved once, at startup, which is also where
+    /// it was settled that both of them run.
+    rg: []u8 = &.{},
+    fzf: []u8 = &.{},
+
+    /// The finder, while it is open.
+    finding: ?Finding = null,
 
     /// Whether anything above has changed since the last frame was drawn.
     ///
@@ -102,6 +143,138 @@ pub const Model = struct {
         self.atlas = atlas;
     }
 
+    /// Where ripgrep and fzf are. Both are known to run: startup refused to get
+    /// this far otherwise.
+    pub fn locate(self: *Model, environ: std.process.Environ) !void {
+        self.rg = try tools.path(self.allocator, environ, .rg);
+        self.fzf = try tools.path(self.allocator, environ, .fzf);
+    }
+
+    /// Opens the finder and reads what there is to choose between.
+    pub fn find(self: *Model) !void {
+        self.stopFinding();
+        self.finding = .{};
+        self.changed();
+
+        const result = try std.process.run(self.allocator, self.io, .{
+            .argv = &.{ self.rg, "--files" },
+            .stdout_limit = .limited(16 << 20),
+        });
+        defer self.allocator.free(result.stderr);
+        errdefer self.allocator.free(result.stdout);
+
+        const finding = &self.finding.?;
+        finding.listing = result.stdout;
+        var lines = std.mem.splitScalar(u8, finding.listing, '\n');
+        while (lines.next()) |line| {
+            if (line.len != 0) try finding.all.append(self.allocator, line);
+        }
+
+        try self.rank();
+    }
+
+    /// Everything that only exists while the finder is open. The listing is the
+    /// one thing here that grows with the repository, so it does not outlive a
+    /// closed finder.
+    pub fn stopFinding(self: *Model) void {
+        const finding = &(self.finding orelse return);
+        finding.typed.deinit(self.allocator);
+        finding.all.deinit(self.allocator);
+        finding.matches.deinit(self.allocator);
+        self.allocator.free(finding.listing);
+        self.allocator.free(finding.ranked);
+        self.finding = null;
+        self.changed();
+    }
+
+    /// Adds to the query and re-ranks against it.
+    pub fn typeInto(self: *Model, text: []const u8) !void {
+        const finding = &(self.finding orelse return);
+        try finding.typed.appendSlice(self.allocator, text);
+        try self.rank();
+    }
+
+    /// Takes a character back off the query. One byte at a time is wrong the
+    /// moment the query is not ASCII, and `Buffer.stepBack` is where that is
+    /// already solved; this is a query, not a file, and cannot reach it.
+    pub fn rubOut(self: *Model) !void {
+        const finding = &(self.finding orelse return);
+        if (finding.typed.items.len == 0) return;
+        finding.typed.items.len -= 1;
+        try self.rank();
+    }
+
+    /// Moves the selection, and the window on to it, by one.
+    pub fn select(self: *Model, by: enum { up, down }) void {
+        const finding = &(self.finding orelse return);
+        switch (by) {
+            .up => if (finding.selected > 0) {
+                finding.selected -= 1;
+            },
+            .down => if (finding.selected + 1 < finding.matches.items.len) {
+                finding.selected += 1;
+            },
+        }
+
+        // Keep the selection on screen, without moving further than it has to.
+        if (finding.selected < finding.top) finding.top = finding.selected;
+        if (finding.selected >= finding.top + visible_matches) {
+            finding.top = finding.selected + 1 - visible_matches;
+        }
+        self.changed();
+    }
+
+    /// Re-ranks against the query. Nothing typed is nothing offered: the whole
+    /// repository is not an answer, and shaping a screenful of it would be work
+    /// done on the way to being thrown away.
+    fn rank(self: *Model) !void {
+        const finding = &(self.finding orelse return);
+        finding.matches.clearRetainingCapacity();
+        finding.selected = 0;
+        finding.top = 0;
+        self.allocator.free(finding.ranked);
+        finding.ranked = &.{};
+        self.changed();
+
+        const query = finding.typed.items;
+        if (query.len == 0) return;
+
+        const filter = try std.fmt.allocPrint(self.allocator, "--filter={s}", .{query});
+        defer self.allocator.free(filter);
+
+        var child = try std.process.spawn(self.io, .{
+            .argv = &.{ self.fzf, filter },
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .ignore,
+        });
+        errdefer child.kill(self.io);
+
+        // Everything in, then the pipe closed, then everything out. Safe in
+        // that order because `--filter` has to score every candidate before it
+        // can sort them, so it writes nothing until stdin ends -- measured at
+        // 8.6MB each way without wedging.
+        {
+            var buffer: [64 * 1024]u8 = undefined;
+            var writer = child.stdin.?.writer(self.io, &buffer);
+            try writer.interface.writeAll(finding.listing);
+            try writer.interface.flush();
+        }
+        child.stdin.?.close(self.io);
+        child.stdin = null;
+
+        var buffer: [64 * 1024]u8 = undefined;
+        var reader = child.stdout.?.reader(self.io, &buffer);
+        finding.ranked = try reader.interface.allocRemaining(self.allocator, .limited(16 << 20));
+
+        _ = try child.wait(self.io);
+
+        var lines = std.mem.splitScalar(u8, finding.ranked, '\n');
+        while (lines.next()) |line| {
+            if (line.len != 0) try finding.matches.append(self.allocator, line);
+        }
+    }
+
     /// Says the model has moved on and the window has to be drawn again.
     pub fn changed(self: *Model) void {
         self.dirty = true;
@@ -133,6 +306,9 @@ pub const Model = struct {
     }
 
     pub fn deinit(self: *Model) void {
+        self.stopFinding();
+        self.allocator.free(self.rg);
+        self.allocator.free(self.fzf);
         self.columns.deinit(self.allocator);
         for (self.files.items) |file| {
             file.deinit();
@@ -146,7 +322,7 @@ pub const Model = struct {
     /// Asking twice gives the same file back, which is what stops two columns
     /// showing two copies of one file that drift apart.
     pub fn open(self: *Model, path: []const u8) !*OpenFile {
-        if (self.find(path)) |already| return already;
+        if (self.opened(path)) |already| return already;
 
         const text = try self.read(path);
         defer self.allocator.free(text);
@@ -158,7 +334,7 @@ pub const Model = struct {
         return self.hold("", null);
     }
 
-    pub fn find(self: *Model, path: []const u8) ?*OpenFile {
+    pub fn opened(self: *Model, path: []const u8) ?*OpenFile {
         for (self.files.items) |file| {
             const named = file.path orelse continue;
             if (std.mem.eql(u8, named, path)) return file;

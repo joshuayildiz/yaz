@@ -9,7 +9,7 @@
 //!
 //! It is also the only thing that takes a path from somewhere else. The finder
 //! knows a file was picked and nothing about columns; this knows what to do
-//! with a file and nothing about panels. `offer` is where the two meet.
+//! with a file and nothing about panels. `act` is where the two meet.
 
 const std = @import("std");
 
@@ -132,16 +132,14 @@ pub const Views = struct {
 const Stack = VTuple(&.{ Tabs, Views });
 
 pub const Workbench = struct {
-    stack: Stack,
-
-    pub fn init(bar: Tabs, row: Views) Workbench {
-        var self: Workbench = .{ .stack = .init(.{ bar, row }) };
-        // The columns have the keyboard from the moment there is a window. A
-        // bar is something to press, not something to type into, and the first
-        // member of a column would otherwise have it by default.
-        self.stack.focusOn(Views);
-        return self;
-    }
+    /// The columns have the keyboard from the moment there is a window. A bar
+    /// is something to press, not something to type into, and the first member
+    /// of a column would otherwise have it by default.
+    stack: Stack = stack: {
+        var built: Stack = .init(.{ .{}, .{} });
+        built.focusOn(Views);
+        break :stack built;
+    },
 
     pub fn deinit(self: *Workbench, model: *Model) void {
         self.stack.deinit(model);
@@ -192,22 +190,9 @@ pub const Workbench = struct {
         return self.act(model, asked);
     }
 
-    /// A path from something that is not one of its members -- the finder, in
-    /// front of it. Taking one is also the end of whatever asked, so this says
-    /// so; see `ZTuple.pass`.
-    pub fn offer(self: *Workbench, model: *Model, intent: Intent) !Intent {
-        switch (intent) {
-            .open, .only => {
-                _ = try self.act(model, intent);
-                return .dismiss;
-            },
-            else => return intent,
-        }
-    }
-
     /// What a path means, wherever it came from. Anything else is not this to
     /// answer and goes back the way it came.
-    fn act(self: *Workbench, model: *Model, intent: Intent) !Intent {
+    pub fn act(self: *Workbench, model: *Model, intent: Intent) !Intent {
         switch (intent) {
             .open => |path| {
                 defer model.allocator.free(path);

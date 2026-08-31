@@ -9,21 +9,12 @@ const Painter = @import("./painter.zig").Painter;
 const sdl = @import("./sdl.zig");
 const tools = @import("./tools.zig");
 const Healthcheck = @import("./components/healthcheck.zig").Healthcheck;
-const Finder = @import("./components/finder.zig").Finder;
-const ZTuple = @import("./components/ztuple.zig").ZTuple;
-const Tabs = @import("./components/tabs.zig").Tabs;
-const TextView = @import("./components/text_view.zig").TextView;
-const workbench_mod = @import("./components/workbench.zig");
-const Workbench = workbench_mod.Workbench;
+const Editor = @import("./components/editor.zig").Editor;
 const c = sdl.c;
 
 /// `setup` prints, so it has to be heard from in a release build too, where the
 /// default would keep everything below an error to itself.
 pub const std_options: std.Options = .{ .log_level = .info };
-
-/// Back to front. The finder sits behind the workbench until cmd+P brings it
-/// forward, so opening and closing it is a change of order and nothing else.
-const Editing = ZTuple(&.{ Finder, Workbench });
 
 pub fn main(init: std.process.Init) !void {
     if (try wantsSetup(init)) return setup(init);
@@ -54,8 +45,8 @@ pub fn main(init: std.process.Init) !void {
     // the context outlives the call.
     const title = model.files.items[0].path;
 
-    const finder = try Finder.init(model.allocator, init.minimal.environ);
-    return run(&model, Editing, .init(.{ finder, .init(.{}, .{}) }), title);
+    try model.locate(init.minimal.environ);
+    return run(&model, Editor, .{}, title);
 }
 
 /// The window, and the one component `main` put in it.
@@ -313,7 +304,7 @@ test {
     _ = @import("./message.zig");
     _ = @import("./renderer.zig");
     _ = @import("./components/text_view.zig");
-    _ = @import("./components/ztuple.zig");
+    _ = @import("./components/editor.zig");
     _ = @import("./components/htuple.zig");
     _ = @import("./components/hlist.zig");
     _ = @import("./components/tabs.zig");
