@@ -47,14 +47,21 @@ const other_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = config.mute
 /// Tight, because a bar of names is scanned rather than read. What keeps two
 /// names apart at this spacing is the seam between their tabs rather than the
 /// space, which is why the seam is here at all.
-const across = 6;
+const across = 4;
 const down = 4;
-const beside = 4;
+const beside = 3;
 
 /// What says a file has been changed and not saved. One glyph, shaped once and
 /// set down again for every tab that needs it -- a round mark, which a quad
 /// cannot be.
 const unsaved_mark = "\u{2022}";
+
+/// Where a glyph's ink sits inside its advance: how far past the pen it starts,
+/// and how wide it actually is.
+const Ink = struct {
+    from: f32 = 0,
+    wide: f32 = 0,
+};
 
 pub const Tabs = struct {
     gpa: std.mem.Allocator,
@@ -197,7 +204,14 @@ pub const Tabs = struct {
         const gap = @round(beside * atlas.scale);
 
         if (!self.bullet.shaped) try atlas.shapeLine(unsaved_mark, &self.bullet);
-        const slot = advance(&self.bullet);
+
+        // What the mark draws, not what it advances. A bullet carries wide side
+        // bearings, and reserving them twice over would be paying for space
+        // `beside` is already providing -- on a bar this tight, twice.
+        const ink: Ink = if (self.bullet.sprites.items.len == 0) .{} else .{
+            .from = self.bullet.sprites.items[0].dest[0],
+            .wide = self.bullet.sprites.items[0].size[0],
+        };
 
         // The strip, and the rule that closes it off. Cut so they do not
         // overlap, which is what lets them share a layer.
@@ -215,7 +229,7 @@ pub const Tabs = struct {
             const name = &self.names.items[which];
             if (!name.shaped) try atlas.shapeLine(std.fs.path.basename(path), name);
 
-            const width = @round(advance(name) + 2 * (slot + gap) + 2 * inset);
+            const width = @round(advance(name) + 2 * (ink.wide + gap) + 2 * inset);
             self.rects.items[which] = .{
                 .x = left,
                 .y = self.rect.y,
@@ -246,9 +260,11 @@ pub const Tabs = struct {
             // being typed into does not push the rest of the bar along; the
             // same room again on the right is what centres the name.
             if (self.unsaved.items[which]) {
-                try drawLine(painter, key, &self.bullet, .{ @round(left + inset), baseline });
+                // Placed by its ink rather than by its pen, so what was
+                // reserved is what appears there.
+                try drawLine(painter, key, &self.bullet, .{ @round(left + inset - ink.from), baseline });
             }
-            try drawLine(painter, key, name, .{ @round(left + inset + slot + gap), baseline });
+            try drawLine(painter, key, name, .{ @round(left + inset + ink.wide + gap), baseline });
 
             left += width;
         }
