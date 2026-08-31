@@ -36,8 +36,8 @@ const advance = @import("../text.zig").advance;
 /// share a layer; the tab in front covers both and needs one of its own.
 const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.panel_colour };
 const rule_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.edge_colour };
-const seam_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.edge_colour };
-const front_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.background };
+const front_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.background };
+const seam_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.edge_colour };
 const name_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = config.text_colour };
 const other_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = config.muted_colour };
 
@@ -243,20 +243,20 @@ pub const Tabs = struct {
                 .height = self.rect.height,
             };
 
-            // The one in front is the colour of the page, so it joins the
-            // document below rather than sitting on a shelf above it. It covers
-            // the rule, which is the whole of what makes a tab look attached.
-            // Down the right edge of every tab, and covered by the fill of the
-            // one in front, which is why the two are on separate layers.
-            try painter.add(seam_key, .solid(
-                .{ left + width - line, self.rect.y },
-                .{ line, @max(0, self.rect.height - line) },
-            ));
-
+            // The one in front is the colour of the page. It stops short of the
+            // rule along the bottom rather than covering it, so the bar's edge
+            // runs unbroken under every tab.
             const in_front = which == self.front;
             if (in_front) try painter.add(front_key, .solid(
                 .{ left, self.rect.y },
-                .{ width, self.rect.height },
+                .{ width, @max(0, self.rect.height - line) },
+            ));
+
+            // Down the right edge of every tab, over the fill rather than under
+            // it, so the one in front is edged on both sides like the rest.
+            try painter.add(seam_key, .solid(
+                .{ left + width - line, self.rect.y },
+                .{ line, @max(0, self.rect.height - line) },
             ));
 
             const key = if (in_front) name_key else other_key;
