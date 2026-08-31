@@ -125,6 +125,14 @@ pub const Tabs = struct {
         self.dirty = true;
     }
 
+    /// Where `path` sits on the bar, or none when it is not on it.
+    pub fn indexOf(self: *const Tabs, path: []const u8) ?usize {
+        for (self.paths.items, 0..) |listed, which| {
+            if (std.mem.eql(u8, listed, path)) return which;
+        }
+        return null;
+    }
+
     /// The nth file listed, or none when the bar is shorter than that.
     pub fn nth(self: *const Tabs, which: usize) ?[]const u8 {
         if (which >= self.paths.items.len) return null;

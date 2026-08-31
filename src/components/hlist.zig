@@ -56,6 +56,25 @@ pub fn HList(comptime Member: type) type {
             try self.items.append(self.gpa, member);
         }
 
+        /// Puts `member` at `which`, moving the rest along. Order is what a row
+        /// is, so there is no cheaper unordered version of this.
+        pub fn insert(self: *Self, which: usize, member: Member) !void {
+            try self.items.insert(self.gpa, which, member);
+            if (self.focus >= which) self.focus += 1;
+            self.holding = null;
+        }
+
+        /// Takes the member at `which` out and hands it over. Nothing here
+        /// deinitialises it: a row does not know whether it is being closed or
+        /// only being put away.
+        pub fn remove(self: *Self, which: usize) Member {
+            const gone = self.items.orderedRemove(which);
+            if (self.focus > which) self.focus -= 1;
+            if (self.focus >= self.items.items.len) self.focus = self.items.items.len -| 1;
+            self.holding = null;
+            return gone;
+        }
+
         /// The member with the keyboard, or null while there are none.
         pub fn focused(self: *Self) ?*Member {
             if (self.focus >= self.items.items.len) return null;

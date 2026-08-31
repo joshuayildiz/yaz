@@ -30,6 +30,9 @@ pub const Event = union(enum) {
     find,
     /// Show the nth file open in the window, counted from zero: cmd+1 to cmd+9.
     tab: u8,
+    /// Put the nth file beside what is already split, or take it away again:
+    /// cmd+alt+1 to cmd+alt+9.
+    split: u8,
     /// Take the file in front off the bar and out of memory: cmd+W.
     close,
     /// Move a selection, not a caret: nothing in a document reads these yet.
@@ -65,26 +68,40 @@ pub const Event = union(enum) {
             // Text arrives as finished characters rather than keys; return and
             // backspace are not text and do not arrive as any.
             c.SDL_EVENT_TEXT_INPUT => .{ .text = std.mem.span(event.text.text) },
-            c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
-                c.SDLK_RETURN => .newline,
-                c.SDLK_BACKSPACE => .backspace,
-                c.SDLK_UP => .up,
-                c.SDLK_DOWN => .down,
-                c.SDLK_ESCAPE => .cancel,
-                c.SDLK_P => if (commanded(event.key.mod))
-                    .find
-                else
-                    // Plain `p` is a character, and arrives as text input.
-                    null,
-                // The digits are contiguous and in order, so the key is its own
-                // index. Nine of them because a tenth would be cmd+0, which is
-                // not next to cmd+9 on the keyboard or in the bar.
-                c.SDLK_W => if (commanded(event.key.mod)) .close else null,
-                c.SDLK_1...c.SDLK_9 => if (commanded(event.key.mod))
-                    .{ .tab = @intCast(event.key.key - c.SDLK_1) }
-                else
-                    null,
-                else => null,
+            c.SDL_EVENT_KEY_DOWN => key: {
+                // The digits are read off the scancode rather than the keycode:
+                // a modifier turns `1` into something else on most layouts, and
+                // what these mean is the key under the finger. They are
+                // contiguous, so the key is its own index.
+                //
+                // Alt rather than shift for the second of them: macOS has taken
+                // shift+cmd+3 and shift+cmd+4 for screenshots and never passes
+                // them on.
+                if (commanded(event.key.mod)) {
+                    const code = event.key.scancode;
+                    if (code >= c.SDL_SCANCODE_1 and code <= c.SDL_SCANCODE_9) {
+                        const which: u8 = @intCast(code - c.SDL_SCANCODE_1);
+                        break :key if (event.key.mod & c.SDL_KMOD_ALT != 0)
+                            .{ .split = which }
+                        else
+                            .{ .tab = which };
+                    }
+                }
+
+                break :key switch (event.key.key) {
+                    c.SDLK_RETURN => .newline,
+                    c.SDLK_BACKSPACE => .backspace,
+                    c.SDLK_UP => .up,
+                    c.SDLK_DOWN => .down,
+                    c.SDLK_ESCAPE => .cancel,
+                    c.SDLK_P => if (commanded(event.key.mod))
+                        .find
+                    else
+                        // Plain `p` is a character, and arrives as text input.
+                        null,
+                    c.SDLK_W => if (commanded(event.key.mod)) .close else null,
+                    else => null,
+                };
             },
 
             // A precise device is reported in tenths of a point, so ten times
@@ -114,3 +131,58 @@ pub const Event = union(enum) {
         };
     }
 };
+
+/// A key going down, as SDL reports one. The scancode is the key's place on the
+/// keyboard and the keycode is what it would type; the bindings below care about
+/// one or the other, never both.
+fn pressed(scancode: c_uint, keycode: u32, mod: u16) c.SDL_Event {
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.scancode = scancode;
+    event.key.key = keycode;
+    event.key.mod = mod;
+    return event;
+}
+
+test "a digit on its own is a character, not a binding" {
+    const event = pressed(c.SDL_SCANCODE_1, c.SDLK_1, 0);
+    try std.testing.expectEqual(@as(?Event, null), Event.init(&event, 1));
+}
+
+test "cmd and a digit reach that tab, counted from zero" {
+    const first = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LGUI);
+    try std.testing.expectEqual(@as(u8, 0), Event.init(&first, 1).?.tab);
+
+    const ninth = pressed(c.SDL_SCANCODE_9, c.SDLK_9, c.SDL_KMOD_LGUI);
+    try std.testing.expectEqual(@as(u8, 8), Event.init(&ninth, 1).?.tab);
+}
+
+test "ctrl does what cmd does, on any platform" {
+    const event = pressed(c.SDL_SCANCODE_3, c.SDLK_3, c.SDL_KMOD_LCTRL);
+    try std.testing.expectEqual(@as(u8, 2), Event.init(&event, 1).?.tab);
+}
+
+test "adding alt splits that tab instead of showing it" {
+    const event = pressed(c.SDL_SCANCODE_3, c.SDLK_3, c.SDL_KMOD_LGUI | c.SDL_KMOD_LALT);
+    try std.testing.expectEqual(@as(u8, 2), Event.init(&event, 1).?.split);
+}
+
+test "the keycode a modifier produces is not what a digit is read from" {
+    // Holding a modifier turns `3` into `#` on a US layout and into something
+    // else again elsewhere. The scancode is the key under the finger either way,
+    // and is what these bindings are read from.
+    const event = pressed(c.SDL_SCANCODE_3, c.SDLK_HASH, c.SDL_KMOD_LGUI | c.SDL_KMOD_LALT);
+    try std.testing.expectEqual(@as(u8, 2), Event.init(&event, 1).?.split);
+}
+
+test "the letters are read from the keycode, which is where they are" {
+    const find = pressed(c.SDL_SCANCODE_P, c.SDLK_P, c.SDL_KMOD_LGUI);
+    try std.testing.expectEqual(Event.find, Event.init(&find, 1).?);
+
+    const shut = pressed(c.SDL_SCANCODE_W, c.SDLK_W, c.SDL_KMOD_LGUI);
+    try std.testing.expectEqual(Event.close, Event.init(&shut, 1).?);
+
+    // Without the modifier they are characters, and arrive as text input.
+    const typed = pressed(c.SDL_SCANCODE_P, c.SDLK_P, 0);
+    try std.testing.expectEqual(@as(?Event, null), Event.init(&typed, 1));
+}

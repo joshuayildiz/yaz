@@ -178,6 +178,10 @@ fn App(comptime Stack: type) type {
                 // The one thing that changes what is in front. Pressed again it
                 // falls through to the finder itself, which asks to be put away
                 // exactly as escape makes it.
+                .split => |which| if (comptime Stack.has(Workspace)) {
+                    try self.toggleSplit(which);
+                    return;
+                },
                 .close => if (comptime Stack.has(Workspace)) {
                     try self.shut();
                     return;
@@ -281,6 +285,60 @@ fn App(comptime Stack: type) type {
             try self.park(try view.swap(document, path, was, &self.renderer.atlas));
         }
 
+        /// Puts the nth file on the bar beside what is already split, or takes
+        /// it away again when it is already there.
+        ///
+        /// Taking one away is not closing it: the file stays on the bar and its
+        /// document is parked, so putting it back costs nothing. The last column
+        /// cannot go -- something has to be there to type into.
+        fn toggleSplit(self: *Self, which: usize) !void {
+            const workspace = self.stack.get(Workspace);
+            const views = workspace.get(Views);
+            const tabs = workspace.get(Tabs);
+
+            const path = tabs.nth(which) orelse return;
+
+            for (views.items.items, 0..) |*view, column| {
+                const named = view.path orelse continue;
+                if (!std.mem.eql(u8, named, path)) continue;
+
+                if (views.items.items.len == 1) return;
+                var gone = views.remove(column);
+                try self.park(gone.retire());
+
+                workspace.focusOn(Views);
+                self.dirty = true;
+                return;
+            }
+
+            // Columns follow the bar's order, so one put back lands where it
+            // was rather than on the end.
+            var at: usize = 0;
+            for (views.items.items) |*view| {
+                const named = view.path orelse continue;
+                const listed = tabs.indexOf(named) orelse continue;
+                if (listed < which) at += 1;
+            }
+
+            var document: Document = undefined;
+            var was: ?Position = null;
+            if (self.parked.fetchRemove(path)) |entry| {
+                self.gpa.free(entry.key);
+                document = entry.value.document;
+                was = entry.value.position;
+            } else {
+                var file = try open(self.gpa, self.io, path);
+                defer file.deinit(self.gpa);
+                document = try Document.init(self.gpa, file.text);
+            }
+            errdefer document.deinit();
+
+            try views.insert(at, try TextView.hold(self.gpa, document, path, was));
+            views.focus = at;
+            workspace.focusOn(Views);
+            self.dirty = true;
+        }
+
         /// Takes the file the focused column is showing off the bar and out of
         /// memory, and puts something else in the column. With nothing left on
         /// the bar the window goes too.
@@ -300,6 +358,18 @@ fn App(comptime Stack: type) type {
                 const view = views.focused() orelse break :close;
                 const closing = view.path orelse break :close;
 
+                tabs.close(closing);
+
+                // One fewer split. The last one stays, because something has to
+                // be there to type into while anything is open at all.
+                if (views.items.items.len > 1) {
+                    var gone = views.remove(views.focus);
+                    gone.deinit();
+                    break :close;
+                }
+
+                // Being the only one, it takes the first file nothing else is
+                // showing instead, or goes empty when there is none.
                 var next: ?Parked.Map.KV = null;
                 for (tabs.paths.items) |listed| {
                     if (self.parked.fetchRemove(listed)) |entry| {
@@ -307,8 +377,6 @@ fn App(comptime Stack: type) type {
                         break;
                     }
                 }
-
-                tabs.close(closing);
 
                 var document: Document = undefined;
                 var was: ?Position = null;
@@ -770,6 +838,7 @@ test {
     // same as collecting its tests, and tools.zig's had never run.
     _ = &main;
     _ = @import("./tools.zig");
+    _ = @import("./event.zig");
     _ = @import("./renderer.zig");
     _ = @import("./components/text_view.zig");
     _ = @import("./components/ztuple.zig");

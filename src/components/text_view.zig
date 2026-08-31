@@ -128,6 +128,35 @@ pub const TextView = struct {
         };
     }
 
+    /// A view of a document that already exists, taking ownership of it. `was`
+    /// is where its reader was, or null to start at the top.
+    ///
+    /// The scroll is not clamped, because there is no rect to clamp against
+    /// until this is placed. It does not need to be: how far a document can be
+    /// scrolled depends on its line count and the height of a column, and this
+    /// is the same document going into a column the same height as the last.
+    pub fn hold(
+        gpa: std.mem.Allocator,
+        document: Document,
+        path: ?[]const u8,
+        was: ?Position,
+    ) !TextView {
+        const named = if (path) |called| try gpa.dupe(u8, called) else null;
+
+        var self: TextView = .{ .gpa = gpa, .document = document, .path = named, .cursor = 0 };
+        if (was) |seen| {
+            self.cursor = @min(seen.cursor, self.document.buffer.byteLen());
+            self.scroll = seen.scroll;
+        }
+        return self;
+    }
+
+    /// Hands over everything this view was holding. It must not be used again
+    /// and must not be deinitialised: all of it belongs to the caller now.
+    pub fn retire(self: *TextView) Retired {
+        return .{ .document = self.document, .path = self.path, .position = self.position() };
+    }
+
     /// Points this view at `document`, taking ownership of it, and hands back
     /// what it was showing for the caller to keep or throw away. `was` is where
     /// this file was last looked at, or null to start at the top.
@@ -227,7 +256,7 @@ pub const TextView = struct {
             // The window's, or the finder's. Arrows and escape reach a view
             // only when nothing is over it, and there is no cursor movement to
             // give them to yet.
-            .quit, .resized, .find, .tab, .close, .up, .down, .cancel => {},
+            .quit, .resized, .find, .tab, .split, .close, .up, .down, .cancel => {},
             .text => |typed| {
                 try self.insert(typed);
                 self.dirty = true;

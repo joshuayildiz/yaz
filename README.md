@@ -96,11 +96,21 @@ and either works on any platform). A file already in a column is focused rather
 than opened twice, so on a window that is showing three files the bindings move
 the keyboard between the columns.
 
+**cmd+alt+1** to **cmd+alt+9** put that file beside what is already split, or
+take it away again when it is already there. Taking one away is not closing it:
+the file keeps its tab and its document is parked, so putting it back costs
+nothing and it lands where it was, since the columns follow the bar's order. The
+last column stays — something has to be there to type into.
+
+*(Alt rather than shift, because macOS has taken shift+cmd+3 and shift+cmd+4 for
+screenshots and never passes them on.)*
+
 **cmd+W** closes the file the focused column is showing: its tab goes, its
-document goes, and the column falls back to the first file nothing else is
-showing — or to an empty document when there is none, which is where a window
-with no file named starts. It closes what that column has, so a file sitting in
-another column is reached with cmd+N or a press before it can be closed.
+document goes, and its column goes with it, so there is one less to split. The
+last column stays and falls back to the first file nothing else is showing — or
+to an empty document when there is none, which is where a window with no file
+named starts. It closes what that column has, so a file sitting in another column
+is reached with cmd+N or a press before it can be closed.
 
 **With nothing left on the bar, cmd+W closes the window.** That is also how a
 window that was never given a file ends, so `yaz` on its own is not a thing you
