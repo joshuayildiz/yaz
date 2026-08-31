@@ -17,6 +17,7 @@ const tools = @import("./tools.zig");
 const Healthcheck = @import("./components/healthcheck.zig").Healthcheck;
 const Finder = @import("./components/finder.zig").Finder;
 const ZStack = @import("./components/zstack.zig").ZStack;
+const HStack = @import("./components/hstack.zig").HStack;
 const c = sdl.c;
 
 /// The largest file yaz will open. What still costs per line of the document
@@ -36,250 +37,104 @@ pub fn main(init: std.process.Init) !void {
     // problem when the path is also bad.
     const absent = try tools.missing(init.gpa, init.io, init.minimal.environ);
     if (absent.any()) {
-        return run(Stopped, init.gpa, .init(.{
+        return run(Stopped, init.gpa, init.io, .init(.{
             try Healthcheck.init(init.gpa, init.minimal.environ, absent),
-        }));
+        }), .empty);
     }
 
     // Read out here rather than inside `run`, so a file that cannot be opened
     // fails before a window has appeared and gone again. Nothing in a stack
     // needs a window to be built.
-    return run(Editing, init.gpa, .init(.{
+    var named = try openNamed(init);
+    errdefer named.deinit(init.gpa);
+
+    return run(Editing, init.gpa, init.io, .init(.{
         try Finder.init(init.gpa, init.io, init.minimal.environ),
-        try Columns.init(init.gpa, init.io, try openAll(init)),
-    }));
+        .init(.{named.showing}),
+    }), named.parked);
 }
 
-/// Where the pointer was, for the events that carry it.
-fn pointer(event: Event) ?[2]f32 {
-    return switch (event) {
-        .press, .move => |at| at,
-        .wheel => |wheel| wheel.at,
-        else => null,
+/// What the command line asked for: the first file named, ready to be looked at,
+/// and the rest kept where cmd+P can reach them without going back to disk.
+///
+/// There is one view, so only one file can be on screen. Naming more of them is
+/// then a way of saying which ones to have ready rather than how to divide the
+/// window.
+const Named = struct {
+    showing: TextView,
+    parked: Parked.Map,
+
+    fn deinit(self: *Named, gpa: std.mem.Allocator) void {
+        self.showing.deinit();
+        var resting = self.parked.iterator();
+        while (resting.next()) |entry| {
+            gpa.free(entry.key_ptr.*);
+            entry.value_ptr.document.deinit();
+        }
+        self.parked.deinit(gpa);
+    }
+};
+
+fn openNamed(init: std.process.Init) !Named {
+    var opened = try openAll(init);
+    defer {
+        for (opened.items) |*file| file.deinit(init.gpa);
+        opened.deinit(init.gpa);
+    }
+
+    // `openAll` answers with at least one, since a document nobody named is
+    // still a document.
+    var named: Named = .{
+        .showing = try TextView.init(init.gpa, opened.items[0].text, opened.items[0].path),
+        .parked = .empty,
     };
+    errdefer named.deinit(init.gpa);
+
+    for (opened.items[1..]) |file| {
+        // Only the first can be unnamed, and that is the one on screen.
+        const path = file.path orelse continue;
+
+        const key = try init.gpa.dupe(u8, path);
+        errdefer init.gpa.free(key);
+
+        var document = try Document.init(init.gpa, file.text);
+        errdefer document.deinit();
+
+        const slot = try named.parked.getOrPut(init.gpa, key);
+        if (slot.found_existing) {
+            // The same file twice on one command line.
+            slot.value_ptr.document.deinit();
+            init.gpa.free(key);
+        } else {
+            slot.key_ptr.* = key;
+        }
+        slot.value_ptr.* = .{ .document = document, .position = .{ .cursor = 0, .scroll = 0 } };
+    }
+
+    return named;
 }
 
-/// A file that is in memory but not on screen.
+/// A file that is in memory but not on screen, and where its reader was in it.
 const Parked = struct {
     document: Document,
     position: Position,
-};
 
-/// The files on screen, side by side, and the ones only in memory.
-///
-/// Everything that comes of having several documents open is here: how the room
-/// is divided between them, which one a keystroke goes to, and what becomes of a
-/// document nobody is looking at.
-const Columns = struct {
-    gpa: std.mem.Allocator,
-    io: std.Io,
-
-    /// Left to right across the window. Never empty: a document nobody named is
-    /// still a document.
-    views: std.ArrayList(TextView) = .empty,
-
-    /// Which of them a keystroke goes to. Moved by a press and by nothing else:
-    /// the pointer routes by position without consulting it, so the wheel turns
-    /// whatever it is over without deciding where typing lands.
-    focus: usize = 0,
-
-    /// Files that have been looked at and are not on screen now, by path.
-    ///
-    /// Kept whole rather than re-read: a document is a buffer, a line index and
-    /// every line already shaped, and looking away from a file is no reason to
-    /// throw that away and pay for it again on the way back. Keys are owned, and
-    /// a document is either here or in exactly one view, never both.
-    parked: std.StringHashMapUnmanaged(Parked) = .empty,
-
-    /// Takes `opened` and frees it: the bytes end up in gap buffers and the
-    /// paths in the views, so keeping the originals would hold every file twice
-    /// for as long as the window is up.
-    fn init(gpa: std.mem.Allocator, io: std.Io, opened: std.ArrayList(Opened)) !Columns {
-        var files = opened;
-        defer {
-            for (files.items) |*file| file.deinit(gpa);
-            files.deinit(gpa);
-        }
-
-        var self: Columns = .{ .gpa = gpa, .io = io };
-        errdefer self.deinit();
-
-        try self.views.ensureTotalCapacity(gpa, files.items.len);
-        for (files.items) |file| {
-            self.views.appendAssumeCapacity(try TextView.init(gpa, file.text, file.path));
-        }
-        return self;
-    }
-
-    /// What the window is called: the file the first column is showing, or
-    /// nothing when none was named.
-    pub fn title(self: *const Columns) ?[:0]const u8 {
-        return self.views.items[0].path;
-    }
-
-    pub fn deinit(self: *Columns) void {
-        var resting = self.parked.iterator();
-        while (resting.next()) |entry| {
-            self.gpa.free(entry.key_ptr.*);
-            entry.value_ptr.document.deinit();
-        }
-        self.parked.deinit(self.gpa);
-
-        for (self.views.items) |*view| view.deinit();
-        self.views.deinit(self.gpa);
-    }
-
-    pub fn isDirty(self: *const Columns) bool {
-        for (self.views.items) |*view| {
-            if (view.isDirty()) return true;
-        }
-        return false;
-    }
-
-    pub fn setDirty(self: *Columns, value: bool) void {
-        for (self.views.items) |*view| view.setDirty(value);
-    }
-
-    pub fn invalidate(self: *Columns) void {
-        for (self.views.items) |*view| view.invalidate();
-    }
-
-    /// Equal columns, left to right.
-    pub fn place(self: *Columns, rect: Rect) void {
-        const count: f32 = @floatFromInt(self.views.items.len);
-        var left = rect.x;
-        for (self.views.items, 1..) |*view, nth| {
-            // Each edge from the full width rather than by adding widths up, so
-            // rounding cannot leave a seam between two columns or short of the
-            // last one.
-            const right = @round(rect.x + rect.width * @as(f32, @floatFromInt(nth)) / count);
-            view.place(.{ .x = left, .y = rect.y, .width = right - left, .height = rect.height });
-            left = right;
-        }
-    }
-
-    pub fn update(self: *Columns, event: Event, atlas: *GlyphAtlas) !Intent {
-        // A view holding the scrollbar keeps the pointer until it lets go,
-        // wherever it wanders. Without this a drag crossing into the next view
-        // would be handed over half way through.
-        if (self.holding()) |held| return self.views.items[held].update(event, atlas);
-
-        // Otherwise a pointer goes to whatever it is over, focus or no focus:
-        // the wheel turns the view under it, which is what one expects of it.
-        if (pointer(event)) |at| {
-            const which = self.over(at) orelse return .nothing;
-
-            // A press, and only a press. A wheel or a pointer merely passing
-            // over would move where typing lands without anyone asking it to.
-            //
-            // Nothing is marked dirty for the move itself: focus is not drawn,
-            // so a frame showing it would be a frame identical to the last, and
-            // presenting one costs the wait for a swapchain image.
-            if (event == .press) self.focus = which;
-
-            return self.views.items[which].update(event, atlas);
-        }
-
-        // Everything left is typing, which goes to the focused view wherever
-        // the pointer happens to be.
-        return self.views.items[self.focus].update(event, atlas);
-    }
-
-    /// Which view has hold of the pointer through its scrollbar, if any.
-    fn holding(self: *Columns) ?usize {
-        for (self.views.items, 0..) |*view, which| {
-            if (view.drag != null) return which;
-        }
-        return null;
-    }
-
-    /// Which view a point falls in. The columns do not overlap, so at most one
-    /// can answer.
-    fn over(self: *Columns, at: [2]f32) ?usize {
-        for (self.views.items, 0..) |*view, which| {
-            if (view.rect.contains(at)) return which;
-        }
-        return null;
-    }
-
-    pub fn draw(self: *Columns, atlas: *GlyphAtlas, painter: *Painter) !void {
-        // Read here rather than acted on at the keystroke that set it: a view
-        // has to have been given its room before it can say what is in it.
-        for (self.views.items) |*view| {
-            if (view.follow_caret) view.scrollToCaret(atlas);
-        }
-        for (self.views.items) |*view| try view.draw(atlas, painter);
-    }
-
-    /// Puts `path` in front of the reader.
-    ///
-    /// A view already showing it is focused rather than a second copy opened,
-    /// which is both what one expects and the only way two views of one file
-    /// cannot drift apart -- they share no document.
-    fn reveal(self: *Columns, path: []const u8, atlas: *const GlyphAtlas) !void {
-        for (self.views.items, 0..) |*view, which| {
-            const named = view.path orelse continue;
-            if (!std.mem.eql(u8, named, path)) continue;
-
-            self.focus = which;
-            return;
-        }
-
-        var document: Document = undefined;
-        var was: ?Position = null;
-
-        if (self.parked.fetchRemove(path)) |entry| {
-            // Looked at before: everything about it is still here.
-            self.gpa.free(entry.key);
-            document = entry.value.document;
-            was = entry.value.position;
-        } else {
-            // Through `open`, so a file picked here meets the same rules as one
-            // named on the command line: the size limit, the UTF-8 check, and
-            // CRLF turned into LF.
-            var file = try open(self.gpa, self.io, path);
-            defer file.deinit(self.gpa);
-            document = try Document.init(self.gpa, file.text);
-        }
-        errdefer document.deinit();
-
-        try self.park(try self.views.items[self.focus].swap(document, path, was, atlas));
-    }
-
-    /// Keeps what a view was showing, against being asked for it again.
-    fn park(self: *Columns, retired: Retired) !void {
-        var leaving = retired;
-
-        const path = leaving.path orelse {
-            // A document nobody named cannot be asked for by name.
-            leaving.document.deinit();
-            return;
-        };
-        errdefer {
-            self.gpa.free(path);
-            leaving.document.deinit();
-        }
-
-        const slot = try self.parked.getOrPut(self.gpa, path);
-        if (slot.found_existing) {
-            // The same file was open in two views, which only the command line
-            // can arrange. Keep what was just put down.
-            slot.value_ptr.document.deinit();
-            self.gpa.free(path);
-        } else {
-            slot.key_ptr.* = path;
-        }
-        slot.value_ptr.* = .{ .document = leaving.document, .position = leaving.position };
-    }
+    /// By path, which is what the finder answers with. Keys are owned, and a
+    /// document is either in here or in exactly one view, never both.
+    const Map = std.StringHashMapUnmanaged(Parked);
 };
 
 /// The window when a tool is missing: one component, and nothing that could go
 /// in front of it.
 const Stopped = ZStack(&.{Healthcheck});
 
+/// Left to right. One view today; a split is another `TextView` in this list and
+/// nothing else.
+const Views = HStack(&.{TextView});
+
 /// Back to front. The finder sits behind the text until cmd+P brings it
 /// forward, so opening and closing it is a change of order and nothing else.
-const Editing = ZStack(&.{ Finder, Columns });
+const Editing = ZStack(&.{ Finder, Views });
 
 /// The window, and whatever `main` decided goes in it.
 ///
@@ -292,9 +147,21 @@ fn App(comptime Stack: type) type {
         const Self = @This();
 
         gpa: std.mem.Allocator,
+        io: std.Io,
         renderer: Renderer,
         painter: Painter,
         stack: Stack,
+
+        /// Files that have been looked at and are not on screen now.
+        ///
+        /// Kept whole rather than re-read: a document is a buffer, a line index
+        /// and every line already shaped, and looking away from a file is no
+        /// reason to throw that away and pay for it again on the way back.
+        ///
+        /// Here rather than in the row because a row is a layout and knows
+        /// nothing about documents, and because this is where a path picked in
+        /// the finder arrives.
+        parked: Parked.Map = .empty,
 
         running: bool = true,
 
@@ -303,6 +170,13 @@ fn App(comptime Stack: type) type {
         dirty: bool = true,
 
         fn deinit(self: *Self) void {
+            var resting = self.parked.iterator();
+            while (resting.next()) |entry| {
+                self.gpa.free(entry.key_ptr.*);
+                entry.value_ptr.document.deinit();
+            }
+            self.parked.deinit(self.gpa);
+
             self.stack.deinit();
             self.painter.deinit();
             self.renderer.deinit();
@@ -360,11 +234,66 @@ fn App(comptime Stack: type) type {
                     defer self.gpa.free(path);
                     self.stack.lowerFront();
                     self.dirty = true;
-                    if (comptime Stack.has(Columns)) {
-                        try self.stack.get(Columns).reveal(path, &self.renderer.atlas);
-                    }
+                    if (comptime Stack.has(Views)) try self.reveal(path);
                 },
             }
+        }
+
+        /// Puts `path` in front of the reader, in the view with the keyboard.
+        ///
+        /// A view already showing it is left alone rather than a second copy
+        /// opened, which is both what one expects and the only way two views of
+        /// one file cannot drift apart -- they share no document.
+        fn reveal(self: *Self, path: []const u8) !void {
+            const view = self.stack.get(Views).focused(TextView) orelse return;
+            if (view.path) |showing| {
+                if (std.mem.eql(u8, showing, path)) return;
+            }
+
+            var document: Document = undefined;
+            var was: ?Position = null;
+
+            if (self.parked.fetchRemove(path)) |entry| {
+                // Looked at before: everything about it is still here.
+                self.gpa.free(entry.key);
+                document = entry.value.document;
+                was = entry.value.position;
+            } else {
+                // Through `open`, so a file picked here meets the same rules as
+                // one named on the command line: the size limit, the UTF-8
+                // check, and CRLF turned into LF.
+                var file = try open(self.gpa, self.io, path);
+                defer file.deinit(self.gpa);
+                document = try Document.init(self.gpa, file.text);
+            }
+            errdefer document.deinit();
+
+            try self.park(try view.swap(document, path, was, &self.renderer.atlas));
+        }
+
+        /// Keeps what a view was showing, against being asked for it again.
+        fn park(self: *Self, retired: Retired) !void {
+            var leaving = retired;
+
+            const path = leaving.path orelse {
+                // A document nobody named cannot be asked for by name.
+                leaving.document.deinit();
+                return;
+            };
+            errdefer {
+                self.gpa.free(path);
+                leaving.document.deinit();
+            }
+
+            const slot = try self.parked.getOrPut(self.gpa, path);
+            if (slot.found_existing) {
+                // Keep what was just put down.
+                slot.value_ptr.document.deinit();
+                self.gpa.free(path);
+            } else {
+                slot.key_ptr.* = path;
+            }
+            slot.value_ptr.* = .{ .document = leaving.document, .position = leaving.position };
         }
 
         fn redraw(self: *Self) !void {
@@ -415,7 +344,7 @@ fn App(comptime Stack: type) type {
 }
 
 /// Puts a window up and runs `stack` in it until it is closed.
-fn run(comptime Stack: type, gpa: std.mem.Allocator, stack: Stack) !void {
+fn run(comptime Stack: type, gpa: std.mem.Allocator, io: std.Io, stack: Stack, parked: Parked.Map) !void {
     // macOS makes inertial scroll events of its own and SDL turns them off
     // unless asked. Asking costs nothing while nothing is moving: momentum is
     // more wheel events, and they stop arriving when it stops. Before
@@ -452,15 +381,17 @@ fn run(comptime Stack: type, gpa: std.mem.Allocator, stack: Stack) !void {
 
     var app: App(Stack) = .{
         .gpa = gpa,
+        .io = io,
         .renderer = try Renderer.init(gpa, window),
         .painter = .init(gpa),
         .stack = stack,
+        .parked = parked,
     };
     defer app.deinit();
 
-    // Only a window with files in it has anything to be called.
-    if (comptime Stack.has(Columns)) {
-        if (app.stack.get(Columns).title()) |named| _ = c.SDL_SetWindowTitle(window, named.ptr);
+    // Only a window with a file in it has anything to be called.
+    if (comptime Stack.has(Views)) {
+        if (app.stack.get(Views).get(TextView).path) |named| _ = c.SDL_SetWindowTitle(window, named.ptr);
     }
 
     if (!c.SDL_AddEventWatch(App(Stack).redrawWhileResizing, &app)) {
@@ -743,4 +674,5 @@ test {
     _ = @import("./renderer.zig");
     _ = @import("./components/text_view.zig");
     _ = @import("./components/zstack.zig");
+    _ = @import("./components/hstack.zig");
 }

@@ -317,7 +317,7 @@ pub const TextView = struct {
     }
 
     /// Brings the caret's line into view, and clears the flag that asked for it.
-    pub fn scrollToCaret(self: *TextView, atlas: *const GlyphAtlas) void {
+    fn scrollToCaret(self: *TextView, atlas: *const GlyphAtlas) void {
         self.follow_caret = false;
         const index = self.document.buffer.lineAt(self.cursor);
         // A jump is not a gesture, so anything a gesture had part-way through
@@ -355,6 +355,11 @@ pub const TextView = struct {
         // partly on screen.
         painter.clipTo(self.rect);
         defer painter.clipTo(null);
+
+        // Typing that has gone off screen brings the view back to it. Read here
+        // rather than acted on at the keystroke that set it: the view has to
+        // have been given its room before it can say what is in it.
+        if (self.follow_caret) self.scrollToCaret(atlas);
 
         const at = self.origin(atlas);
         const x = at[0];

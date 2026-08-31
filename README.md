@@ -84,13 +84,19 @@ Later builds skip it. Targeting macOS costs more the first time; see
 yaz               # an empty document
 yaz notes.md      # notes.md, with the caret at the top
 yaz new.md        # new.md does not exist: an empty document under that name
-yaz a.md b.md     # both, in equal columns
+yaz a.md b.md     # a.md, with b.md read and one cmd+P away
 ```
 
-Any number of paths, in equal columns left to right in the order named; the
-window takes its title from the first. `assets/sample.txt` is there to be
-opened — six lines exercising ligatures, a combining mark, `.notdef` and
-proportional advances.
+There is one view, so one file is on screen at a time; the window takes its title
+from it. Naming more than one is a way of saying which files to have **ready**
+rather than how to divide the window — the rest are read now and kept in memory,
+so picking one in the finder is instant and never touches the disk.
+
+A split is a source change and not a runtime one: `Views` in `main.zig` is
+`HStack(&.{TextView})`, and a second `TextView` in that list is a second column.
+
+`assets/sample.txt` is there to be opened — six lines exercising ligatures, a
+combining mark, `.notdef` and proportional advances.
 
 Naming a file that does not exist is how a new file begins, so that is not an
 error. A directory, an unreadable file, one past 1MB, or one that is not UTF-8
@@ -738,6 +744,7 @@ src/
   main.zig         # SDL setup, the window, the event loop, opening a file
   components/      # anything that is given a rect and draws in it
     zstack.zig     #   the components of a window, back to front
+    hstack.zig     #   the components of a window, left to right
     text_view.zig  #   scrolling, the caret, hit-testing
     finder.zig     #   cmd+P, driving rg and fzf
     healthcheck.zig#   what is shown when a tool is missing
@@ -768,7 +775,7 @@ the order to read it in:
 | `text.zig` | glyph_atlas, painter |
 | `renderer.zig` | config, sdl, glyph_atlas, painter |
 | `tools.zig` | nothing of ours |
-| `components/zstack.zig` | event, glyph_atlas, painter |
+| `components/zstack.zig`, `components/hstack.zig` | event, glyph_atlas, painter |
 | `components/text_view.zig` | config, document, event, glyph_atlas, painter, text |
 | `components/finder.zig`, `components/healthcheck.zig` | config, event, glyph_atlas, painter, text, tools |
 | `main.zig` | all of the above |
@@ -808,7 +815,7 @@ it away; there is no separate notion of a thing being open.
 **The tool check decides which stack there is, once, in `main`.** With ripgrep or
 fzf missing the window is `ZStack(&.{Healthcheck})` and nothing else is built —
 no files are read, no finder exists. Otherwise it is
-`ZStack(&.{ Finder, Columns })`, listed back to front, so the finder sits behind
+`ZStack(&.{ Finder, Views })`, listed back to front, so the finder sits behind
 the text until cmd+P brings it forward. `App` is generic over which one it got,
 so a component that is not in this window is not in this build of it: the
 branches that name one are compiled out where there is none. No code below `main`
@@ -816,17 +823,23 @@ can ask whether a tool is missing, because nothing below `main` is told.
 
 **A component answers an event with an `Intent`** — `nothing`, `dismiss`, or
 `open` with a path. It is how the finder, which knows what was picked, reaches
-the columns, which know what to do with it, without the two knowing about each
-other. `App` is the only thing that acts on one, because it is the only thing
-that knows what else is in the stack.
+`App`, which knows what to do with it, without the finder and the views knowing
+about each other. `App` is the only thing that acts on one, because it is the
+only thing that knows what else is in the stack — and it is where the parked
+documents live, since a row is a layout and knows nothing about files.
 
-**A keystroke goes to `Columns.focus`, and a press is the only thing that moves
-it.**
-The pointer never consults it — the wheel turns whatever it is under and a
-scrollbar drag stays with the view it began in — so reading one file never
-decides where typing lands in another. Focus is not drawn: every view shows the
-same caret, so today the way to tell which one has it is to type. That is the
-first thing a border or an active title would fix.
+**`HStack` is the same idea across.** Same fixed members, and what varies is
+which one has the keyboard rather than which one is in front: they sit side by
+side in equal columns, *all of them draw* because none covers another, and *the
+focused one is told what happened*. A press moves the keyboard and takes the
+pointer until the release, so a scrollbar drag that wanders out of the column it
+began in stays with it. Only the pointer is caught that way — typing goes to the
+focused column even mid-drag, and the wheel turns whatever it is under without
+deciding where typing lands.
+
+Focus is not drawn: every view shows the same caret, so with more than one column
+the way to tell which has the keyboard is to type. That is the first thing a
+border or an active title would fix.
 
 The view therefore names no SDL type and makes no SDL call. It does reach
 `sdl.zig` through `event.zig`, so the separation is one of vocabulary rather than
@@ -846,11 +859,6 @@ caller.
 asked without the other — shaping decides which glyphs exist, rasterizing decides
 where they land. It shapes one line at a time, into that line's own coordinates,
 and knows nothing about documents.
-
-`components/columns.zig` is not a file — the columns live in `main.zig` beside
-`App`, since dividing the window between open files and reading a named one are
-the same subject. It owns the views, which one has the keyboard, and the
-documents that have been looked at and are not on screen.
 
 `components/text_view.zig` owns a document and adds what a *view* of one has: a
 caret, a scroll offset, a scrollbar, and the rect all three are measured from. It
