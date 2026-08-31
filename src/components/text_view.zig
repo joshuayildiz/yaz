@@ -14,7 +14,7 @@ const Event = @import("../event.zig").Event;
 const painter_mod = @import("../painter.zig");
 const Key = painter_mod.Key;
 const Painter = painter_mod.Painter;
-pub const Rect = painter_mod.Rect;
+const Rect = painter_mod.Rect;
 
 const Document = @import("../document.zig").Document;
 const drawLine = @import("../text.zig").draw;
@@ -178,7 +178,7 @@ pub const TextView = struct {
     }
 
     /// Where this view is, to be given back to `swap` later.
-    pub fn position(self: *const TextView) Position {
+    fn position(self: *const TextView) Position {
         return .{ .cursor = self.cursor, .scroll = self.scroll };
     }
 
@@ -187,14 +187,14 @@ pub const TextView = struct {
         if (self.path) |named| self.gpa.free(named);
     }
 
-    pub fn insert(self: *TextView, text: []const u8) !void {
+    fn insert(self: *TextView, text: []const u8) !void {
         _ = try self.document.insert(self.cursor, text);
         self.cursor += text.len;
         self.follow_caret = true;
     }
 
     /// Deletes the character before the caret, answering whether there was one.
-    pub fn backspace(self: *TextView) !bool {
+    fn backspace(self: *TextView) !bool {
         const from = self.document.buffer.stepBack(self.cursor);
         if (from == self.cursor) return false;
 
@@ -276,7 +276,7 @@ pub const TextView = struct {
 
     /// Moves the view by `pixels`, keeping the offset a whole number of them.
     /// What is left over waits for the next event rather than rounding away.
-    pub fn scrollBy(self: *TextView, pixels: f32, atlas: *const GlyphAtlas) void {
+    fn scrollBy(self: *TextView, pixels: f32, atlas: *const GlyphAtlas) void {
         self.pending += pixels;
         const whole = @trunc(self.pending);
         self.pending -= whole;
@@ -297,7 +297,7 @@ pub const TextView = struct {
     /// points wide is a small thing to ask anyone to hit. A press on the track
     /// rather than the thumb takes hold of its middle, so the thumb jumps to the
     /// pointer and carries on from there.
-    pub fn thumbGrab(self: *const TextView, atlas: *const GlyphAtlas, point: [2]f32) ?f32 {
+    fn thumbGrab(self: *const TextView, atlas: *const GlyphAtlas, point: [2]f32) ?f32 {
         const from_left = point[0] - self.rect.x;
         if (from_left < 0 or from_left >= @round(bar_gutter * atlas.scale)) return null;
 
@@ -308,7 +308,7 @@ pub const TextView = struct {
     }
 
     /// Drags the thumb so that the point `grab` down it sits at `y`.
-    pub fn dragTo(self: *TextView, atlas: *const GlyphAtlas, y: f32, grab: f32) void {
+    fn dragTo(self: *TextView, atlas: *const GlyphAtlas, y: f32, grab: f32) void {
         if (self.rect.height <= 0) return;
         const count: f32 = @floatFromInt(self.document.buffer.lineCount());
         // The inverse of the thumb, whose top is `scroll * height / content`.
@@ -427,7 +427,7 @@ pub const TextView = struct {
     ///
     /// A click below the last line or right of a line's end lands on the nearest
     /// place the caret can go, which is what makes dragging past the end behave.
-    pub fn moveCaretTo(self: *TextView, atlas: *GlyphAtlas, point: [2]f32) !void {
+    fn moveCaretTo(self: *TextView, atlas: *GlyphAtlas, point: [2]f32) !void {
         // Nothing has been laid out, so there is nothing on screen to click.
         if (self.document.lines.items.len == 0) return;
 
@@ -450,7 +450,6 @@ pub const TextView = struct {
         self.document.invalidate();
     }
 };
-
 
 /// Where line `index` sits, before rounding.
 ///
