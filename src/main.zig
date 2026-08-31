@@ -122,7 +122,7 @@ fn App(comptime Component: type) type {
     return struct {
         const Self = @This();
 
-        gpa: std.mem.Allocator,
+        allocator: std.mem.Allocator,
         io: std.Io,
         renderer: Renderer,
         painter: Painter,
@@ -148,10 +148,10 @@ fn App(comptime Component: type) type {
         fn deinit(self: *Self) void {
             var resting = self.parked.iterator();
             while (resting.next()) |entry| {
-                self.gpa.free(entry.key_ptr.*);
+                self.allocator.free(entry.key_ptr.*);
                 entry.value_ptr.document.deinit();
             }
-            self.parked.deinit(self.gpa);
+            self.parked.deinit(self.allocator);
 
             self.component.deinit();
             self.painter.deinit();
@@ -199,8 +199,8 @@ fn App(comptime Component: type) type {
                     if (tabs.nth(which)) |path| {
                         // Copied, because pointing a column at it frees the
                         // bar's copy when the file it displaces is parked.
-                        const wanted = try self.gpa.dupe(u8, path);
-                        defer self.gpa.free(wanted);
+                        const wanted = try self.allocator.dupe(u8, path);
+                        defer self.allocator.free(wanted);
                         try self.selectOnly(wanted);
                     }
                     return;
@@ -234,7 +234,7 @@ fn App(comptime Component: type) type {
                     }
                 },
                 .open => |path| {
-                    defer self.gpa.free(path);
+                    defer self.allocator.free(path);
                     self.dismissPanel();
                     self.dirty = true;
                     if (comptime holds(Component, Workspace)) {
@@ -248,7 +248,7 @@ fn App(comptime Component: type) type {
                     }
                 },
                 .only => |path| {
-                    defer self.gpa.free(path);
+                    defer self.allocator.free(path);
                     self.dirty = true;
                     if (comptime holds(Component, Workspace)) try self.selectOnly(path);
                 },
@@ -280,16 +280,16 @@ fn App(comptime Component: type) type {
 
             if (self.parked.fetchRemove(path)) |entry| {
                 // Looked at before: everything about it is still here.
-                self.gpa.free(entry.key);
+                self.allocator.free(entry.key);
                 document = entry.value.document;
                 was = entry.value.position;
             } else {
                 // Through `open`, so a file picked here meets the same rules as
                 // one named on the command line: the size limit, the UTF-8
                 // check, and CRLF turned into LF.
-                var file = try open(self.gpa, self.io, path);
-                defer file.deinit(self.gpa);
-                document = try Document.init(self.gpa, file.text);
+                var file = try open(self.allocator, self.io, path);
+                defer file.deinit(self.allocator);
+                document = try Document.init(self.allocator, file.text);
             }
             errdefer document.deinit();
 
@@ -375,17 +375,17 @@ fn App(comptime Component: type) type {
             var document: Document = undefined;
             var was: ?Position = null;
             if (self.parked.fetchRemove(path)) |entry| {
-                self.gpa.free(entry.key);
+                self.allocator.free(entry.key);
                 document = entry.value.document;
                 was = entry.value.position;
             } else {
-                var file = try open(self.gpa, self.io, path);
-                defer file.deinit(self.gpa);
-                document = try Document.init(self.gpa, file.text);
+                var file = try open(self.allocator, self.io, path);
+                defer file.deinit(self.allocator);
+                document = try Document.init(self.allocator, file.text);
             }
             errdefer document.deinit();
 
-            try views.insert(at, try TextView.hold(self.gpa, document, path, was));
+            try views.insert(at, try TextView.hold(self.allocator, document, path, was));
             views.focus = at;
             workspace.focusOn(Views);
             self.dirty = true;
@@ -438,16 +438,16 @@ fn App(comptime Component: type) type {
                     was = entry.value.position;
                     path = entry.key;
                 } else {
-                    document = try Document.init(self.gpa, "");
+                    document = try Document.init(self.allocator, "");
                 }
                 errdefer document.deinit();
 
                 var retired = try view.swap(document, path, was, &self.renderer.atlas);
-                if (next) |entry| self.gpa.free(entry.key);
+                if (next) |entry| self.allocator.free(entry.key);
 
                 // Not parked: closing is the one thing that means a document is
                 // finished with.
-                if (retired.path) |named| self.gpa.free(named);
+                if (retired.path) |named| self.allocator.free(named);
                 retired.document.deinit();
             }
 
@@ -468,15 +468,15 @@ fn App(comptime Component: type) type {
                 return;
             };
             errdefer {
-                self.gpa.free(path);
+                self.allocator.free(path);
                 leaving.document.deinit();
             }
 
-            const slot = try self.parked.getOrPut(self.gpa, path);
+            const slot = try self.parked.getOrPut(self.allocator, path);
             if (slot.found_existing) {
                 // Keep what was just put down.
                 slot.value_ptr.document.deinit();
-                self.gpa.free(path);
+                self.allocator.free(path);
             } else {
                 slot.key_ptr.* = path;
             }
@@ -557,7 +557,7 @@ fn App(comptime Component: type) type {
 }
 
 /// Puts a window up and runs `component` in it until it is closed.
-fn run(comptime Component: type, gpa: std.mem.Allocator, io: std.Io, component: Component) !void {
+fn run(comptime Component: type, allocator: std.mem.Allocator, io: std.Io, component: Component) !void {
     // macOS makes inertial scroll events of its own and SDL turns them off
     // unless asked. Asking costs nothing while nothing is moving: momentum is
     // more wheel events, and they stop arriving when it stops. Before
@@ -596,10 +596,10 @@ fn run(comptime Component: type, gpa: std.mem.Allocator, io: std.Io, component: 
     defer _ = c.SDL_StopTextInput(window);
 
     var app: App(Component) = .{
-        .gpa = gpa,
+        .allocator = allocator,
         .io = io,
-        .renderer = try Renderer.init(gpa, window),
-        .painter = .init(gpa),
+        .renderer = try Renderer.init(allocator, window),
+        .painter = .init(allocator),
         .component = component,
     };
     defer app.deinit();
@@ -611,8 +611,8 @@ fn run(comptime Component: type, gpa: std.mem.Allocator, io: std.Io, component: 
     // are keyed by exactly that path.
     if (comptime holds(Component, Workspace)) {
         if (app.component.get(Workspace).get(Views).items.items[0].path) |named| {
-            const title = try gpa.dupeZ(u8, named);
-            defer gpa.free(title);
+            const title = try allocator.dupeZ(u8, named);
+            defer allocator.free(title);
             _ = c.SDL_SetWindowTitle(window, title.ptr);
         }
     }
@@ -709,9 +709,9 @@ const Opened = struct {
     /// Sentinel-terminated because it goes to SDL as a window title.
     path: ?[:0]u8,
 
-    fn deinit(self: *Opened, gpa: std.mem.Allocator) void {
-        gpa.free(self.text);
-        if (self.path) |path| gpa.free(path);
+    fn deinit(self: *Opened, allocator: std.mem.Allocator) void {
+        allocator.free(self.text);
+        if (self.path) |path| allocator.free(path);
     }
 };
 
@@ -743,12 +743,12 @@ fn openAll(init: std.process.Init) !std.ArrayList(Opened) {
 /// A path that does not exist opens empty under that name, the way a new file
 /// starts. Anything else stops the program: an empty window otherwise looks
 /// exactly like an empty file.
-fn open(gpa: std.mem.Allocator, io: std.Io, named: []const u8) !Opened {
-    const path = try gpa.dupeZ(u8, named);
-    errdefer gpa.free(path);
+fn open(allocator: std.mem.Allocator, io: std.Io, named: []const u8) !Opened {
+    const path = try allocator.dupeZ(u8, named);
+    errdefer allocator.free(path);
 
-    const contents = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(file_limit)) catch |err| switch (err) {
-        error.FileNotFound => return .{ .text = try gpa.alloc(u8, 0), .path = path },
+    const contents = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(file_limit)) catch |err| switch (err) {
+        error.FileNotFound => return .{ .text = try allocator.alloc(u8, 0), .path = path },
         error.StreamTooLong => {
             std.log.err(
                 "{s} is larger than the {d}MB yaz will open: the layout cache holds an entry for every line of it, on screen or not",
@@ -761,14 +761,14 @@ fn open(gpa: std.mem.Allocator, io: std.Io, named: []const u8) !Opened {
             return other;
         },
     };
-    errdefer gpa.free(contents);
+    errdefer allocator.free(contents);
 
     if (firstInvalidUtf8(contents)) |offset| {
         std.log.err("{s} is not UTF-8: the byte at offset {d} does not begin or continue a character", .{ path, offset });
         return error.InvalidUtf8;
     }
 
-    return .{ .text = try stripCarriageReturns(gpa, contents), .path = path };
+    return .{ .text = try stripCarriageReturns(allocator, contents), .path = path };
 }
 
 /// An offset rather than a yes or no, because the offset is the part a caller
@@ -828,14 +828,14 @@ test "firstInvalidUtf8 rejects a surrogate half" {
 /// the shaper and set as .notdef at the end of every line. The bytes then stop
 /// matching the file exactly, which is a trade to revisit when there is a way
 /// to save.
-fn stripCarriageReturns(gpa: std.mem.Allocator, text: []u8) ![]u8 {
+fn stripCarriageReturns(allocator: std.mem.Allocator, text: []u8) ![]u8 {
     var found: usize = 0;
     for (text, 0..) |byte, i| {
         if (byte == '\r' and i + 1 < text.len and text[i + 1] == '\n') found += 1;
     }
     if (found == 0) return text;
 
-    const stripped = try gpa.alloc(u8, text.len - found);
+    const stripped = try allocator.alloc(u8, text.len - found);
     var out: usize = 0;
     for (text, 0..) |byte, i| {
         if (byte == '\r' and i + 1 < text.len and text[i + 1] == '\n') continue;
@@ -844,44 +844,44 @@ fn stripCarriageReturns(gpa: std.mem.Allocator, text: []u8) ![]u8 {
     }
     std.debug.assert(out == stripped.len);
 
-    gpa.free(text);
+    allocator.free(text);
     return stripped;
 }
 
 test "stripCarriageReturns leaves a file that has none alone" {
-    const gpa = std.testing.allocator;
-    const text = try gpa.dupe(u8, "one\ntwo\n");
-    const kept = try stripCarriageReturns(gpa, text);
-    defer gpa.free(kept);
+    const allocator = std.testing.allocator;
+    const text = try allocator.dupe(u8, "one\ntwo\n");
+    const kept = try stripCarriageReturns(allocator, text);
+    defer allocator.free(kept);
     // The same allocation, not a copy of it.
     try std.testing.expectEqual(text.ptr, kept.ptr);
 }
 
 test "stripCarriageReturns turns CRLF into LF" {
-    const gpa = std.testing.allocator;
-    const text = try gpa.dupe(u8, "one\r\ntwo\r\n");
-    const stripped = try stripCarriageReturns(gpa, text);
-    defer gpa.free(stripped);
+    const allocator = std.testing.allocator;
+    const text = try allocator.dupe(u8, "one\r\ntwo\r\n");
+    const stripped = try stripCarriageReturns(allocator, text);
+    defer allocator.free(stripped);
     try std.testing.expectEqualStrings("one\ntwo\n", stripped);
 }
 
 test "stripCarriageReturns keeps a carriage return that is not a line ending" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     // A lone CR is not CRLF and is left where it is; only the pair is a line
     // ending, and a file using bare CR is not a thing this reads.
-    const text = try gpa.dupe(u8, "one\rtwo\r\n");
-    const stripped = try stripCarriageReturns(gpa, text);
-    defer gpa.free(stripped);
+    const text = try allocator.dupe(u8, "one\rtwo\r\n");
+    const stripped = try stripCarriageReturns(allocator, text);
+    defer allocator.free(stripped);
     try std.testing.expectEqualStrings("one\rtwo\n", stripped);
 }
 
 test "stripCarriageReturns handles a trailing carriage return" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     // Last byte, so there is no next one to look at; the bounds check is the
     // whole of what this is here to catch.
-    const text = try gpa.dupe(u8, "one\n\r");
-    const stripped = try stripCarriageReturns(gpa, text);
-    defer gpa.free(stripped);
+    const text = try allocator.dupe(u8, "one\n\r");
+    const stripped = try stripCarriageReturns(allocator, text);
+    defer allocator.free(stripped);
     try std.testing.expectEqualStrings("one\n\r", stripped);
 }
 

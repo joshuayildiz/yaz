@@ -128,9 +128,9 @@ pub const LineLayout = struct {
 
     shaped: bool = false,
 
-    pub fn deinit(self: *LineLayout, gpa: std.mem.Allocator) void {
-        self.sprites.deinit(gpa);
-        self.carets.deinit(gpa);
+    pub fn deinit(self: *LineLayout, allocator: std.mem.Allocator) void {
+        self.sprites.deinit(allocator);
+        self.carets.deinit(allocator);
     }
 };
 
@@ -147,7 +147,7 @@ pub const size: [2]f32 = .{ atlas_width, atlas_height };
 /// FreeType stays open for the life of the font: there is no moment when the
 /// atlas is finished, since a glyph nobody has typed is not rasterised yet.
 pub const GlyphAtlas = struct {
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     gpu: *c.SDL_GPUDevice,
     library: ft.FT_Library,
     face: ft.FT_Face,
@@ -190,7 +190,7 @@ pub const GlyphAtlas = struct {
         offset: u32,
     };
 
-    pub fn init(gpa: std.mem.Allocator, gpu: *c.SDL_GPUDevice, scale: f32) !GlyphAtlas {
+    pub fn init(allocator: std.mem.Allocator, gpu: *c.SDL_GPUDevice, scale: f32) !GlyphAtlas {
         var library: ft.FT_Library = null;
         if (ft.FT_Init_FreeType(&library) != 0) return error.FreetypeInit;
         errdefer _ = ft.FT_Done_FreeType(library);
@@ -206,22 +206,22 @@ pub const GlyphAtlas = struct {
             return error.FreetypeSetPixelSizes;
         }
 
-        const slots = try gpa.alloc(u16, @intCast(face.*.num_glyphs));
-        errdefer gpa.free(slots);
+        const slots = try allocator.alloc(u16, @intCast(face.*.num_glyphs));
+        errdefer allocator.free(slots);
         @memset(slots, no_slot);
 
-        const glyphs = try gpa.alloc(Glyph, max_slots * subpixel_positions);
-        errdefer gpa.free(glyphs);
+        const glyphs = try allocator.alloc(Glyph, max_slots * subpixel_positions);
+        errdefer allocator.free(glyphs);
 
         var shaper = try Shaper.init(scale);
         errdefer shaper.deinit();
 
         return .{
-            .gpa = gpa,
+            .allocator = allocator,
             .gpu = gpu,
             .library = library,
             .face = face,
-            .texture = try createAtlas(gpa, gpu),
+            .texture = try createAtlas(allocator, gpu),
             .shaper = shaper,
             .slots = slots,
             .glyphs = glyphs,
@@ -267,10 +267,10 @@ pub const GlyphAtlas = struct {
     pub fn deinit(self: *GlyphAtlas) void {
         c.SDL_ReleaseGPUTexture(self.gpu, self.texture);
         self.shaper.deinit();
-        self.uploads.deinit(self.gpa);
-        self.staging.deinit(self.gpa);
-        self.gpa.free(self.glyphs);
-        self.gpa.free(self.slots);
+        self.uploads.deinit(self.allocator);
+        self.staging.deinit(self.allocator);
+        self.allocator.free(self.glyphs);
+        self.allocator.free(self.slots);
         _ = ft.FT_Done_Face(self.face);
         _ = ft.FT_Done_FreeType(self.library);
     }
@@ -291,7 +291,7 @@ pub const GlyphAtlas = struct {
             // repeat. Glyphs sharing one -- a letter and its mark -- are a
             // single boundary at the pen before the first.
             if (entry.carets.items.len == 0 or entry.carets.getLast().offset != info.cluster) {
-                try entry.carets.append(self.gpa, .{ .offset = info.cluster, .x = pen });
+                try entry.carets.append(self.allocator, .{ .offset = info.cluster, .x = pen });
             }
 
             // Moves a glyph off the pen without moving the pen, which is how
@@ -301,7 +301,7 @@ pub const GlyphAtlas = struct {
 
             // A space contributes its advance and nothing to draw.
             const g = self.glyph(info.codepoint, position.subpixel) orelse continue;
-            try entry.sprites.append(self.gpa, .{
+            try entry.sprites.append(self.allocator, .{
                 .dest = .{
                     position.pixel + @as(f32, @floatFromInt(g.left)),
                     -@round(fromFixed(offset.y_offset)) - @as(f32, @floatFromInt(g.top)),
@@ -313,7 +313,7 @@ pub const GlyphAtlas = struct {
 
         // No glyph begins at the end of the line, so the caret can only go
         // there by being appended.
-        try entry.carets.append(self.gpa, .{ .offset = @intCast(text.len), .x = pen });
+        try entry.carets.append(self.allocator, .{ .offset = @intCast(text.len), .x = pen });
 
         entry.bytes = text.len;
         entry.shaped = true;
@@ -372,11 +372,11 @@ pub const GlyphAtlas = struct {
             // shear the glyph. What goes to the GPU is tight.
             const offset: u32 = @intCast(self.staging.items.len);
             const pitch: usize = @intCast(bitmap.pitch);
-            try self.staging.ensureUnusedCapacity(self.gpa, @as(usize, width) * height);
+            try self.staging.ensureUnusedCapacity(self.allocator, @as(usize, width) * height);
             for (0..height) |row| {
                 self.staging.appendSliceAssumeCapacity((bitmap.buffer + row * pitch)[0..width]);
             }
-            try self.uploads.append(self.gpa, .{
+            try self.uploads.append(self.allocator, .{
                 .x = placed.x,
                 .y = placed.y,
                 .width = width,
@@ -736,7 +736,7 @@ fn fromFixed(value: anytype) f32 {
 /// Creates the atlas texture and zeroes it. Nothing samples outside a glyph's
 /// own rectangle, so the clear is not load-bearing today; it costs one upload at
 /// startup and means the texture never holds anything nobody wrote.
-fn createAtlas(gpa: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUTexture {
+fn createAtlas(allocator: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUTexture {
     const texture = c.SDL_CreateGPUTexture(gpu, &std.mem.zeroInit(c.SDL_GPUTextureCreateInfo, .{
         .type = c.SDL_GPU_TEXTURETYPE_2D,
         .format = c.SDL_GPU_TEXTUREFORMAT_R8_UNORM,
@@ -751,8 +751,8 @@ fn createAtlas(gpa: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUTexture
     };
     errdefer c.SDL_ReleaseGPUTexture(gpu, texture);
 
-    const blank = try gpa.alloc(u8, atlas_width * atlas_height);
-    defer gpa.free(blank);
+    const blank = try allocator.alloc(u8, atlas_width * atlas_height);
+    defer allocator.free(blank);
     @memset(blank, 0);
 
     const transfer = c.SDL_CreateGPUTransferBuffer(gpu, &std.mem.zeroInit(c.SDL_GPUTransferBufferCreateInfo, .{

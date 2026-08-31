@@ -137,7 +137,7 @@ fn Spy(comptime tag: u8) type {
         const Self = @This();
         drawn: *std.ArrayList(u8),
         told: *std.ArrayList(u8),
-        gpa: std.mem.Allocator,
+        allocator: std.mem.Allocator,
 
         pub fn deinit(_: *Self) void {}
         pub fn place(_: *Self, _: Rect, _: *const GlyphAtlas) void {}
@@ -148,28 +148,28 @@ fn Spy(comptime tag: u8) type {
         pub fn invalidate(_: *Self) void {}
 
         pub fn draw(self: *Self, _: *GlyphAtlas, _: *Painter) !void {
-            try self.drawn.append(self.gpa, tag);
+            try self.drawn.append(self.allocator, tag);
         }
 
         pub fn update(self: *Self, _: Event, _: *GlyphAtlas) !Intent {
-            try self.told.append(self.gpa, tag);
+            try self.told.append(self.allocator, tag);
             return .nothing;
         }
     };
 }
 
 test "everything draws back to front, and only the front is told" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var drawn: std.ArrayList(u8) = .empty;
-    defer drawn.deinit(gpa);
+    defer drawn.deinit(allocator);
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
     const Back = Spy('b');
     const Front = Spy('f');
     var stack: ZTuple(&.{ Back, Front }) = .init(.{
-        .{ .drawn = &drawn, .told = &told, .gpa = gpa },
-        .{ .drawn = &drawn, .told = &told, .gpa = gpa },
+        .{ .drawn = &drawn, .told = &told, .allocator = allocator },
+        .{ .drawn = &drawn, .told = &told, .allocator = allocator },
     });
 
     // Declared back to front, so the last one starts in front.
@@ -206,14 +206,14 @@ test "a stack knows its members at compile time" {
 }
 
 test "a stack of one has no front to give up" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var drawn: std.ArrayList(u8) = .empty;
-    defer drawn.deinit(gpa);
+    defer drawn.deinit(allocator);
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
     const Only = Spy('o');
-    var stack: ZTuple(&.{Only}) = .init(.{.{ .drawn = &drawn, .told = &told, .gpa = gpa }});
+    var stack: ZTuple(&.{Only}) = .init(.{.{ .drawn = &drawn, .told = &told, .allocator = allocator }});
 
     stack.lowerFront();
     stack.raise(Only);

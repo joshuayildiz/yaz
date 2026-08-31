@@ -32,7 +32,7 @@ const min_gap = 4096;
 /// editing is local, so a jump across the whole file is a rare pass at memory
 /// bandwidth rather than a data structure to maintain.
 pub const Buffer = struct {
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     /// Text and hole together. `bytes[0..gap_start]` and `bytes[gap_end..]` are
     /// the document; what lies between them is not part of it.
@@ -50,10 +50,10 @@ pub const Buffer = struct {
     /// Only one line can contain it, so one scratch buffer serves all of them.
     scratch: std.ArrayList(u8) = .empty,
 
-    pub fn init(gpa: std.mem.Allocator, text: []const u8) !Buffer {
+    pub fn init(allocator: std.mem.Allocator, text: []const u8) !Buffer {
         var self: Buffer = .{
-            .gpa = gpa,
-            .bytes = try gpa.alloc(u8, text.len + min_gap),
+            .allocator = allocator,
+            .bytes = try allocator.alloc(u8, text.len + min_gap),
             .gap_start = text.len,
             .gap_end = text.len + min_gap,
             .starts = .empty,
@@ -62,18 +62,18 @@ pub const Buffer = struct {
 
         @memcpy(self.bytes[0..text.len], text);
 
-        try self.starts.append(gpa, 0);
+        try self.starts.append(allocator, 0);
         for (text, 0..) |byte, offset| {
-            if (byte == '\n') try self.starts.append(gpa, offset + 1);
+            if (byte == '\n') try self.starts.append(allocator, offset + 1);
         }
 
         return self;
     }
 
     pub fn deinit(self: *Buffer) void {
-        self.scratch.deinit(self.gpa);
-        self.starts.deinit(self.gpa);
-        self.gpa.free(self.bytes);
+        self.scratch.deinit(self.allocator);
+        self.starts.deinit(self.allocator);
+        self.allocator.free(self.bytes);
     }
 
     pub fn byteLen(self: *const Buffer) usize {
@@ -93,7 +93,7 @@ pub const Buffer = struct {
         // Both allocations happen before a byte is written, so failing here
         // leaves the document and its index exactly as they were.
         const added = std.mem.count(u8, text, "\n");
-        try self.starts.ensureUnusedCapacity(self.gpa, added);
+        try self.starts.ensureUnusedCapacity(self.allocator, added);
         if (self.gap_end - self.gap_start < text.len) try self.grow(text.len);
 
         self.moveGap(at);
@@ -193,8 +193,8 @@ pub const Buffer = struct {
         if (from >= self.gap_start) return self.bytes[from + gap .. to + gap];
 
         self.scratch.clearRetainingCapacity();
-        try self.scratch.appendSlice(self.gpa, self.bytes[from..self.gap_start]);
-        try self.scratch.appendSlice(self.gpa, self.bytes[self.gap_end .. to + gap]);
+        try self.scratch.appendSlice(self.allocator, self.bytes[from..self.gap_start]);
+        try self.scratch.appendSlice(self.allocator, self.bytes[self.gap_end .. to + gap]);
         return self.scratch.items;
     }
 
@@ -223,7 +223,7 @@ pub const Buffer = struct {
         const tail = self.bytes.len - self.gap_end;
         const capacity = self.byteLen() + @max(needed, min_gap);
 
-        self.bytes = try self.gpa.realloc(self.bytes, capacity);
+        self.bytes = try self.allocator.realloc(self.bytes, capacity);
         const gap_end = capacity - tail;
         std.mem.copyBackwards(u8, self.bytes[gap_end..], self.bytes[self.gap_end..][0..tail]);
         self.gap_end = gap_end;
@@ -489,17 +489,17 @@ test "lineAt finds the line an offset falls on" {
 }
 
 test "random edits agree with a plain array doing the same thing" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     const seed_text = "seed\ntext";
 
-    var buffer = try Buffer.init(gpa, seed_text);
+    var buffer = try Buffer.init(allocator, seed_text);
     defer buffer.deinit();
 
     // The same document held the obvious way, which is wrong for an editor and
     // right for saying what the answer should have been.
     var model: std.ArrayList(u8) = .empty;
-    defer model.deinit(gpa);
-    try model.appendSlice(gpa, seed_text);
+    defer model.deinit(allocator);
+    try model.appendSlice(allocator, seed_text);
 
     var prng = std.Random.DefaultPrng.init(0x9e3779b97f4a7c15);
     const random = prng.random();
@@ -513,7 +513,7 @@ test "random edits agree with a plain array doing the same thing" {
             const at = random.uintAtMost(usize, len);
             const text = words[random.uintLessThan(usize, words.len)];
             _ = try buffer.insert(at, text);
-            try model.insertSlice(gpa, at, text);
+            try model.insertSlice(allocator, at, text);
         } else {
             const at = random.uintLessThan(usize, len);
             const count = random.uintAtMost(usize, @min(len - at, 8));
@@ -541,7 +541,7 @@ test "random edits agree with a plain array doing the same thing" {
 /// beside the text is also what lets `insert` and `delete` splice it themselves,
 /// rather than leaving a caller to remember to.
 pub const Document = struct {
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     buffer: Buffer,
 
     /// One entry per line, in the document's order. Empty until the first frame,
@@ -554,13 +554,13 @@ pub const Document = struct {
     /// parked has it too.
     modified: bool = false,
 
-    pub fn init(gpa: std.mem.Allocator, text: []const u8) !Document {
-        return .{ .gpa = gpa, .buffer = try Buffer.init(gpa, text) };
+    pub fn init(allocator: std.mem.Allocator, text: []const u8) !Document {
+        return .{ .allocator = allocator, .buffer = try Buffer.init(allocator, text) };
     }
 
     pub fn deinit(self: *Document) void {
-        for (self.lines.items) |*entry| entry.deinit(self.gpa);
-        self.lines.deinit(self.gpa);
+        for (self.lines.items) |*entry| entry.deinit(self.allocator);
+        self.lines.deinit(self.allocator);
         self.buffer.deinit();
     }
 
@@ -592,7 +592,7 @@ pub const Document = struct {
     fn splice(self: *Document, edit: Edit) !void {
         // Nothing has been laid out yet, so there is nothing to keep in step.
         if (self.lines.items.len == 0) return;
-        try spliceLines(self.gpa, &self.lines, edit.line, edit.removed, edit.added);
+        try spliceLines(self.allocator, &self.lines, edit.line, edit.removed, edit.added);
     }
 };
 
@@ -605,7 +605,7 @@ pub const Document = struct {
 ///
 /// Apart from `Document` so it can be tested without one to splice.
 fn spliceLines(
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     cache: *std.ArrayList(LineLayout),
     line: usize,
     removed: usize,
@@ -616,9 +616,9 @@ fn spliceLines(
 
     // Reserved before anything moves, so a failure cannot leave the cache a
     // different length from the document it describes.
-    try cache.ensureUnusedCapacity(gpa, added);
+    try cache.ensureUnusedCapacity(allocator, added);
 
-    for (cache.items[first..][0..removed]) |*entry| entry.deinit(gpa);
+    for (cache.items[first..][0..removed]) |*entry| entry.deinit(allocator);
     std.mem.copyForwards(LineLayout, cache.items[first..], cache.items[first + removed ..]);
     cache.items.len -= removed;
 
@@ -636,28 +636,28 @@ fn spliceLines(
 
 /// Four lines, each holding a sprite and a caret, so that dropping an entry
 /// without freeing it shows up as a leak rather than as nothing at all.
-fn testCache(gpa: std.mem.Allocator) !std.ArrayList(LineLayout) {
+fn testCache(allocator: std.mem.Allocator) !std.ArrayList(LineLayout) {
     var cache: std.ArrayList(LineLayout) = .empty;
     for ([_]usize{ 10, 20, 30, 40 }) |bytes| {
         var entry: LineLayout = .{ .bytes = bytes, .shaped = true };
-        try entry.sprites.append(gpa, .{ .dest = .{ 0, 0 }, .source = .{ 0, 0 }, .size = .{ 1, 1 } });
-        try entry.carets.append(gpa, .{ .offset = 0, .x = 0 });
-        try cache.append(gpa, entry);
+        try entry.sprites.append(allocator, .{ .dest = .{ 0, 0 }, .source = .{ 0, 0 }, .size = .{ 1, 1 } });
+        try entry.carets.append(allocator, .{ .offset = 0, .x = 0 });
+        try cache.append(allocator, entry);
     }
     return cache;
 }
 
-fn testFree(gpa: std.mem.Allocator, cache: *std.ArrayList(LineLayout)) void {
-    for (cache.items) |*entry| entry.deinit(gpa);
-    cache.deinit(gpa);
+fn testFree(allocator: std.mem.Allocator, cache: *std.ArrayList(LineLayout)) void {
+    for (cache.items) |*entry| entry.deinit(allocator);
+    cache.deinit(allocator);
 }
 
 test "an edit inside one line leaves every other line's layout alone" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
+    const allocator = std.testing.allocator;
+    var cache = try testCache(allocator);
+    defer testFree(allocator, &cache);
 
-    try spliceLines(gpa, &cache, 1, 0, 0);
+    try spliceLines(allocator, &cache, 1, 0, 0);
 
     try std.testing.expectEqual(4, cache.items.len);
     try std.testing.expectEqualSlices(usize, &.{ 10, 20, 30, 40 }, &.{
@@ -669,12 +669,12 @@ test "an edit inside one line leaves every other line's layout alone" {
 }
 
 test "splitting a line shifts the ones below it without reshaping them" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
+    const allocator = std.testing.allocator;
+    var cache = try testCache(allocator);
+    defer testFree(allocator, &cache);
 
     // A newline typed into line 1.
-    try spliceLines(gpa, &cache, 1, 0, 1);
+    try spliceLines(allocator, &cache, 1, 0, 1);
 
     try std.testing.expectEqual(5, cache.items.len);
     try std.testing.expect(!cache.items[1].shaped);
@@ -687,12 +687,12 @@ test "splitting a line shifts the ones below it without reshaping them" {
 }
 
 test "joining two lines drops one entry and reshapes the survivor" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
+    const allocator = std.testing.allocator;
+    var cache = try testCache(allocator);
+    defer testFree(allocator, &cache);
 
     // Backspace at the start of line 2, joining it onto line 1.
-    try spliceLines(gpa, &cache, 1, 1, 0);
+    try spliceLines(allocator, &cache, 1, 1, 0);
 
     try std.testing.expectEqual(3, cache.items.len);
     try std.testing.expectEqual(10, cache.items[0].bytes);
@@ -702,11 +702,11 @@ test "joining two lines drops one entry and reshapes the survivor" {
 }
 
 test "deleting across lines collapses them onto the one the edit started in" {
-    const gpa = std.testing.allocator;
-    var cache = try testCache(gpa);
-    defer testFree(gpa, &cache);
+    const allocator = std.testing.allocator;
+    var cache = try testCache(allocator);
+    defer testFree(allocator, &cache);
 
-    try spliceLines(gpa, &cache, 0, 3, 0);
+    try spliceLines(allocator, &cache, 0, 3, 0);
 
     try std.testing.expectEqual(1, cache.items.len);
     try std.testing.expect(!cache.items[0].shaped);

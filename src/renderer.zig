@@ -72,7 +72,7 @@ pub const Renderer = struct {
     /// Creates the device as well: the shader format the build compiled for
     /// decides which backend SDL is able to pick, so the choice belongs with
     /// the shaders rather than with the caller.
-    pub fn init(gpa: std.mem.Allocator, window: *c.SDL_Window) !Renderer {
+    pub fn init(allocator: std.mem.Allocator, window: *c.SDL_Window) !Renderer {
         const gpu = c.SDL_CreateGPUDevice(shader_target.format, false, null) orelse {
             std.log.err("SDL_CreateGPUDevice: {s}", .{sdl.lastError()});
             return error.SdlCreateGpuDevice;
@@ -109,7 +109,7 @@ pub const Renderer = struct {
         const solid = try createPipeline(gpu, window, solid_shader_code, .{ .uniform_buffers = 1 });
         errdefer c.SDL_ReleaseGPUGraphicsPipeline(gpu, solid);
 
-        var atlas = try GlyphAtlas.init(gpa, gpu, displayScale(window));
+        var atlas = try GlyphAtlas.init(allocator, gpu, displayScale(window));
         errdefer atlas.deinit();
 
         // Nearest, not linear: quads are placed on whole pixels and sized to

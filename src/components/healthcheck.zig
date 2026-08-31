@@ -57,9 +57,9 @@ const Piece = struct {
     colour: [4]f32,
     layout: LineLayout = .{},
 
-    fn deinit(self: *Piece, gpa: std.mem.Allocator) void {
-        gpa.free(self.text);
-        self.layout.deinit(gpa);
+    fn deinit(self: *Piece, allocator: std.mem.Allocator) void {
+        allocator.free(self.text);
+        self.layout.deinit(allocator);
     }
 
     fn width(self: *const Piece) f32 {
@@ -82,7 +82,7 @@ const Row = struct {
 };
 
 pub const Healthcheck = struct {
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     heading: Piece,
     rows: [tools.Tool.all.len]Row,
@@ -98,27 +98,27 @@ pub const Healthcheck = struct {
     dirty: bool = true,
 
     pub fn init(
-        gpa: std.mem.Allocator,
+        allocator: std.mem.Allocator,
         environ: std.process.Environ,
         missing: tools.Missing,
     ) !Healthcheck {
         var made: usize = 0;
         var rows: [tools.Tool.all.len]Row = undefined;
         errdefer for (rows[0..made]) |*row| {
-            row.name.deinit(gpa);
-            row.status.deinit(gpa);
-            row.where.deinit(gpa);
+            row.name.deinit(allocator);
+            row.status.deinit(allocator);
+            row.where.deinit(allocator);
         };
 
         for (tools.Tool.all, &rows) |tool, *row| {
             const absent = missing.has(tool);
-            const where = try tools.path(gpa, environ, tool);
-            errdefer gpa.free(where);
+            const where = try tools.path(allocator, environ, tool);
+            errdefer allocator.free(where);
 
             row.* = .{
-                .name = try piece(gpa, tool.title(), config.text_colour),
+                .name = try piece(allocator, tool.title(), config.text_colour),
                 .status = try piece(
-                    gpa,
+                    allocator,
                     if (absent) "not installed" else "ready",
                     if (absent) config.bad_colour else config.good_colour,
                 ),
@@ -128,29 +128,29 @@ pub const Healthcheck = struct {
         }
 
         return .{
-            .gpa = gpa,
-            .heading = try piece(gpa, "yaz can't start", config.text_colour),
+            .allocator = allocator,
+            .heading = try piece(allocator, "yaz can't start", config.text_colour),
             .rows = rows,
-            .run = try piece(gpa, "Run", config.muted_colour),
-            .command = try piece(gpa, "yaz setup", config.text_colour),
-            .tail = try piece(gpa, "and start yaz again.", config.muted_colour),
+            .run = try piece(allocator, "Run", config.muted_colour),
+            .command = try piece(allocator, "yaz setup", config.text_colour),
+            .tail = try piece(allocator, "and start yaz again.", config.muted_colour),
         };
     }
 
-    fn piece(gpa: std.mem.Allocator, text: []const u8, colour: [4]f32) !Piece {
-        return .{ .text = try gpa.dupe(u8, text), .colour = colour };
+    fn piece(allocator: std.mem.Allocator, text: []const u8, colour: [4]f32) !Piece {
+        return .{ .text = try allocator.dupe(u8, text), .colour = colour };
     }
 
     pub fn deinit(self: *Healthcheck) void {
-        self.heading.deinit(self.gpa);
+        self.heading.deinit(self.allocator);
         for (&self.rows) |*row| {
-            row.name.deinit(self.gpa);
-            row.status.deinit(self.gpa);
-            row.where.deinit(self.gpa);
+            row.name.deinit(self.allocator);
+            row.status.deinit(self.allocator);
+            row.where.deinit(self.allocator);
         }
-        self.run.deinit(self.gpa);
-        self.command.deinit(self.gpa);
-        self.tail.deinit(self.gpa);
+        self.run.deinit(self.allocator);
+        self.command.deinit(self.allocator);
+        self.tail.deinit(self.allocator);
     }
 
     pub fn place(self: *Healthcheck, rect: Rect, atlas: *const GlyphAtlas) void {

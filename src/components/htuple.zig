@@ -179,7 +179,7 @@ fn Spy(comptime tag: u8) type {
     return struct {
         const Self = @This();
         told: *std.ArrayList(u8),
-        gpa: std.mem.Allocator,
+        allocator: std.mem.Allocator,
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
         pub fn deinit(_: *Self) void {}
@@ -195,7 +195,7 @@ fn Spy(comptime tag: u8) type {
         }
 
         pub fn update(self: *Self, _: Event, _: *GlyphAtlas) !Intent {
-            try self.told.append(self.gpa, tag);
+            try self.told.append(self.allocator, tag);
             return .nothing;
         }
     };
@@ -205,21 +205,21 @@ const Left = Spy('l');
 const Right = Spy('r');
 const Row = HTuple(&.{ Left, Right });
 
-fn testRow(gpa: std.mem.Allocator, told: *std.ArrayList(u8)) Row {
+fn testRow(allocator: std.mem.Allocator, told: *std.ArrayList(u8)) Row {
     var row: Row = .init(.{
-        .{ .told = told, .gpa = gpa },
-        .{ .told = told, .gpa = gpa },
+        .{ .told = told, .allocator = allocator },
+        .{ .told = told, .allocator = allocator },
     });
     row.place(.{ .x = 0, .y = 0, .width = 100, .height = 50 }, undefined);
     return row;
 }
 
 test "the room is divided evenly, left to right" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    const row = testRow(gpa, &told);
+    const row = testRow(allocator, &told);
     try std.testing.expectEqual(@as(f32, 0), row.items[0].rect.x);
     try std.testing.expectEqual(@as(f32, 50), row.items[0].rect.width);
     // The second starts exactly where the first ends: no seam, no overlap.
@@ -228,11 +228,11 @@ test "the room is divided evenly, left to right" {
 }
 
 test "a press moves the keyboard and typing follows it" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var row = testRow(gpa, &told);
+    var row = testRow(allocator, &told);
     _ = try row.update(.{ .text = "a" }, undefined);
     _ = try row.update(.{ .press = .{ 75, 10 } }, undefined);
     _ = try row.update(.{ .text = "b" }, undefined);
@@ -243,11 +243,11 @@ test "a press moves the keyboard and typing follows it" {
 }
 
 test "the wheel turns what it is over without moving the keyboard" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var row = testRow(gpa, &told);
+    var row = testRow(allocator, &told);
     _ = try row.update(.{ .wheel = .{ .delta = 3, .at = .{ 75, 10 } } }, undefined);
     _ = try row.update(.{ .text = "a" }, undefined);
 
@@ -256,11 +256,11 @@ test "the wheel turns what it is over without moving the keyboard" {
 }
 
 test "a drag stays with the member it began in" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var row = testRow(gpa, &told);
+    var row = testRow(allocator, &told);
     _ = try row.update(.{ .press = .{ 10, 10 } }, undefined);
     // Wandered into the right-hand member, and out of the row entirely.
     _ = try row.update(.{ .move = .{ 75, 10 } }, undefined);
@@ -274,11 +274,11 @@ test "a drag stays with the member it began in" {
 }
 
 test "typing during a drag goes to the keyboard, not to the drag" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var row = testRow(gpa, &told);
+    var row = testRow(allocator, &told);
     // Focus the right-hand member, then start a drag in the left-hand one.
     _ = try row.update(.{ .press = .{ 75, 10 } }, undefined);
     row.focus = 1;
@@ -294,11 +294,11 @@ test "typing during a drag goes to the keyboard, not to the drag" {
 }
 
 test "a point outside every member is nobody's" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var row = testRow(gpa, &told);
+    var row = testRow(allocator, &told);
     _ = try row.update(.{ .press = .{ 400, 10 } }, undefined);
     _ = try row.update(.{ .wheel = .{ .delta = 3, .at = .{ 400, 10 } } }, undefined);
     try std.testing.expectEqualStrings("", told.items);

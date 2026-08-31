@@ -145,11 +145,11 @@ fn pin(tool: Tool) Pin {
 }
 
 /// Where both tools live. Caller owns the result.
-pub fn path(gpa: std.mem.Allocator, environ: std.process.Environ, tool: Tool) ![]u8 {
-    const where = try home(gpa, environ);
-    defer gpa.free(where);
+pub fn path(allocator: std.mem.Allocator, environ: std.process.Environ, tool: Tool) ![]u8 {
+    const where = try home(allocator, environ);
+    defer allocator.free(where);
 
-    return pathUnder(gpa, where, tool);
+    return pathUnder(allocator, where, tool);
 }
 
 /// The home directory. Caller owns the result.
@@ -158,17 +158,17 @@ pub fn path(gpa: std.mem.Allocator, environ: std.process.Environ, tool: Tool) ![
 /// the whole environment first, which measured 7.8ms per call in a Debug build.
 /// It is only used where it has to be -- `getPosix` is not implemented on
 /// Windows.
-fn home(gpa: std.mem.Allocator, environ: std.process.Environ) ![]u8 {
+fn home(allocator: std.mem.Allocator, environ: std.process.Environ) ![]u8 {
     if (windows) {
-        return environ.getAlloc(gpa, "USERPROFILE") catch error.NoHomeDirectory;
+        return environ.getAlloc(allocator, "USERPROFILE") catch error.NoHomeDirectory;
     }
     const found = environ.getPosix("HOME") orelse return error.NoHomeDirectory;
-    return gpa.dupe(u8, found);
+    return allocator.dupe(u8, found);
 }
 
 /// Apart from the environment so it can be tested without one.
-fn pathUnder(gpa: std.mem.Allocator, where: []const u8, tool: Tool) ![]u8 {
-    return std.fs.path.join(gpa, &.{ where, ".config", "yaz", "bin", tool.binary() });
+fn pathUnder(allocator: std.mem.Allocator, where: []const u8, tool: Tool) ![]u8 {
+    return std.fs.path.join(allocator, &.{ where, ".config", "yaz", "bin", tool.binary() });
 }
 
 /// Whether the binary at `exe` runs.
@@ -177,10 +177,10 @@ fn pathUnder(gpa: std.mem.Allocator, where: []const u8, tool: Tool) ![]u8 {
 /// wrong-architecture binary, or one missing a shared library healthy, and the
 /// finder would then be what discovered otherwise -- in the middle of a
 /// keystroke, rather than at startup where it can be reported.
-pub fn probe(gpa: std.mem.Allocator, io: std.Io, exe: []const u8) bool {
-    const result = std.process.run(gpa, io, .{ .argv = &.{ exe, "--version" } }) catch return false;
-    defer gpa.free(result.stdout);
-    defer gpa.free(result.stderr);
+pub fn probe(allocator: std.mem.Allocator, io: std.Io, exe: []const u8) bool {
+    const result = std.process.run(allocator, io, .{ .argv = &.{ exe, "--version" } }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
     return switch (result.term) {
         .exited => |code| code == 0,
@@ -206,17 +206,17 @@ pub const Missing = struct {
     }
 };
 
-pub fn missing(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ) !Missing {
+pub fn missing(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ) !Missing {
     // Asked once rather than once per tool: it is the same answer both times.
-    const where = try home(gpa, environ);
-    defer gpa.free(where);
+    const where = try home(allocator, environ);
+    defer allocator.free(where);
 
     var out: Missing = .{ .rg = true, .fzf = true };
     for (Tool.all) |tool| {
-        const exe = try pathUnder(gpa, where, tool);
-        defer gpa.free(exe);
+        const exe = try pathUnder(allocator, where, tool);
+        defer allocator.free(exe);
 
-        const working = probe(gpa, io, exe);
+        const working = probe(allocator, io, exe);
         switch (tool) {
             .rg => out.rg = !working,
             .fzf => out.fzf = !working,
@@ -226,10 +226,10 @@ pub fn missing(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ)
 }
 
 test "a tool's path is under the home directory it was given" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
 
-    const rg = try pathUnder(gpa, "/Users/someone", .rg);
-    defer gpa.free(rg);
+    const rg = try pathUnder(allocator, "/Users/someone", .rg);
+    defer allocator.free(rg);
     try std.testing.expectEqualStrings(
         if (windows) "/Users/someone\\.config\\yaz\\bin\\rg.exe" else "/Users/someone/.config/yaz/bin/rg",
         rg,
@@ -256,16 +256,16 @@ test "every pinned url names the version it is pinned to" {
 /// lands under a temporary name and is renamed into place -- so an install that
 /// fails part way through leaves either the old binary or none, never half of a
 /// new one for `probe` to have to explain.
-pub fn install(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ, tool: Tool) !void {
+pub fn install(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ, tool: Tool) !void {
     const p = pin(tool);
 
-    const exe = try path(gpa, environ, tool);
-    defer gpa.free(exe);
+    const exe = try path(allocator, environ, tool);
+    defer allocator.free(exe);
 
-    var archive: std.Io.Writer.Allocating = .init(gpa);
+    var archive: std.Io.Writer.Allocating = .init(allocator);
     defer archive.deinit();
 
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
 
     const answer = client.fetch(.{
@@ -295,11 +295,11 @@ pub fn install(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ,
     var dir = try std.Io.Dir.cwd().createDirPathOpen(io, std.fs.path.dirname(exe).?, .{});
     defer dir.close(io);
 
-    const partial = try std.fmt.allocPrint(gpa, "{s}.partial", .{tool.binary()});
-    defer gpa.free(partial);
+    const partial = try std.fmt.allocPrint(allocator, "{s}.partial", .{tool.binary()});
+    defer allocator.free(partial);
     errdefer dir.deleteFile(io, partial) catch {};
 
-    try unpack(gpa, io, dir, bytes, tool, partial);
+    try unpack(allocator, io, dir, bytes, tool, partial);
     try dir.rename(partial, dir, tool.binary(), io);
 }
 
@@ -308,14 +308,14 @@ pub fn install(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ,
 /// licence and man pages, fzf ships the binary alone. Matching on the name
 /// rather than a path is what lets one rule cover both.
 fn unpack(
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     io: std.Io,
     dir: std.Io.Dir,
     bytes: []const u8,
     tool: Tool,
     into: []const u8,
 ) !void {
-    if (windows) return unpackZip(gpa, io, dir, bytes, tool, into);
+    if (windows) return unpackZip(allocator, io, dir, bytes, tool, into);
 
     var input: std.Io.Reader = .fixed(bytes);
     var window: [64 * 1024]u8 = undefined;
@@ -349,7 +349,7 @@ fn unpack(
 /// Windows releases are zips, which `std.zip` reads by seeking rather than by
 /// streaming, so the bytes go to a file first.
 fn unpackZip(
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     io: std.Io,
     dir: std.Io.Dir,
     bytes: []const u8,
@@ -372,7 +372,7 @@ fn unpackZip(
 
     try std.zip.extract(unpacked, &reader, .{});
 
-    var walker = try unpacked.walk(gpa);
+    var walker = try unpacked.walk(allocator);
     defer walker.deinit();
     while (try walker.next(io)) |found| {
         if (found.kind != .file) continue;

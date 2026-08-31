@@ -92,7 +92,7 @@ fn surface(painter: *Painter, atlas: *const GlyphAtlas, rect: Rect) !void {
 /// The line being typed, with what it matched said quietly at the far end of the
 /// same measure, and a rule under both.
 const Query = struct {
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     typed: std.ArrayList(u8) = .empty,
     layout: LineLayout = .{},
@@ -107,9 +107,9 @@ const Query = struct {
     dirty: bool = false,
 
     pub fn deinit(self: *Query) void {
-        self.typed.deinit(self.gpa);
-        self.layout.deinit(self.gpa);
-        self.count.deinit(self.gpa);
+        self.typed.deinit(self.allocator);
+        self.layout.deinit(self.allocator);
+        self.count.deinit(self.allocator);
     }
 
     /// One line of text and the air round it, plus the gap that separates this
@@ -167,7 +167,7 @@ const Query = struct {
     pub fn update(self: *Query, event: Event, atlas: *GlyphAtlas) !Intent {
         _ = atlas;
         switch (event) {
-            .text => |what| try self.typed.appendSlice(self.gpa, what),
+            .text => |what| try self.typed.appendSlice(self.allocator, what),
             .backspace => {
                 if (self.typed.items.len == 0) return .nothing;
                 // One byte at a time is wrong the moment the query is not
@@ -225,15 +225,15 @@ const Row = struct {
     name: LineLayout = .{},
     directory: LineLayout = .{},
 
-    fn deinit(self: *Row, gpa: std.mem.Allocator) void {
-        self.name.deinit(gpa);
-        self.directory.deinit(gpa);
+    fn deinit(self: *Row, allocator: std.mem.Allocator) void {
+        self.name.deinit(allocator);
+        self.directory.deinit(allocator);
     }
 };
 
 /// What the query matched, in fzf's order.
 const Results = struct {
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     /// Borrowed from the finder, which owns the bytes they point into. Empty
     /// until something is typed.
@@ -251,7 +251,7 @@ const Results = struct {
     dirty: bool = false,
 
     pub fn deinit(self: *Results) void {
-        for (&self.rows) |*row| row.deinit(self.gpa);
+        for (&self.rows) |*row| row.deinit(self.allocator);
     }
 
     /// As many rows as there are, and nothing at all when there are none: an
@@ -382,7 +382,7 @@ const Results = struct {
 const Panel = VTuple(&.{ Query, Results });
 
 pub const Finder = struct {
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     io: std.Io,
 
     /// Resolved once. Both are known to run: startup refused to get this far
@@ -406,28 +406,28 @@ pub const Finder = struct {
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     dirty: bool = false,
 
-    pub fn init(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ) !Finder {
-        const rg = try tools.path(gpa, environ, .rg);
-        errdefer gpa.free(rg);
-        const fzf = try tools.path(gpa, environ, .fzf);
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ) !Finder {
+        const rg = try tools.path(allocator, environ, .rg);
+        errdefer allocator.free(rg);
+        const fzf = try tools.path(allocator, environ, .fzf);
 
         return .{
-            .gpa = gpa,
+            .allocator = allocator,
             .io = io,
             .rg = rg,
             .fzf = fzf,
-            .panel = .init(.{ .{ .gpa = gpa }, .{ .gpa = gpa } }),
+            .panel = .init(.{ .{ .allocator = allocator }, .{ .allocator = allocator } }),
         };
     }
 
     pub fn deinit(self: *Finder) void {
         self.close();
-        self.all.deinit(self.gpa);
-        self.matches.deinit(self.gpa);
+        self.all.deinit(self.allocator);
+        self.matches.deinit(self.allocator);
         self.panel.deinit();
 
-        self.gpa.free(self.rg);
-        self.gpa.free(self.fzf);
+        self.allocator.free(self.rg);
+        self.allocator.free(self.fzf);
     }
 
     /// Everything that only exists while it is open. The listing is the one
@@ -443,9 +443,9 @@ pub const Finder = struct {
         self.all.clearRetainingCapacity();
         self.matches.clearRetainingCapacity();
 
-        self.gpa.free(self.listing);
+        self.allocator.free(self.listing);
         self.listing = &.{};
-        self.gpa.free(self.ranked);
+        self.allocator.free(self.ranked);
         self.ranked = &.{};
     }
 
@@ -485,17 +485,17 @@ pub const Finder = struct {
         self.showing = true;
         self.dirty = true;
 
-        const result = try std.process.run(self.gpa, self.io, .{
+        const result = try std.process.run(self.allocator, self.io, .{
             .argv = &.{ self.rg, "--files" },
             .stdout_limit = .limited(16 << 20),
         });
-        defer self.gpa.free(result.stderr);
-        errdefer self.gpa.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        errdefer self.allocator.free(result.stdout);
 
         self.listing = result.stdout;
         var lines = std.mem.splitScalar(u8, self.listing, '\n');
         while (lines.next()) |line| {
-            if (line.len != 0) try self.all.append(self.gpa, line);
+            if (line.len != 0) try self.all.append(self.allocator, line);
         }
 
         try self.rank();
@@ -511,7 +511,7 @@ pub const Finder = struct {
             },
             .newline => {
                 const picked = self.panel.get(Results).chosen() orelse return .nothing;
-                const path = try self.gpa.dupe(u8, picked);
+                const path = try self.allocator.dupe(u8, picked);
                 self.close();
                 return .{ .open = path };
             },
@@ -535,13 +535,13 @@ pub const Finder = struct {
         self.matches.clearRetainingCapacity();
         self.panel.get(Results).show(&.{});
 
-        self.gpa.free(self.ranked);
+        self.allocator.free(self.ranked);
         self.ranked = &.{};
 
         const query = self.panel.get(Query).typed.items;
         if (query.len != 0) {
-            const filter = try std.fmt.allocPrint(self.gpa, "--filter={s}", .{query});
-            defer self.gpa.free(filter);
+            const filter = try std.fmt.allocPrint(self.allocator, "--filter={s}", .{query});
+            defer self.allocator.free(filter);
 
             var child = try std.process.spawn(self.io, .{
                 .argv = &.{ self.fzf, filter },
@@ -566,13 +566,13 @@ pub const Finder = struct {
 
             var buffer: [64 * 1024]u8 = undefined;
             var reader = child.stdout.?.reader(self.io, &buffer);
-            self.ranked = try reader.interface.allocRemaining(self.gpa, .limited(16 << 20));
+            self.ranked = try reader.interface.allocRemaining(self.allocator, .limited(16 << 20));
 
             _ = try child.wait(self.io);
 
             var lines = std.mem.splitScalar(u8, self.ranked, '\n');
             while (lines.next()) |line| {
-                if (line.len != 0) try self.matches.append(self.gpa, line);
+                if (line.len != 0) try self.matches.append(self.allocator, line);
             }
         }
 

@@ -67,7 +67,7 @@ const Ink = struct {
 };
 
 pub const Tabs = struct {
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     /// Every file open in this window, in the order they were first opened.
     /// Owned, because the copy a view or a parked document holds is freed and
@@ -101,19 +101,19 @@ pub const Tabs = struct {
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     dirty: bool = true,
 
-    pub fn init(gpa: std.mem.Allocator) Tabs {
-        return .{ .gpa = gpa };
+    pub fn init(allocator: std.mem.Allocator) Tabs {
+        return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *Tabs) void {
-        for (self.paths.items) |path| self.gpa.free(path);
-        self.paths.deinit(self.gpa);
-        for (self.names.items) |*name| name.deinit(self.gpa);
-        self.names.deinit(self.gpa);
-        self.unsaved.deinit(self.gpa);
-        self.in_column.deinit(self.gpa);
-        self.rects.deinit(self.gpa);
-        self.bullet.deinit(self.gpa);
+        for (self.paths.items) |path| self.allocator.free(path);
+        self.paths.deinit(self.allocator);
+        for (self.names.items) |*name| name.deinit(self.allocator);
+        self.names.deinit(self.allocator);
+        self.unsaved.deinit(self.allocator);
+        self.in_column.deinit(self.allocator);
+        self.rects.deinit(self.allocator);
+        self.bullet.deinit(self.allocator);
     }
 
     /// Lists `path` if it is not listed already.
@@ -122,17 +122,17 @@ pub const Tabs = struct {
             if (std.mem.eql(u8, listed, path)) return;
         }
 
-        const owned = try self.gpa.dupe(u8, path);
-        errdefer self.gpa.free(owned);
+        const owned = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned);
 
-        try self.paths.append(self.gpa, owned);
+        try self.paths.append(self.allocator, owned);
         errdefer _ = self.paths.pop();
-        try self.names.append(self.gpa, .{});
+        try self.names.append(self.allocator, .{});
         errdefer _ = self.names.pop();
-        try self.unsaved.append(self.gpa, false);
+        try self.unsaved.append(self.allocator, false);
         errdefer _ = self.unsaved.pop();
-        try self.in_column.append(self.gpa, false);
-        try self.rects.append(self.gpa, .{ .x = 0, .y = 0, .width = 0, .height = 0 });
+        try self.in_column.append(self.allocator, false);
+        try self.rects.append(self.allocator, .{ .x = 0, .y = 0, .width = 0, .height = 0 });
         self.dirty = true;
     }
 
@@ -156,10 +156,10 @@ pub const Tabs = struct {
         for (self.paths.items, 0..) |listed, which| {
             if (!std.mem.eql(u8, listed, path)) continue;
 
-            self.gpa.free(listed);
+            self.allocator.free(listed);
             _ = self.paths.orderedRemove(which);
             var name = self.names.orderedRemove(which);
-            name.deinit(self.gpa);
+            name.deinit(self.allocator);
             _ = self.unsaved.orderedRemove(which);
             _ = self.in_column.orderedRemove(which);
             _ = self.rects.orderedRemove(which);
@@ -251,7 +251,7 @@ pub const Tabs = struct {
             // Pressing a tab is choosing that file over the others, which is
             // what cmd+N means too. The finder answers `open` instead: picking
             // a file there is not a statement about the ones already on screen.
-            return .{ .only = try self.gpa.dupe(u8, self.paths.items[which]) };
+            return .{ .only = try self.allocator.dupe(u8, self.paths.items[which]) };
         }
         return .nothing;
     }

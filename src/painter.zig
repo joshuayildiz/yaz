@@ -91,7 +91,7 @@ pub const Run = struct {
 /// screenful and stops allocating, which is what keeps a redraw out of the
 /// allocator.
 pub const Painter = struct {
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     quads: std.ArrayList(Sprite) = .empty,
     runs: std.ArrayList(Run) = .empty,
 
@@ -103,13 +103,13 @@ pub const Painter = struct {
     /// would put the rect in the key and split every one of them apart again.
     clip_to: ?Rect = null,
 
-    pub fn init(gpa: std.mem.Allocator) Painter {
-        return .{ .gpa = gpa };
+    pub fn init(allocator: std.mem.Allocator) Painter {
+        return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *Painter) void {
-        self.runs.deinit(self.gpa);
-        self.quads.deinit(self.gpa);
+        self.runs.deinit(self.allocator);
+        self.quads.deinit(self.allocator);
     }
 
     pub fn clear(self: *Painter) void {
@@ -125,14 +125,14 @@ pub const Painter = struct {
     /// Room for `extra` more quads, so a component drawing a screenful of them
     /// does not grow the buffer a quad at a time.
     pub fn reserve(self: *Painter, extra: usize) !void {
-        try self.quads.ensureUnusedCapacity(self.gpa, extra);
+        try self.quads.ensureUnusedCapacity(self.allocator, extra);
     }
 
     /// Extends the run in progress when the key matches, and starts a new one
     /// when it does not.
     pub fn add(self: *Painter, key: Key, quad: Sprite) !void {
         const kept = if (self.clip_to) |rect| (rect.clip(quad) orelse return) else quad;
-        try self.quads.append(self.gpa, kept);
+        try self.quads.append(self.allocator, kept);
 
         if (self.runs.items.len > 0) {
             const last = &self.runs.items[self.runs.items.len - 1];
@@ -141,7 +141,7 @@ pub const Painter = struct {
                 return;
             }
         }
-        try self.runs.append(self.gpa, .{
+        try self.runs.append(self.allocator, .{
             .key = key,
             .first = @intCast(self.quads.items.len - 1),
             .count = 1,

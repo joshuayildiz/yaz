@@ -179,7 +179,7 @@ fn Band(comptime tag: u8, comptime wants: ?f32) type {
     return struct {
         const Self = @This();
         told: *std.ArrayList(u8),
-        gpa: std.mem.Allocator,
+        allocator: std.mem.Allocator,
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
         pub fn deinit(_: *Self) void {}
@@ -199,7 +199,7 @@ fn Band(comptime tag: u8, comptime wants: ?f32) type {
         }
 
         pub fn update(self: *Self, _: Event, _: *GlyphAtlas) !Intent {
-            try self.told.append(self.gpa, tag);
+            try self.told.append(self.allocator, tag);
             return .nothing;
         }
     };
@@ -210,14 +210,14 @@ const List = Band('l', null);
 const Footer = Band('f', 10);
 
 test "a member that says nothing takes what is left" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
     var column: VTuple(&.{ Heading, List, Footer }) = .init(.{
-        .{ .told = &told, .gpa = gpa },
-        .{ .told = &told, .gpa = gpa },
-        .{ .told = &told, .gpa = gpa },
+        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told, .allocator = allocator },
     });
     column.place(.{ .x = 0, .y = 0, .width = 100, .height = 100 }, undefined);
 
@@ -231,15 +231,15 @@ test "a member that says nothing takes what is left" {
 }
 
 test "the bands meet exactly, whatever the fractions" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
     const Thirds = Band('t', 33.4);
     var column: VTuple(&.{ Thirds, Thirds, List }) = .init(.{
-        .{ .told = &told, .gpa = gpa },
-        .{ .told = &told, .gpa = gpa },
-        .{ .told = &told, .gpa = gpa },
+        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told, .allocator = allocator },
     });
     column.place(.{ .x = 0, .y = 5, .width = 100, .height = 100 }, undefined);
 
@@ -253,13 +253,13 @@ test "the bands meet exactly, whatever the fractions" {
 }
 
 test "a column with nothing spare does not stretch anyone" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
     var column: VTuple(&.{ Heading, Footer }) = .init(.{
-        .{ .told = &told, .gpa = gpa },
-        .{ .told = &told, .gpa = gpa },
+        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told, .allocator = allocator },
     });
     column.place(.{ .x = 0, .y = 0, .width = 100, .height = 500 }, undefined);
 
@@ -268,13 +268,13 @@ test "a column with nothing spare does not stretch anyone" {
 }
 
 test "asking for more than there is leaves nothing spare rather than a negative band" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
     var column: VTuple(&.{ Heading, List }) = .init(.{
-        .{ .told = &told, .gpa = gpa },
-        .{ .told = &told, .gpa = gpa },
+        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told, .allocator = allocator },
     });
     column.place(.{ .x = 0, .y = 0, .width = 100, .height = 8 }, undefined);
 
@@ -282,13 +282,13 @@ test "asking for more than there is leaves nothing spare rather than a negative 
 }
 
 test "a press moves the keyboard down the column and typing follows it" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
     var column: VTuple(&.{ Heading, List }) = .init(.{
-        .{ .told = &told, .gpa = gpa },
-        .{ .told = &told, .gpa = gpa },
+        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told, .allocator = allocator },
     });
     column.place(.{ .x = 0, .y = 0, .width = 100, .height = 100 }, undefined);
 

@@ -73,7 +73,7 @@ pub const Retired = struct {
 };
 
 pub const TextView = struct {
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     document: Document,
 
     /// What this view is showing, as it was named, or null for a document
@@ -116,14 +116,14 @@ pub const TextView = struct {
 
     /// The caret starts at the top: nothing scrolls yet, so a caret at the end
     /// of a long file is one nobody can see.
-    pub fn init(gpa: std.mem.Allocator, text: []const u8, path: ?[]const u8) !TextView {
-        var document = try Document.init(gpa, text);
+    pub fn init(allocator: std.mem.Allocator, text: []const u8, path: ?[]const u8) !TextView {
+        var document = try Document.init(allocator, text);
         errdefer document.deinit();
 
         return .{
-            .gpa = gpa,
+            .allocator = allocator,
             .document = document,
-            .path = if (path) |named| try gpa.dupe(u8, named) else null,
+            .path = if (path) |named| try allocator.dupe(u8, named) else null,
             .cursor = 0,
         };
     }
@@ -136,14 +136,14 @@ pub const TextView = struct {
     /// scrolled depends on its line count and the height of a column, and this
     /// is the same document going into a column the same height as the last.
     pub fn hold(
-        gpa: std.mem.Allocator,
+        allocator: std.mem.Allocator,
         document: Document,
         path: ?[]const u8,
         was: ?Position,
     ) !TextView {
-        const named = if (path) |called| try gpa.dupe(u8, called) else null;
+        const named = if (path) |called| try allocator.dupe(u8, called) else null;
 
-        var self: TextView = .{ .gpa = gpa, .document = document, .path = named, .cursor = 0 };
+        var self: TextView = .{ .allocator = allocator, .document = document, .path = named, .cursor = 0 };
         if (was) |seen| {
             self.cursor = @min(seen.cursor, self.document.buffer.byteLen());
             self.scroll = seen.scroll;
@@ -172,7 +172,7 @@ pub const TextView = struct {
         was: ?Position,
         atlas: *const GlyphAtlas,
     ) !Retired {
-        const named = if (path) |called| try self.gpa.dupe(u8, called) else null;
+        const named = if (path) |called| try self.allocator.dupe(u8, called) else null;
 
         const retired: Retired = .{
             .document = self.document,
@@ -210,7 +210,7 @@ pub const TextView = struct {
 
     pub fn deinit(self: *TextView) void {
         self.document.deinit();
-        if (self.path) |named| self.gpa.free(named);
+        if (self.path) |named| self.allocator.free(named);
     }
 
     fn insert(self: *TextView, text: []const u8) !void {
@@ -400,7 +400,7 @@ pub const TextView = struct {
         std.debug.assert(self.scroll == @round(self.scroll));
 
         const count = self.document.buffer.lineCount();
-        if (self.document.lines.items.len == 0) try self.document.lines.appendNTimes(self.gpa, .{}, count);
+        if (self.document.lines.items.len == 0) try self.document.lines.appendNTimes(self.allocator, .{}, count);
         // Anything else means an edit did not reach the cache and the entries
         // no longer line up with the lines they describe.
         std.debug.assert(self.document.lines.items.len == count);

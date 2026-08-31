@@ -29,7 +29,7 @@ pub fn HList(comptime Member: type) type {
     return struct {
         const Self = @This();
 
-        gpa: std.mem.Allocator,
+        allocator: std.mem.Allocator,
         items: std.ArrayList(Member) = .empty,
 
         /// Which member a keystroke goes to.
@@ -43,23 +43,23 @@ pub fn HList(comptime Member: type) type {
         /// with the list as it grows.
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-        pub fn init(gpa: std.mem.Allocator) Self {
-            return .{ .gpa = gpa };
+        pub fn init(allocator: std.mem.Allocator) Self {
+            return .{ .allocator = allocator };
         }
 
         pub fn deinit(self: *Self) void {
             for (self.items.items) |*member| member.deinit();
-            self.items.deinit(self.gpa);
+            self.items.deinit(self.allocator);
         }
 
         pub fn append(self: *Self, member: Member) !void {
-            try self.items.append(self.gpa, member);
+            try self.items.append(self.allocator, member);
         }
 
         /// Puts `member` at `which`, moving the rest along. Order is what a row
         /// is, so there is no cheaper unordered version of this.
         pub fn insert(self: *Self, which: usize, member: Member) !void {
-            try self.items.insert(self.gpa, which, member);
+            try self.items.insert(self.allocator, which, member);
             if (self.focus >= which) self.focus += 1;
             self.holding = null;
         }
@@ -179,7 +179,7 @@ pub fn HList(comptime Member: type) type {
 /// can be checked without a window or a font.
 const Spy = struct {
     told: *std.ArrayList(u8),
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     tag: u8,
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
@@ -196,25 +196,25 @@ const Spy = struct {
     }
 
     pub fn update(self: *Spy, _: Event, _: *GlyphAtlas) !Intent {
-        try self.told.append(self.gpa, self.tag);
+        try self.told.append(self.allocator, self.tag);
         return .nothing;
     }
 };
 
-fn testRow(gpa: std.mem.Allocator, told: *std.ArrayList(u8), tags: []const u8) !HList(Spy) {
-    var row: HList(Spy) = .init(gpa);
+fn testRow(allocator: std.mem.Allocator, told: *std.ArrayList(u8), tags: []const u8) !HList(Spy) {
+    var row: HList(Spy) = .init(allocator);
     errdefer row.deinit();
-    for (tags) |tag| try row.append(.{ .told = told, .gpa = gpa, .tag = tag });
+    for (tags) |tag| try row.append(.{ .told = told, .allocator = allocator, .tag = tag });
     row.place(.{ .x = 0, .y = 0, .width = 100, .height = 50 }, undefined);
     return row;
 }
 
 test "however many there are, they divide the room evenly" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var three = try testRow(gpa, &told, "abc");
+    var three = try testRow(allocator, &told, "abc");
     defer three.deinit();
 
     // No seam and no overlap, and the last one ends where the row does.
@@ -226,11 +226,11 @@ test "however many there are, they divide the room evenly" {
 }
 
 test "a point lands in the column it is over, at any count" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var three = try testRow(gpa, &told, "abc");
+    var three = try testRow(allocator, &told, "abc");
     defer three.deinit();
 
     _ = try three.update(.{ .press = .{ 10, 10 } }, undefined);
@@ -244,11 +244,11 @@ test "a point lands in the column it is over, at any count" {
 }
 
 test "a press moves the keyboard and typing follows it" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var two = try testRow(gpa, &told, "lr");
+    var two = try testRow(allocator, &told, "lr");
     defer two.deinit();
 
     _ = try two.update(.{ .text = "x" }, undefined);
@@ -259,11 +259,11 @@ test "a press moves the keyboard and typing follows it" {
 }
 
 test "a drag stays with the column it began in, and typing does not" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var two = try testRow(gpa, &told, "lr");
+    var two = try testRow(allocator, &told, "lr");
     defer two.deinit();
 
     // Keyboard on the right, drag started on the left.
@@ -283,11 +283,11 @@ test "a drag stays with the column it began in, and typing does not" {
 }
 
 test "an empty row has nothing to be over and nothing to type into" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var none = try testRow(gpa, &told, "");
+    var none = try testRow(allocator, &told, "");
     defer none.deinit();
 
     _ = try none.update(.{ .press = .{ 10, 10 } }, undefined);
@@ -297,11 +297,11 @@ test "an empty row has nothing to be over and nothing to type into" {
 }
 
 test "a point outside the row is nobody's" {
-    const gpa = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(gpa);
+    defer told.deinit(allocator);
 
-    var two = try testRow(gpa, &told, "lr");
+    var two = try testRow(allocator, &told, "lr");
     defer two.deinit();
 
     _ = try two.update(.{ .press = .{ 400, 10 } }, undefined);
