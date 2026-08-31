@@ -26,6 +26,7 @@ const Event = event_mod.Event;
 const Intent = event_mod.Intent;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
+const Context = @import("../context.zig").Context;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 
@@ -92,8 +93,6 @@ fn surface(painter: *Painter, atlas: *const GlyphAtlas, rect: Rect) !void {
 /// The line being typed, with what it matched said quietly at the far end of the
 /// same measure, and a rule under both.
 const Query = struct {
-    allocator: std.mem.Allocator,
-
     typed: std.ArrayList(u8) = .empty,
     layout: LineLayout = .{},
 
@@ -106,32 +105,32 @@ const Query = struct {
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     dirty: bool = false,
 
-    pub fn deinit(self: *Query) void {
-        self.typed.deinit(self.allocator);
-        self.layout.deinit(self.allocator);
-        self.count.deinit(self.allocator);
+    pub fn deinit(self: *Query, cx: *Context) void {
+        self.typed.deinit(cx.allocator);
+        self.layout.deinit(cx.allocator);
+        self.count.deinit(cx.allocator);
     }
 
     /// One line of text and the air round it, plus the gap that separates this
     /// surface from the list. Stated here rather than by the panel because the
     /// panel cannot know that this is a line of text.
-    pub fn height(self: *const Query, atlas: *const GlyphAtlas) ?f32 {
+    pub fn height(self: *const Query, cx: *Context) ?f32 {
         _ = self;
-        return @round(atlas.line_height + 2 * @round(pad * atlas.scale) + @round(split * atlas.scale));
+        return @round(cx.atlas.line_height + 2 * @round(pad * cx.atlas.scale) + @round(split * cx.atlas.scale));
     }
 
     /// The box itself, which is shorter than the band by the gap below it.
-    fn box(self: *const Query, atlas: *const GlyphAtlas) Rect {
+    fn box(self: *const Query, cx: *Context) Rect {
         return .{
             .x = self.rect.x,
             .y = self.rect.y,
             .width = self.rect.width,
-            .height = @round(atlas.line_height + 2 * @round(pad * atlas.scale)),
+            .height = @round(cx.atlas.line_height + 2 * @round(pad * cx.atlas.scale)),
         };
     }
 
-    pub fn place(self: *Query, rect: Rect, atlas: *const GlyphAtlas) void {
-        _ = atlas;
+    pub fn place(self: *Query, cx: *Context, rect: Rect) void {
+        _ = cx.atlas;
         self.rect = rect;
     }
 
@@ -164,10 +163,10 @@ const Query = struct {
         self.dirty = true;
     }
 
-    pub fn update(self: *Query, event: Event, atlas: *GlyphAtlas) !Intent {
-        _ = atlas;
+    pub fn update(self: *Query, cx: *Context, event: Event) !Intent {
+        _ = cx.atlas;
         switch (event) {
-            .text => |what| try self.typed.appendSlice(self.allocator, what),
+            .text => |what| try self.typed.appendSlice(cx.allocator, what),
             .backspace => {
                 if (self.typed.items.len == 0) return .nothing;
                 // One byte at a time is wrong the moment the query is not
@@ -187,21 +186,21 @@ const Query = struct {
         return .nothing;
     }
 
-    pub fn draw(self: *Query, atlas: *GlyphAtlas, painter: *Painter) !void {
-        const inset = @round(pad * atlas.scale);
-        const field = self.box(atlas);
-        try surface(painter, atlas, field);
+    pub fn draw(self: *Query, cx: *Context, painter: *Painter) !void {
+        const inset = @round(pad * cx.atlas.scale);
+        const field = self.box(cx);
+        try surface(painter, cx.atlas, field);
 
         const left = field.x + inset;
         const right = field.x + field.width - inset;
-        const baseline = @round(field.y + inset + atlas.ascent);
+        const baseline = @round(field.y + inset + cx.atlas.ascent);
 
-        if (!self.layout.shaped) try atlas.shapeLine(self.typed.items, &self.layout);
+        if (!self.layout.shaped) try cx.atlas.shapeLine(self.typed.items, &self.layout);
         try drawLine(painter, text_key, &self.layout, .{ left, baseline });
 
         try painter.add(caret_key, .solid(
-            .{ @round(left + advance(&self.layout)), @round(baseline - atlas.ascent) },
-            .{ hairline(atlas), atlas.line_height },
+            .{ @round(left + advance(&self.layout)), @round(baseline - cx.atlas.ascent) },
+            .{ hairline(cx.atlas), cx.atlas.line_height },
         ));
 
         if (!self.count.shaped) {
@@ -212,7 +211,7 @@ const Query = struct {
                 try std.fmt.bufPrint(&buffer, "{d}", .{self.total})
             else
                 try std.fmt.bufPrint(&buffer, "{d} of {d}", .{ self.shown, self.total });
-            try atlas.shapeLine(label, &self.count);
+            try cx.atlas.shapeLine(label, &self.count);
         }
         try drawLine(painter, faint_key, &self.count, .{ @round(right - advance(&self.count)), baseline });
     }
@@ -233,8 +232,6 @@ const Row = struct {
 
 /// What the query matched, in fzf's order.
 const Results = struct {
-    allocator: std.mem.Allocator,
-
     /// Borrowed from the finder, which owns the bytes they point into. Empty
     /// until something is typed.
     matches: []const []const u8 = &.{},
@@ -250,22 +247,22 @@ const Results = struct {
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     dirty: bool = false,
 
-    pub fn deinit(self: *Results) void {
-        for (&self.rows) |*row| row.deinit(self.allocator);
+    pub fn deinit(self: *Results, cx: *Context) void {
+        for (&self.rows) |*row| row.deinit(cx.allocator);
     }
 
     /// As many rows as there are, and nothing at all when there are none: an
     /// empty box under an empty query would be a promise of something that is
     /// not there.
-    pub fn height(self: *const Results, atlas: *const GlyphAtlas) ?f32 {
+    pub fn height(self: *const Results, cx: *Context) ?f32 {
         const shown = @min(self.matches.len, visible_rows);
         if (shown == 0) return 0;
-        const step = @round(atlas.line_height * leading);
-        return @round(@as(f32, @floatFromInt(shown)) * step + 2 * @round(pad * atlas.scale));
+        const step = @round(cx.atlas.line_height * leading);
+        return @round(@as(f32, @floatFromInt(shown)) * step + 2 * @round(pad * cx.atlas.scale));
     }
 
-    pub fn place(self: *Results, rect: Rect, atlas: *const GlyphAtlas) void {
-        _ = atlas;
+    pub fn place(self: *Results, cx: *Context, rect: Rect) void {
+        _ = cx.atlas;
         self.rect = rect;
     }
 
@@ -297,8 +294,8 @@ const Results = struct {
         return self.matches[self.selected];
     }
 
-    pub fn update(self: *Results, event: Event, atlas: *GlyphAtlas) !Intent {
-        _ = atlas;
+    pub fn update(self: *Results, cx: *Context, event: Event) !Intent {
+        _ = cx.atlas;
         switch (event) {
             .up => if (self.selected > 0) {
                 self.selected -= 1;
@@ -342,15 +339,15 @@ const Results = struct {
         self.laid_out = true;
     }
 
-    pub fn draw(self: *Results, atlas: *GlyphAtlas, painter: *Painter) !void {
+    pub fn draw(self: *Results, cx: *Context, painter: *Painter) !void {
         if (self.matches.len == 0) return;
-        try self.layOut(atlas);
+        try self.layOut(cx.atlas);
 
-        try surface(painter, atlas, self.rect);
+        try surface(painter, cx.atlas, self.rect);
 
-        const line = hairline(atlas);
-        const inset = @round(pad * atlas.scale);
-        const step = @round(atlas.line_height * leading);
+        const line = hairline(cx.atlas);
+        const inset = @round(pad * cx.atlas.scale);
+        const step = @round(cx.atlas.line_height * leading);
         const left = self.rect.x + inset;
         const right = self.rect.x + self.rect.width - inset;
 
@@ -360,7 +357,7 @@ const Results = struct {
 
             const is_chosen = which == self.selected;
             const top = @round(self.rect.y + inset + @as(f32, @floatFromInt(index)) * step);
-            const baseline = @round(top + (step - atlas.line_height) / 2 + atlas.ascent);
+            const baseline = @round(top + (step - cx.atlas.line_height) / 2 + cx.atlas.ascent);
 
             // Edge to edge inside the border, so the tint reads as the row
             // rather than as another box inside the one it is already in.
@@ -382,9 +379,6 @@ const Results = struct {
 const Panel = VTuple(&.{ Query, Results });
 
 pub const Finder = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-
     /// Resolved once. Both are known to run: startup refused to get this far
     /// otherwise.
     rg: []u8,
@@ -406,34 +400,32 @@ pub const Finder = struct {
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     dirty: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ) !Finder {
+    pub fn init(allocator: std.mem.Allocator, environ: std.process.Environ) !Finder {
         const rg = try tools.path(allocator, environ, .rg);
         errdefer allocator.free(rg);
         const fzf = try tools.path(allocator, environ, .fzf);
 
         return .{
-            .allocator = allocator,
-            .io = io,
             .rg = rg,
             .fzf = fzf,
-            .panel = .init(.{ .{ .allocator = allocator }, .{ .allocator = allocator } }),
+            .panel = .init(.{ .{}, .{} }),
         };
     }
 
-    pub fn deinit(self: *Finder) void {
-        self.close();
-        self.all.deinit(self.allocator);
-        self.matches.deinit(self.allocator);
-        self.panel.deinit();
+    pub fn deinit(self: *Finder, cx: *Context) void {
+        self.close(cx);
+        self.all.deinit(cx.allocator);
+        self.matches.deinit(cx.allocator);
+        self.panel.deinit(cx);
 
-        self.allocator.free(self.rg);
-        self.allocator.free(self.fzf);
+        cx.allocator.free(self.rg);
+        cx.allocator.free(self.fzf);
     }
 
     /// Everything that only exists while it is open. The listing is the one
     /// thing here that grows with the repository, so it does not outlive a
     /// closed finder.
-    fn close(self: *Finder) void {
+    fn close(self: *Finder, cx: *Context) void {
         self.showing = false;
 
         // Before the bytes go, since the rows point into them.
@@ -443,9 +435,9 @@ pub const Finder = struct {
         self.all.clearRetainingCapacity();
         self.matches.clearRetainingCapacity();
 
-        self.allocator.free(self.listing);
+        cx.allocator.free(self.listing);
         self.listing = &.{};
-        self.allocator.free(self.ranked);
+        cx.allocator.free(self.ranked);
         self.ranked = &.{};
     }
 
@@ -461,17 +453,17 @@ pub const Finder = struct {
     /// A measure down the middle, hanging a short way from the top of the
     /// window. Its height is whatever the two surfaces asked for, since neither
     /// of them wants what is left over.
-    pub fn place(self: *Finder, rect: Rect, atlas: *const GlyphAtlas) void {
+    pub fn place(self: *Finder, cx: *Context, rect: Rect) void {
         self.rect = rect;
 
         const column = @round(rect.width * column_share);
-        const top = @round(rect.y + @round(drop * atlas.scale));
-        self.panel.place(.{
+        const top = @round(rect.y + @round(drop * cx.atlas.scale));
+        self.panel.place(cx, .{
             .x = @round(rect.x + (rect.width - column) / 2),
             .y = top,
             .width = column,
             .height = @max(0, rect.y + rect.height - top),
-        }, atlas);
+        });
     }
 
     pub fn invalidate(self: *Finder) void {
@@ -480,48 +472,48 @@ pub const Finder = struct {
     }
 
     /// Reads what there is to choose between and shows the panel.
-    pub fn show(self: *Finder) !void {
-        self.close();
+    pub fn show(self: *Finder, cx: *Context) !void {
+        self.close(cx);
         self.showing = true;
         self.dirty = true;
 
-        const result = try std.process.run(self.allocator, self.io, .{
+        const result = try std.process.run(cx.allocator, cx.io, .{
             .argv = &.{ self.rg, "--files" },
             .stdout_limit = .limited(16 << 20),
         });
-        defer self.allocator.free(result.stderr);
-        errdefer self.allocator.free(result.stdout);
+        defer cx.allocator.free(result.stderr);
+        errdefer cx.allocator.free(result.stdout);
 
         self.listing = result.stdout;
         var lines = std.mem.splitScalar(u8, self.listing, '\n');
         while (lines.next()) |line| {
-            if (line.len != 0) try self.all.append(self.allocator, line);
+            if (line.len != 0) try self.all.append(cx.allocator, line);
         }
 
-        try self.rank();
+        try self.rank(cx);
     }
 
     /// The path it answers with is copied out of the listing, which closing
     /// frees, so whoever takes it owns it.
-    pub fn update(self: *Finder, event: Event, atlas: *GlyphAtlas) !Intent {
+    pub fn update(self: *Finder, cx: *Context, event: Event) !Intent {
         switch (event) {
             .cancel, .find => {
-                self.close();
+                self.close(cx);
                 return .dismiss;
             },
             .newline => {
                 const picked = self.panel.get(Results).chosen() orelse return .nothing;
-                const path = try self.allocator.dupe(u8, picked);
-                self.close();
+                const path = try cx.allocator.dupe(u8, picked);
+                self.close(cx);
                 return .{ .open = path };
             },
             // The selection is the list's, and the characters are the query's.
             // Both are in the panel; only the arrows are not for the one with
             // the keyboard, so they are handed over by name.
-            .up, .down => return self.panel.get(Results).update(event, atlas),
+            .up, .down => return self.panel.get(Results).update(cx, event),
             .text, .backspace => {
-                _ = try self.panel.update(event, atlas);
-                try self.rank();
+                _ = try self.panel.update(cx, event);
+                try self.rank(cx);
                 return .nothing;
             },
             else => return .nothing,
@@ -531,25 +523,25 @@ pub const Finder = struct {
     /// Re-ranks against the query. Nothing typed is nothing offered: the whole
     /// repository is not an answer, and shaping a screenful of it would be work
     /// done on the way to being thrown away.
-    fn rank(self: *Finder) !void {
+    fn rank(self: *Finder, cx: *Context) !void {
         self.matches.clearRetainingCapacity();
         self.panel.get(Results).show(&.{});
 
-        self.allocator.free(self.ranked);
+        cx.allocator.free(self.ranked);
         self.ranked = &.{};
 
         const query = self.panel.get(Query).typed.items;
         if (query.len != 0) {
-            const filter = try std.fmt.allocPrint(self.allocator, "--filter={s}", .{query});
-            defer self.allocator.free(filter);
+            const filter = try std.fmt.allocPrint(cx.allocator, "--filter={s}", .{query});
+            defer cx.allocator.free(filter);
 
-            var child = try std.process.spawn(self.io, .{
+            var child = try std.process.spawn(cx.io, .{
                 .argv = &.{ self.fzf, filter },
                 .stdin = .pipe,
                 .stdout = .pipe,
                 .stderr = .ignore,
             });
-            errdefer child.kill(self.io);
+            errdefer child.kill(cx.io);
 
             // Everything in, then the pipe closed, then everything out. Safe in
             // that order because `--filter` has to score every candidate before
@@ -557,22 +549,22 @@ pub const Finder = struct {
             // measured at 8.6MB each way without wedging.
             {
                 var buffer: [64 * 1024]u8 = undefined;
-                var writer = child.stdin.?.writer(self.io, &buffer);
+                var writer = child.stdin.?.writer(cx.io, &buffer);
                 try writer.interface.writeAll(self.listing);
                 try writer.interface.flush();
             }
-            child.stdin.?.close(self.io);
+            child.stdin.?.close(cx.io);
             child.stdin = null;
 
             var buffer: [64 * 1024]u8 = undefined;
-            var reader = child.stdout.?.reader(self.io, &buffer);
-            self.ranked = try reader.interface.allocRemaining(self.allocator, .limited(16 << 20));
+            var reader = child.stdout.?.reader(cx.io, &buffer);
+            self.ranked = try reader.interface.allocRemaining(cx.allocator, .limited(16 << 20));
 
-            _ = try child.wait(self.io);
+            _ = try child.wait(cx.io);
 
             var lines = std.mem.splitScalar(u8, self.ranked, '\n');
             while (lines.next()) |line| {
-                if (line.len != 0) try self.matches.append(self.allocator, line);
+                if (line.len != 0) try self.matches.append(cx.allocator, line);
             }
         }
 
@@ -580,7 +572,7 @@ pub const Finder = struct {
         self.panel.get(Query).counted(self.matches.items.len, self.all.items.len);
     }
 
-    pub fn draw(self: *Finder, atlas: *GlyphAtlas, painter: *Painter) !void {
+    pub fn draw(self: *Finder, cx: *Context, painter: *Painter) !void {
         if (!self.showing) return;
 
         painter.clipTo(self.rect);
@@ -588,6 +580,6 @@ pub const Finder = struct {
 
         // Nothing is laid over the document: the panel is two opaque surfaces
         // and the code either side of them is not dimmed at all.
-        try self.panel.draw(atlas, painter);
+        try self.panel.draw(cx, painter);
     }
 };

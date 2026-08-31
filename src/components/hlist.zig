@@ -20,6 +20,7 @@ const Event = event_mod.Event;
 const Intent = event_mod.Intent;
 
 const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
+const Context = @import("../context.zig").Context;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -29,7 +30,6 @@ pub fn HList(comptime Member: type) type {
     return struct {
         const Self = @This();
 
-        allocator: std.mem.Allocator,
         items: std.ArrayList(Member) = .empty,
 
         /// Which member a keystroke goes to.
@@ -43,23 +43,19 @@ pub fn HList(comptime Member: type) type {
         /// with the list as it grows.
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-        pub fn init(allocator: std.mem.Allocator) Self {
-            return .{ .allocator = allocator };
+        pub fn deinit(self: *Self, cx: *Context) void {
+            for (self.items.items) |*member| member.deinit(cx);
+            self.items.deinit(cx.allocator);
         }
 
-        pub fn deinit(self: *Self) void {
-            for (self.items.items) |*member| member.deinit();
-            self.items.deinit(self.allocator);
-        }
-
-        pub fn append(self: *Self, member: Member) !void {
-            try self.items.append(self.allocator, member);
+        pub fn append(self: *Self, cx: *Context, member: Member) !void {
+            try self.items.append(cx.allocator, member);
         }
 
         /// Puts `member` at `which`, moving the rest along. Order is what a row
         /// is, so there is no cheaper unordered version of this.
-        pub fn insert(self: *Self, which: usize, member: Member) !void {
-            try self.items.insert(self.allocator, which, member);
+        pub fn insert(self: *Self, cx: *Context, which: usize, member: Member) !void {
+            try self.items.insert(cx.allocator, which, member);
             if (self.focus >= which) self.focus += 1;
             self.holding = null;
         }
@@ -93,24 +89,24 @@ pub fn HList(comptime Member: type) type {
         /// Whatever it is given. How wide the columns are is a row's business;
         /// how tall they are is not, so it never asks for a height of its own.
         /// Only meaningful where a row is a member of a column.
-        pub fn height(self: *const Self, atlas: *const GlyphAtlas) ?f32 {
+        pub fn height(self: *const Self, cx: *Context) ?f32 {
             _ = self;
-            _ = atlas;
+            _ = cx.atlas;
             return null;
         }
 
-        pub fn place(self: *Self, rect: Rect, atlas: *const GlyphAtlas) void {
+        pub fn place(self: *Self, cx: *Context, rect: Rect) void {
             self.rect = rect;
 
             var left = rect.x;
             for (self.items.items, 1..) |*member, nth| {
                 const right = self.edge(nth);
-                member.place(.{
+                member.place(cx, .{
                     .x = left,
                     .y = rect.y,
                     .width = right - left,
                     .height = rect.height,
-                }, atlas);
+                });
                 left = right;
             }
         }
@@ -130,34 +126,34 @@ pub fn HList(comptime Member: type) type {
             for (self.items.items) |*member| member.invalidate();
         }
 
-        pub fn draw(self: *Self, atlas: *GlyphAtlas, painter: *Painter) !void {
-            for (self.items.items) |*member| try member.draw(atlas, painter);
+        pub fn draw(self: *Self, cx: *Context, painter: *Painter) !void {
+            for (self.items.items) |*member| try member.draw(cx, painter);
         }
 
-        pub fn update(self: *Self, event: Event, atlas: *GlyphAtlas) !Intent {
+        pub fn update(self: *Self, cx: *Context, event: Event) !Intent {
             switch (event) {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
                     self.focus = which;
                     self.holding = which;
-                    return self.items.items[which].update(event, atlas);
+                    return self.items.items[which].update(cx, event);
                 },
                 .move => |at| {
                     const which = self.holding orelse self.over(at) orelse return .nothing;
-                    return self.items.items[which].update(event, atlas);
+                    return self.items.items[which].update(cx, event);
                 },
                 .release => {
                     const which = self.holding orelse return .nothing;
                     self.holding = null;
-                    return self.items.items[which].update(event, atlas);
+                    return self.items.items[which].update(cx, event);
                 },
                 .wheel => |wheel| {
                     const which = self.over(wheel.at) orelse return .nothing;
-                    return self.items.items[which].update(event, atlas);
+                    return self.items.items[which].update(cx, event);
                 },
                 else => {
                     const member = self.focused() orelse return .nothing;
-                    return member.update(event, atlas);
+                    return member.update(cx, event);
                 },
             }
         }
@@ -179,43 +175,47 @@ pub fn HList(comptime Member: type) type {
 /// can be checked without a window or a font.
 const Spy = struct {
     told: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
     tag: u8,
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    pub fn deinit(_: *Spy) void {}
+    pub fn deinit(_: *Spy, _: *Context) void {}
     pub fn isDirty(_: *const Spy) bool {
         return false;
     }
     pub fn setDirty(_: *Spy, _: bool) void {}
     pub fn invalidate(_: *Spy) void {}
-    pub fn draw(_: *Spy, _: *GlyphAtlas, _: *Painter) !void {}
+    pub fn draw(_: *Spy, _: *Context, _: *Painter) !void {}
 
-    pub fn place(self: *Spy, rect: Rect, _: *const GlyphAtlas) void {
+    pub fn place(self: *Spy, _: *Context, rect: Rect) void {
         self.rect = rect;
     }
 
-    pub fn update(self: *Spy, _: Event, _: *GlyphAtlas) !Intent {
-        try self.told.append(self.allocator, self.tag);
+    pub fn update(self: *Spy, cx: *Context, _: Event) !Intent {
+        try self.told.append(cx.allocator, self.tag);
         return .nothing;
     }
 };
 
-fn testRow(allocator: std.mem.Allocator, told: *std.ArrayList(u8), tags: []const u8) !HList(Spy) {
-    var row: HList(Spy) = .init(allocator);
-    errdefer row.deinit();
-    for (tags) |tag| try row.append(.{ .told = told, .allocator = allocator, .tag = tag });
-    row.place(.{ .x = 0, .y = 0, .width = 100, .height = 50 }, undefined);
+fn testRow(cx: *Context, told: *std.ArrayList(u8), tags: []const u8) !HList(Spy) {
+    var row: HList(Spy) = .{};
+    errdefer row.deinit(cx);
+    for (tags) |tag| try row.append(cx, .{ .told = told, .tag = tag });
+    row.place(cx, .{ .x = 0, .y = 0, .width = 100, .height = 50 });
     return row;
+}
+
+fn testContext(allocator: std.mem.Allocator) Context {
+    return .{ .allocator = allocator, .io = undefined };
 }
 
 test "however many there are, they divide the room evenly" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var three = try testRow(allocator, &told, "abc");
-    defer three.deinit();
+    var three = try testRow(&cx, &told, "abc");
+    defer three.deinit(&cx);
 
     // No seam and no overlap, and the last one ends where the row does.
     for (three.items.items[1..], three.items.items[0..2]) |right, left| {
@@ -227,55 +227,58 @@ test "however many there are, they divide the room evenly" {
 
 test "a point lands in the column it is over, at any count" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var three = try testRow(allocator, &told, "abc");
-    defer three.deinit();
+    var three = try testRow(&cx, &told, "abc");
+    defer three.deinit(&cx);
 
-    _ = try three.update(.{ .press = .{ 10, 10 } }, undefined);
-    _ = try three.update(.{ .press = .{ 50, 10 } }, undefined);
-    _ = try three.update(.{ .press = .{ 90, 10 } }, undefined);
+    _ = try three.update(&cx, .{ .press = .{ 10, 10 } });
+    _ = try three.update(&cx, .{ .press = .{ 50, 10 } });
+    _ = try three.update(&cx, .{ .press = .{ 90, 10 } });
     // The first edge lands on 33, and a boundary belongs to the column on its
     // right: 32 is the last pixel of the first column, 33 the first of the next.
-    _ = try three.update(.{ .press = .{ 32, 10 } }, undefined);
-    _ = try three.update(.{ .press = .{ 33, 10 } }, undefined);
+    _ = try three.update(&cx, .{ .press = .{ 32, 10 } });
+    _ = try three.update(&cx, .{ .press = .{ 33, 10 } });
     try std.testing.expectEqualStrings("abcab", told.items);
 }
 
 test "a press moves the keyboard and typing follows it" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var two = try testRow(allocator, &told, "lr");
-    defer two.deinit();
+    var two = try testRow(&cx, &told, "lr");
+    defer two.deinit(&cx);
 
-    _ = try two.update(.{ .text = "x" }, undefined);
-    _ = try two.update(.{ .press = .{ 75, 10 } }, undefined);
-    _ = try two.update(.{ .text = "x" }, undefined);
+    _ = try two.update(&cx, .{ .text = "x" });
+    _ = try two.update(&cx, .{ .press = .{ 75, 10 } });
+    _ = try two.update(&cx, .{ .text = "x" });
     try std.testing.expectEqualStrings("lrr", told.items);
     try std.testing.expectEqual(@as(usize, 1), two.focus);
 }
 
 test "a drag stays with the column it began in, and typing does not" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var two = try testRow(allocator, &told, "lr");
-    defer two.deinit();
+    var two = try testRow(&cx, &told, "lr");
+    defer two.deinit(&cx);
 
     // Keyboard on the right, drag started on the left.
-    _ = try two.update(.{ .press = .{ 75, 10 } }, undefined);
-    _ = try two.update(.{ .press = .{ 10, 10 } }, undefined);
+    _ = try two.update(&cx, .{ .press = .{ 75, 10 } });
+    _ = try two.update(&cx, .{ .press = .{ 10, 10 } });
     two.focus = 1;
     told.clearRetainingCapacity();
 
-    _ = try two.update(.{ .move = .{ 75, 10 } }, undefined);
-    _ = try two.update(.{ .text = "x" }, undefined);
-    _ = try two.update(.release, undefined);
-    _ = try two.update(.{ .move = .{ 75, 10 } }, undefined);
+    _ = try two.update(&cx, .{ .move = .{ 75, 10 } });
+    _ = try two.update(&cx, .{ .text = "x" });
+    _ = try two.update(&cx, .release);
+    _ = try two.update(&cx, .{ .move = .{ 75, 10 } });
 
     // Move to the drag, character to the keyboard, release to the drag, and the
     // next move to whatever it is over.
@@ -284,28 +287,30 @@ test "a drag stays with the column it began in, and typing does not" {
 
 test "an empty row has nothing to be over and nothing to type into" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var none = try testRow(allocator, &told, "");
-    defer none.deinit();
+    var none = try testRow(&cx, &told, "");
+    defer none.deinit(&cx);
 
-    _ = try none.update(.{ .press = .{ 10, 10 } }, undefined);
-    _ = try none.update(.{ .text = "x" }, undefined);
+    _ = try none.update(&cx, .{ .press = .{ 10, 10 } });
+    _ = try none.update(&cx, .{ .text = "x" });
     try std.testing.expectEqualStrings("", told.items);
     try std.testing.expect(none.focused() == null);
 }
 
 test "a point outside the row is nobody's" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
-    var two = try testRow(allocator, &told, "lr");
-    defer two.deinit();
+    var two = try testRow(&cx, &told, "lr");
+    defer two.deinit(&cx);
 
-    _ = try two.update(.{ .press = .{ 400, 10 } }, undefined);
-    _ = try two.update(.{ .press = .{ -5, 10 } }, undefined);
-    _ = try two.update(.{ .press = .{ 50, 400 } }, undefined);
+    _ = try two.update(&cx, .{ .press = .{ 400, 10 } });
+    _ = try two.update(&cx, .{ .press = .{ -5, 10 } });
+    _ = try two.update(&cx, .{ .press = .{ 50, 400 } });
     try std.testing.expectEqualStrings("", told.items);
 }

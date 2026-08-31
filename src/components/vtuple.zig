@@ -20,6 +20,7 @@ const Event = event_mod.Event;
 const Intent = event_mod.Intent;
 
 const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
+const Context = @import("../context.zig").Context;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -52,8 +53,8 @@ pub fn VTuple(comptime members: []const type) type {
             return .{ .items = items };
         }
 
-        pub fn deinit(self: *Self) void {
-            inline for (0..count) |i| self.items[i].deinit();
+        pub fn deinit(self: *Self, cx: *Context) void {
+            inline for (0..count) |i| self.items[i].deinit(cx);
         }
 
         pub fn has(comptime T: type) bool {
@@ -93,12 +94,12 @@ pub fn VTuple(comptime members: []const type) type {
 
         /// Asks every member how tall it wants to be, hands what is left to the
         /// ones that did not say, and places them from the top.
-        pub fn place(self: *Self, rect: Rect, atlas: *const GlyphAtlas) void {
+        pub fn place(self: *Self, cx: *Context, rect: Rect) void {
             var asked: [count]?f32 = undefined;
             var spoken: f32 = 0;
             var quiet: usize = 0;
             inline for (0..count) |i| {
-                asked[i] = self.items[i].height(atlas);
+                asked[i] = self.items[i].height(cx);
                 if (asked[i]) |want| spoken += want else quiet += 1;
             }
 
@@ -113,7 +114,7 @@ pub fn VTuple(comptime members: []const type) type {
                 const y = @round(top);
                 const bottom = @round(top + want);
                 self.rects[i] = .{ .x = rect.x, .y = y, .width = rect.width, .height = bottom - y };
-                self.items[i].place(self.rects[i], atlas);
+                self.items[i].place(cx, self.rects[i]);
                 top += want;
             }
         }
@@ -133,26 +134,26 @@ pub fn VTuple(comptime members: []const type) type {
             inline for (0..count) |i| self.items[i].invalidate();
         }
 
-        pub fn draw(self: *Self, atlas: *GlyphAtlas, painter: *Painter) !void {
-            inline for (0..count) |i| try self.items[i].draw(atlas, painter);
+        pub fn draw(self: *Self, cx: *Context, painter: *Painter) !void {
+            inline for (0..count) |i| try self.items[i].draw(cx, painter);
         }
 
-        pub fn update(self: *Self, event: Event, atlas: *GlyphAtlas) !Intent {
+        pub fn update(self: *Self, cx: *Context, event: Event) !Intent {
             switch (event) {
                 .press => |at| {
                     const which = self.over(at) orelse return .nothing;
                     self.focus = which;
                     self.holding = which;
-                    return self.tell(which, event, atlas);
+                    return self.tell(cx, which, event);
                 },
-                .move => |at| return self.tell(self.holding orelse self.over(at) orelse return .nothing, event, atlas),
+                .move => |at| return self.tell(cx, self.holding orelse self.over(at) orelse return .nothing, event),
                 .release => {
                     const which = self.holding orelse return .nothing;
                     self.holding = null;
-                    return self.tell(which, event, atlas);
+                    return self.tell(cx, which, event);
                 },
-                .wheel => |wheel| return self.tell(self.over(wheel.at) orelse return .nothing, event, atlas),
-                else => return self.tell(self.focus, event, atlas),
+                .wheel => |wheel| return self.tell(cx, self.over(wheel.at) orelse return .nothing, event),
+                else => return self.tell(cx, self.focus, event),
             }
         }
 
@@ -165,9 +166,9 @@ pub fn VTuple(comptime members: []const type) type {
             return null;
         }
 
-        fn tell(self: *Self, which: usize, event: Event, atlas: *GlyphAtlas) !Intent {
+        fn tell(self: *Self, cx: *Context, which: usize, event: Event) !Intent {
             inline for (0..count) |i| {
-                if (which == i) return self.items[i].update(event, atlas);
+                if (which == i) return self.items[i].update(cx, event);
             }
             unreachable;
         }
@@ -179,27 +180,26 @@ fn Band(comptime tag: u8, comptime wants: ?f32) type {
     return struct {
         const Self = @This();
         told: *std.ArrayList(u8),
-        allocator: std.mem.Allocator,
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-        pub fn deinit(_: *Self) void {}
+        pub fn deinit(_: *Self, _: *Context) void {}
         pub fn isDirty(_: *const Self) bool {
             return false;
         }
         pub fn setDirty(_: *Self, _: bool) void {}
         pub fn invalidate(_: *Self) void {}
-        pub fn draw(_: *Self, _: *GlyphAtlas, _: *Painter) !void {}
+        pub fn draw(_: *Self, _: *Context, _: *Painter) !void {}
 
-        pub fn height(_: *const Self, _: *const GlyphAtlas) ?f32 {
+        pub fn height(_: *const Self, _: *Context) ?f32 {
             return wants;
         }
 
-        pub fn place(self: *Self, rect: Rect, _: *const GlyphAtlas) void {
+        pub fn place(self: *Self, _: *Context, rect: Rect) void {
             self.rect = rect;
         }
 
-        pub fn update(self: *Self, _: Event, _: *GlyphAtlas) !Intent {
-            try self.told.append(self.allocator, tag);
+        pub fn update(self: *Self, cx: *Context, _: Event) !Intent {
+            try self.told.append(cx.allocator, tag);
             return .nothing;
         }
     };
@@ -209,17 +209,22 @@ const Heading = Band('h', 20);
 const List = Band('l', null);
 const Footer = Band('f', 10);
 
+fn testContext(allocator: std.mem.Allocator) Context {
+    return .{ .allocator = allocator, .io = undefined };
+}
+
 test "a member that says nothing takes what is left" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
     var column: VTuple(&.{ Heading, List, Footer }) = .init(.{
-        .{ .told = &told, .allocator = allocator },
-        .{ .told = &told, .allocator = allocator },
-        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told },
+        .{ .told = &told },
+        .{ .told = &told },
     });
-    column.place(.{ .x = 0, .y = 0, .width = 100, .height = 100 }, undefined);
+    column.place(&cx, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
 
     try std.testing.expectEqual(@as(f32, 0), column.items[0].rect.y);
     try std.testing.expectEqual(@as(f32, 20), column.items[0].rect.height);
@@ -232,16 +237,17 @@ test "a member that says nothing takes what is left" {
 
 test "the bands meet exactly, whatever the fractions" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
     const Thirds = Band('t', 33.4);
     var column: VTuple(&.{ Thirds, Thirds, List }) = .init(.{
-        .{ .told = &told, .allocator = allocator },
-        .{ .told = &told, .allocator = allocator },
-        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told },
+        .{ .told = &told },
+        .{ .told = &told },
     });
-    column.place(.{ .x = 0, .y = 5, .width = 100, .height = 100 }, undefined);
+    column.place(&cx, .{ .x = 0, .y = 5, .width = 100, .height = 100 });
 
     // No seam and no overlap: each band starts where the one above it ended.
     for (column.rects[1..], column.rects[0 .. column.rects.len - 1]) |below, above| {
@@ -254,14 +260,15 @@ test "the bands meet exactly, whatever the fractions" {
 
 test "a column with nothing spare does not stretch anyone" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
     var column: VTuple(&.{ Heading, Footer }) = .init(.{
-        .{ .told = &told, .allocator = allocator },
-        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told },
+        .{ .told = &told },
     });
-    column.place(.{ .x = 0, .y = 0, .width = 100, .height = 500 }, undefined);
+    column.place(&cx, .{ .x = 0, .y = 0, .width = 100, .height = 500 });
 
     try std.testing.expectEqual(@as(f32, 20), column.items[0].rect.height);
     try std.testing.expectEqual(@as(f32, 10), column.items[1].rect.height);
@@ -269,32 +276,34 @@ test "a column with nothing spare does not stretch anyone" {
 
 test "asking for more than there is leaves nothing spare rather than a negative band" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
     var column: VTuple(&.{ Heading, List }) = .init(.{
-        .{ .told = &told, .allocator = allocator },
-        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told },
+        .{ .told = &told },
     });
-    column.place(.{ .x = 0, .y = 0, .width = 100, .height = 8 }, undefined);
+    column.place(&cx, .{ .x = 0, .y = 0, .width = 100, .height = 8 });
 
     try std.testing.expectEqual(@as(f32, 0), column.items[1].rect.height);
 }
 
 test "a press moves the keyboard down the column and typing follows it" {
     const allocator = std.testing.allocator;
+    var cx = testContext(allocator);
     var told: std.ArrayList(u8) = .empty;
     defer told.deinit(allocator);
 
     var column: VTuple(&.{ Heading, List }) = .init(.{
-        .{ .told = &told, .allocator = allocator },
-        .{ .told = &told, .allocator = allocator },
+        .{ .told = &told },
+        .{ .told = &told },
     });
-    column.place(.{ .x = 0, .y = 0, .width = 100, .height = 100 }, undefined);
+    column.place(&cx, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
 
-    _ = try column.update(.{ .text = "a" }, undefined);
-    _ = try column.update(.{ .press = .{ 10, 50 } }, undefined);
-    _ = try column.update(.{ .text = "b" }, undefined);
+    _ = try column.update(&cx, .{ .text = "a" });
+    _ = try column.update(&cx, .{ .press = .{ 10, 50 } });
+    _ = try column.update(&cx, .{ .text = "b" });
 
     try std.testing.expectEqualStrings("hll", told.items);
     try std.testing.expectEqual(@as(usize, 1), column.focus);

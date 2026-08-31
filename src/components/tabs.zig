@@ -9,8 +9,9 @@
 //! asked of the columns every frame rather than remembered here, so the bar
 //! cannot disagree with what is on screen.
 //!
-//! A press answers `Intent.open`, exactly as the finder does, and the same code
-//! above puts the file in the column that has the keyboard.
+//! A press answers `Intent.only`, which is what cmd+N means as well, so a tab
+//! reached either way says the same thing: show this and put the rest away.
+//! The workbench holding the bar is what acts on it.
 
 const std = @import("std");
 
@@ -20,6 +21,7 @@ const Event = event_mod.Event;
 const Intent = event_mod.Intent;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
+const Context = @import("../context.zig").Context;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 
@@ -67,8 +69,6 @@ const Ink = struct {
 };
 
 pub const Tabs = struct {
-    allocator: std.mem.Allocator,
-
     /// Every file open in this window, in the order they were first opened.
     /// Owned, because the copy a view or a parked document holds is freed and
     /// replaced as files move between them.
@@ -101,38 +101,34 @@ pub const Tabs = struct {
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     dirty: bool = true,
 
-    pub fn init(allocator: std.mem.Allocator) Tabs {
-        return .{ .allocator = allocator };
-    }
-
-    pub fn deinit(self: *Tabs) void {
-        for (self.paths.items) |path| self.allocator.free(path);
-        self.paths.deinit(self.allocator);
-        for (self.names.items) |*name| name.deinit(self.allocator);
-        self.names.deinit(self.allocator);
-        self.unsaved.deinit(self.allocator);
-        self.in_column.deinit(self.allocator);
-        self.rects.deinit(self.allocator);
-        self.bullet.deinit(self.allocator);
+    pub fn deinit(self: *Tabs, cx: *Context) void {
+        for (self.paths.items) |path| cx.allocator.free(path);
+        self.paths.deinit(cx.allocator);
+        for (self.names.items) |*name| name.deinit(cx.allocator);
+        self.names.deinit(cx.allocator);
+        self.unsaved.deinit(cx.allocator);
+        self.in_column.deinit(cx.allocator);
+        self.rects.deinit(cx.allocator);
+        self.bullet.deinit(cx.allocator);
     }
 
     /// Lists `path` if it is not listed already.
-    pub fn opened(self: *Tabs, path: []const u8) !void {
+    pub fn opened(self: *Tabs, cx: *Context, path: []const u8) !void {
         for (self.paths.items) |listed| {
             if (std.mem.eql(u8, listed, path)) return;
         }
 
-        const owned = try self.allocator.dupe(u8, path);
-        errdefer self.allocator.free(owned);
+        const owned = try cx.allocator.dupe(u8, path);
+        errdefer cx.allocator.free(owned);
 
-        try self.paths.append(self.allocator, owned);
+        try self.paths.append(cx.allocator, owned);
         errdefer _ = self.paths.pop();
-        try self.names.append(self.allocator, .{});
+        try self.names.append(cx.allocator, .{});
         errdefer _ = self.names.pop();
-        try self.unsaved.append(self.allocator, false);
+        try self.unsaved.append(cx.allocator, false);
         errdefer _ = self.unsaved.pop();
-        try self.in_column.append(self.allocator, false);
-        try self.rects.append(self.allocator, .{ .x = 0, .y = 0, .width = 0, .height = 0 });
+        try self.in_column.append(cx.allocator, false);
+        try self.rects.append(cx.allocator, .{ .x = 0, .y = 0, .width = 0, .height = 0 });
         self.dirty = true;
     }
 
@@ -152,14 +148,14 @@ pub const Tabs = struct {
 
     /// Takes `path` off the bar. Whether the file is still open anywhere is not
     /// the bar's business: whoever calls this has decided it is not.
-    pub fn close(self: *Tabs, path: []const u8) void {
+    pub fn close(self: *Tabs, cx: *Context, path: []const u8) void {
         for (self.paths.items, 0..) |listed, which| {
             if (!std.mem.eql(u8, listed, path)) continue;
 
-            self.allocator.free(listed);
+            cx.allocator.free(listed);
             _ = self.paths.orderedRemove(which);
             var name = self.names.orderedRemove(which);
-            name.deinit(self.allocator);
+            name.deinit(cx.allocator);
             _ = self.unsaved.orderedRemove(which);
             _ = self.in_column.orderedRemove(which);
             _ = self.rects.orderedRemove(which);
@@ -215,13 +211,13 @@ pub const Tabs = struct {
 
     /// Nothing at all when no file has been named: a strip with no tabs on it
     /// is a promise of something that is not there.
-    pub fn height(self: *const Tabs, atlas: *const GlyphAtlas) ?f32 {
+    pub fn height(self: *const Tabs, cx: *Context) ?f32 {
         if (self.paths.items.len == 0) return 0;
-        return @round(atlas.line_height + 2 * @round(down * atlas.scale));
+        return @round(cx.atlas.line_height + 2 * @round(down * cx.atlas.scale));
     }
 
-    pub fn place(self: *Tabs, rect: Rect, atlas: *const GlyphAtlas) void {
-        _ = atlas;
+    pub fn place(self: *Tabs, cx: *Context, rect: Rect) void {
+        _ = cx.atlas;
         self.rect = rect;
     }
 
@@ -239,8 +235,8 @@ pub const Tabs = struct {
         self.dirty = true;
     }
 
-    pub fn update(self: *Tabs, event: Event, atlas: *GlyphAtlas) !Intent {
-        _ = atlas;
+    pub fn update(self: *Tabs, cx: *Context, event: Event) !Intent {
+        _ = cx.atlas;
         const at = switch (event) {
             .press => |where| where,
             else => return .nothing,
@@ -251,19 +247,19 @@ pub const Tabs = struct {
             // Pressing a tab is choosing that file over the others, which is
             // what cmd+N means too. The finder answers `open` instead: picking
             // a file there is not a statement about the ones already on screen.
-            return .{ .only = try self.allocator.dupe(u8, self.paths.items[which]) };
+            return .{ .only = try cx.allocator.dupe(u8, self.paths.items[which]) };
         }
         return .nothing;
     }
 
-    pub fn draw(self: *Tabs, atlas: *GlyphAtlas, painter: *Painter) !void {
+    pub fn draw(self: *Tabs, cx: *Context, painter: *Painter) !void {
         if (self.paths.items.len == 0) return;
 
-        const line = @max(1, @round(atlas.scale));
-        const inset = @round(across * atlas.scale);
-        const gap = @round(beside * atlas.scale);
+        const line = @max(1, @round(cx.atlas.scale));
+        const inset = @round(across * cx.atlas.scale);
+        const gap = @round(beside * cx.atlas.scale);
 
-        if (!self.bullet.shaped) try atlas.shapeLine(unsaved_mark, &self.bullet);
+        if (!self.bullet.shaped) try cx.atlas.shapeLine(unsaved_mark, &self.bullet);
 
         // What the mark draws, not what it advances. A bullet carries wide side
         // bearings, and reserving them twice over would be paying for space
@@ -287,7 +283,7 @@ pub const Tabs = struct {
         var left = self.rect.x;
         for (self.paths.items, 0..) |path, which| {
             const name = &self.names.items[which];
-            if (!name.shaped) try atlas.shapeLine(std.fs.path.basename(path), name);
+            if (!name.shaped) try cx.atlas.shapeLine(std.fs.path.basename(path), name);
 
             const width = @round(advance(name) + 2 * (ink.wide + gap) + 2 * inset);
             self.rects.items[which] = .{
@@ -318,7 +314,7 @@ pub const Tabs = struct {
             ));
 
             const key = if (which == self.front) name_key else other_key;
-            const baseline = @round(self.rect.y + @round(down * atlas.scale) + atlas.ascent);
+            const baseline = @round(self.rect.y + @round(down * cx.atlas.scale) + cx.atlas.ascent);
 
             // The mark's room is taken whether or not it is drawn, so a file
             // being typed into does not push the rest of the bar along; the

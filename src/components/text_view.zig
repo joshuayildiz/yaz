@@ -21,6 +21,10 @@ const Document = @import("../document.zig").Document;
 const drawLine = @import("../text.zig").draw;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
+const context = @import("../context.zig");
+const Context = context.Context;
+const Position = context.Position;
+const Retired = context.Retired;
 const Caret = glyph_atlas.Caret;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
@@ -54,26 +58,7 @@ const glyph_key: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = config.text
 const caret_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.caret_colour };
 const bar_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.scrollbar_colour };
 
-/// Where a reader was in a file: what the caret was on, and what was on screen.
-///
-/// Kept by whoever outlives the view, since a view shows one file at a time and
-/// this is the half of the last one that the document itself does not hold.
-pub const Position = struct {
-    cursor: usize,
-    scroll: f32,
-};
-
-/// What a view was showing before it was pointed somewhere else. The caller owns
-/// all of it, and can hand the document straight back later rather than reading
-/// the file again.
-pub const Retired = struct {
-    document: Document,
-    path: ?[]u8,
-    position: Position,
-};
-
 pub const TextView = struct {
-    allocator: std.mem.Allocator,
     document: Document,
 
     /// What this view is showing, as it was named, or null for a document
@@ -121,7 +106,6 @@ pub const TextView = struct {
         errdefer document.deinit();
 
         return .{
-            .allocator = allocator,
             .document = document,
             .path = if (path) |named| try allocator.dupe(u8, named) else null,
             .cursor = 0,
@@ -143,7 +127,7 @@ pub const TextView = struct {
     ) !TextView {
         const named = if (path) |called| try allocator.dupe(u8, called) else null;
 
-        var self: TextView = .{ .allocator = allocator, .document = document, .path = named, .cursor = 0 };
+        var self: TextView = .{ .document = document, .path = named, .cursor = 0 };
         if (was) |seen| {
             self.cursor = @min(seen.cursor, self.document.buffer.byteLen());
             self.scroll = seen.scroll;
@@ -167,12 +151,12 @@ pub const TextView = struct {
     /// looked away from.
     pub fn swap(
         self: *TextView,
+        cx: *Context,
         document: Document,
         path: ?[]const u8,
         was: ?Position,
-        atlas: *const GlyphAtlas,
     ) !Retired {
-        const named = if (path) |called| try self.allocator.dupe(u8, called) else null;
+        const named = if (path) |called| try cx.allocator.dupe(u8, called) else null;
 
         const retired: Retired = .{
             .document = self.document,
@@ -199,7 +183,7 @@ pub const TextView = struct {
         // Clamped, both of them: the file may have been edited on disk since it
         // was last looked at, and an offset past the end of it is not a caret.
         self.cursor = @min(seen.cursor, self.document.buffer.byteLen());
-        self.scrollTo(seen.scroll, atlas);
+        self.scrollTo(cx, seen.scroll);
         return retired;
     }
 
@@ -208,9 +192,9 @@ pub const TextView = struct {
         return .{ .cursor = self.cursor, .scroll = self.scroll };
     }
 
-    pub fn deinit(self: *TextView) void {
+    pub fn deinit(self: *TextView, cx: *Context) void {
         self.document.deinit();
-        if (self.path) |named| self.allocator.free(named);
+        if (self.path) |named| cx.allocator.free(named);
     }
 
     fn insert(self: *TextView, text: []const u8) !void {
@@ -244,14 +228,14 @@ pub const TextView = struct {
     ///
     /// The atlas comes with it for the sake of components that size themselves
     /// from the font; this one measures nothing until it draws.
-    pub fn place(self: *TextView, rect: Rect, atlas: *const GlyphAtlas) void {
-        _ = atlas;
+    pub fn place(self: *TextView, cx: *Context, rect: Rect) void {
+        _ = cx.atlas;
         self.rect = rect;
     }
 
     /// Everything that happens inside the view. What belongs to the window has
     /// been dealt with before this is called.
-    pub fn update(self: *TextView, event: Event, atlas: *GlyphAtlas) !Intent {
+    pub fn update(self: *TextView, cx: *Context, event: Event) !Intent {
         switch (event) {
             // The window's, or the finder's. Arrows and escape reach a view
             // only when nothing is over it, and there is no cursor movement to
@@ -267,19 +251,19 @@ pub const TextView = struct {
             },
             .backspace => self.dirty = try self.backspace() or self.dirty,
             .wheel => |wheel| {
-                self.scrollBy(wheel.delta, atlas);
+                self.scrollBy(cx, wheel.delta);
                 self.dirty = true;
             },
             .press => |at| {
                 // The scrollbar is asked first, so a press on it moves the view
                 // rather than the caret.
-                if (self.thumbGrab(atlas, at)) |grab| {
+                if (self.thumbGrab(cx, at)) |grab| {
                     self.drag = grab;
-                    self.dragTo(atlas, at[1], grab);
+                    self.dragTo(cx, at[1], grab);
                     self.dirty = true;
                     return .nothing;
                 }
-                try self.moveCaretTo(atlas, at);
+                try self.moveCaretTo(cx, at);
                 self.dirty = true;
             },
             .move => |at| {
@@ -287,7 +271,7 @@ pub const TextView = struct {
                 // has the loop ignoring it, and a redraw per motion event is what
                 // that buys.
                 const grab = self.drag orelse return .nothing;
-                self.dragTo(atlas, at[1], grab);
+                self.dragTo(cx, at[1], grab);
                 self.dirty = true;
             },
             .release => self.drag = null,
@@ -298,27 +282,27 @@ pub const TextView = struct {
     /// Where the first line's top-left corner sits. Whole pixels, which the
     /// layout cache depends on: a fractional origin would change which subpixel
     /// variant every cached glyph points at.
-    fn origin(self: *const TextView, atlas: *const GlyphAtlas) [2]f32 {
+    fn origin(self: *const TextView, cx: *Context) [2]f32 {
         return .{
-            @round(self.rect.x + (bar_gutter + text_margin[0]) * atlas.scale),
-            @round(self.rect.y + text_margin[1] * atlas.scale),
+            @round(self.rect.x + (bar_gutter + text_margin[0]) * cx.atlas.scale),
+            @round(self.rect.y + text_margin[1] * cx.atlas.scale),
         };
     }
 
     /// Moves the view by `pixels`, keeping the offset a whole number of them.
     /// What is left over waits for the next event rather than rounding away.
-    fn scrollBy(self: *TextView, pixels: f32, atlas: *const GlyphAtlas) void {
+    fn scrollBy(self: *TextView, cx: *Context, pixels: f32) void {
         self.pending += pixels;
         const whole = @trunc(self.pending);
         self.pending -= whole;
-        self.scrollTo(self.scroll + whole, atlas);
+        self.scrollTo(cx, self.scroll + whole);
     }
 
     /// Where the scrollbar's thumb sits in a window `height` tall.
-    fn scrollbar(self: *const TextView, atlas: *const GlyphAtlas) Thumb {
+    fn scrollbar(self: *const TextView, cx: *Context) Thumb {
         const count: f32 = @floatFromInt(self.document.buffer.lineCount());
-        const content = self.origin(atlas)[1] - self.rect.y + count * atlas.line_height;
-        return thumb(self.scroll, content, self.rect.height, @round(bar_minimum * atlas.scale));
+        const content = self.origin(cx)[1] - self.rect.y + count * cx.atlas.line_height;
+        return thumb(self.scroll, content, self.rect.height, @round(bar_minimum * cx.atlas.scale));
     }
 
     /// Where on the thumb a press at `point` takes hold, or null when the press
@@ -328,49 +312,49 @@ pub const TextView = struct {
     /// points wide is a small thing to ask anyone to hit. A press on the track
     /// rather than the thumb takes hold of its middle, so the thumb jumps to the
     /// pointer and carries on from there.
-    fn thumbGrab(self: *const TextView, atlas: *const GlyphAtlas, point: [2]f32) ?f32 {
+    fn thumbGrab(self: *const TextView, cx: *Context, point: [2]f32) ?f32 {
         const from_left = point[0] - self.rect.x;
-        if (from_left < 0 or from_left >= @round(bar_gutter * atlas.scale)) return null;
+        if (from_left < 0 or from_left >= @round(bar_gutter * cx.atlas.scale)) return null;
 
-        const t = self.scrollbar(atlas);
+        const t = self.scrollbar(cx);
         const offset = point[1] - self.rect.y - t.y;
         if (offset < 0 or offset >= t.height) return t.height / 2;
         return offset;
     }
 
     /// Drags the thumb so that the point `grab` down it sits at `y`.
-    fn dragTo(self: *TextView, atlas: *const GlyphAtlas, y: f32, grab: f32) void {
+    fn dragTo(self: *TextView, cx: *Context, y: f32, grab: f32) void {
         if (self.rect.height <= 0) return;
         const count: f32 = @floatFromInt(self.document.buffer.lineCount());
         // The inverse of the thumb, whose top is `scroll * height / content`.
-        const content = self.origin(atlas)[1] - self.rect.y + count * atlas.line_height;
+        const content = self.origin(cx)[1] - self.rect.y + count * cx.atlas.line_height;
         self.pending = 0;
-        self.scrollTo(@round((y - self.rect.y - grab) * content / self.rect.height), atlas);
+        self.scrollTo(cx, @round((y - self.rect.y - grab) * content / self.rect.height));
     }
 
     /// Brings the caret's line into view, and clears the flag that asked for it.
-    fn scrollToCaret(self: *TextView, atlas: *const GlyphAtlas) void {
+    fn scrollToCaret(self: *TextView, cx: *Context) void {
         self.follow_caret = false;
         const index = self.document.buffer.lineAt(self.cursor);
         // A jump is not a gesture, so anything a gesture had part-way through
         // it goes rather than being applied on top of the answer.
         self.pending = 0;
-        const top = self.origin(atlas)[1] - self.rect.y;
-        self.scrollTo(scrollToCentre(self.scroll, index, top, self.rect.height, atlas.line_height), atlas);
+        const top = self.origin(cx)[1] - self.rect.y;
+        self.scrollTo(cx, scrollToCentre(self.scroll, index, top, self.rect.height, cx.atlas.line_height));
     }
 
-    fn scrollTo(self: *TextView, to: f32, atlas: *const GlyphAtlas) void {
-        self.scroll = @min(self.furthest(atlas), @max(0, to));
+    fn scrollTo(self: *TextView, cx: *Context, to: f32) void {
+        self.scroll = @min(self.furthest(cx), @max(0, to));
     }
 
     /// The far end of the scroll: where the last line reaches the top of the
     /// window rather than the bottom, so the end of a file stops being somewhere
     /// the view cannot follow you to. A document shorter than the window scrolls
     /// by the same rule.
-    fn furthest(self: *const TextView, atlas: *const GlyphAtlas) f32 {
+    fn furthest(self: *const TextView, cx: *Context) f32 {
         const last = self.document.buffer.lineCount() -| 1;
-        const top = self.origin(atlas)[1] - self.rect.y;
-        return @max(0, @ceil(top + @as(f32, @floatFromInt(last)) * atlas.line_height));
+        const top = self.origin(cx)[1] - self.rect.y;
+        return @max(0, @ceil(top + @as(f32, @floatFromInt(last)) * cx.atlas.line_height));
     }
 
     /// Places every line's glyphs on screen, shaping the ones whose text has
@@ -381,7 +365,7 @@ pub const TextView = struct {
     /// read the document; a keystroke shapes the one line it landed in. What
     /// remains per frame is placing the cached glyphs, which has to happen
     /// anyway to fill the buffer the GPU reads.
-    pub fn draw(self: *TextView, atlas: *GlyphAtlas, painter: *Painter) !void {
+    pub fn draw(self: *TextView, cx: *Context, painter: *Painter) !void {
         // Nothing this view draws may reach outside the room it was given: a
         // long line runs past the right edge, and a line at the bottom is only
         // partly on screen.
@@ -391,16 +375,16 @@ pub const TextView = struct {
         // Typing that has gone off screen brings the view back to it. Read here
         // rather than acted on at the keystroke that set it: the view has to
         // have been given its room before it can say what is in it.
-        if (self.follow_caret) self.scrollToCaret(atlas);
+        if (self.follow_caret) self.scrollToCaret(cx);
 
-        const at = self.origin(atlas);
+        const at = self.origin(cx);
         const x = at[0];
         const top = at[1] - self.rect.y;
         const height = self.rect.height;
         std.debug.assert(self.scroll == @round(self.scroll));
 
         const count = self.document.buffer.lineCount();
-        if (self.document.lines.items.len == 0) try self.document.lines.appendNTimes(self.allocator, .{}, count);
+        if (self.document.lines.items.len == 0) try self.document.lines.appendNTimes(cx.allocator, .{}, count);
         // Anything else means an edit did not reach the cache and the entries
         // no longer line up with the lines they describe.
         std.debug.assert(self.document.lines.items.len == count);
@@ -410,15 +394,15 @@ pub const TextView = struct {
         // same shaped layout as the glyphs it sits between.
         var caret: ?Sprite = null;
 
-        const range = visibleLines(top, self.scroll, height, atlas.line_height, count);
+        const range = visibleLines(top, self.scroll, height, cx.atlas.line_height, count);
         for (self.document.lines.items[range.first..range.last], range.first..) |*entry, index| {
-            if (!entry.shaped) try atlas.shapeLine(try self.document.buffer.lineSlice(index), entry);
+            if (!entry.shaped) try cx.atlas.shapeLine(try self.document.buffer.lineSlice(index), entry);
             std.debug.assert(entry.bytes == self.document.buffer.lineLength(index));
 
-            const baseline = @round(self.rect.y + lineTop(index, top, self.scroll, atlas.line_height) + atlas.ascent);
+            const baseline = @round(self.rect.y + lineTop(index, top, self.scroll, cx.atlas.line_height) + cx.atlas.ascent);
             try drawLine(painter, glyph_key, entry, .{ x, baseline });
 
-            if (index == caret_line) caret = self.caretOn(atlas, entry, index, x, baseline);
+            if (index == caret_line) caret = self.caretOn(cx, entry, index, x, baseline);
         }
 
         // The caret can be outside the range drawn, above it or below it. Its
@@ -427,25 +411,25 @@ pub const TextView = struct {
         // here, so where exactly it lands does not matter.
         if (caret == null) {
             const entry = &self.document.lines.items[caret_line];
-            if (!entry.shaped) try atlas.shapeLine(try self.document.buffer.lineSlice(caret_line), entry);
+            if (!entry.shaped) try cx.atlas.shapeLine(try self.document.buffer.lineSlice(caret_line), entry);
             std.debug.assert(entry.bytes == self.document.buffer.lineLength(caret_line));
 
-            const off = self.rect.y + lineTop(caret_line, top, self.scroll, atlas.line_height) + atlas.ascent;
-            caret = self.caretOn(atlas, entry, caret_line, x, @round(off));
+            const off = self.rect.y + lineTop(caret_line, top, self.scroll, cx.atlas.line_height) + cx.atlas.ascent;
+            caret = self.caretOn(cx, entry, caret_line, x, @round(off));
         }
         try painter.add(caret_key, caret.?);
 
-        const t = self.scrollbar(atlas);
+        const t = self.scrollbar(cx);
         try painter.add(bar_key, .solid(
-            .{ @round(self.rect.x + bar_inset * atlas.scale), self.rect.y + t.y },
-            .{ @round(bar_width * atlas.scale), t.height },
+            .{ @round(self.rect.x + bar_inset * cx.atlas.scale), self.rect.y + t.y },
+            .{ @round(bar_width * cx.atlas.scale), t.height },
         ));
     }
 
     /// The caret's quad on `index`, whose layout must already be shaped.
     fn caretOn(
         self: *const TextView,
-        atlas: *const GlyphAtlas,
+        cx: *Context,
         entry: *const LineLayout,
         index: usize,
         x: f32,
@@ -454,8 +438,8 @@ pub const TextView = struct {
         const offset = self.cursor - self.document.buffer.lineStart(index);
         return .solid(.{
             x + @round(caretX(entry.carets.items, offset)),
-            baseline - @round(atlas.ascent),
-        }, .{ @round(caret_width * atlas.scale), @round(atlas.line_height) });
+            baseline - @round(cx.atlas.ascent),
+        }, .{ @round(caret_width * cx.atlas.scale), @round(cx.atlas.line_height) });
     }
 
     /// `x` and `top` are the origin the layout was placed at, and `point` is in
@@ -463,12 +447,12 @@ pub const TextView = struct {
     ///
     /// A click below the last line or right of a line's end lands on the nearest
     /// place the caret can go, which is what makes dragging past the end behave.
-    fn moveCaretTo(self: *TextView, atlas: *GlyphAtlas, point: [2]f32) !void {
+    fn moveCaretTo(self: *TextView, cx: *Context, point: [2]f32) !void {
         // Nothing has been laid out, so there is nothing on screen to click.
         if (self.document.lines.items.len == 0) return;
 
-        const at = self.origin(atlas);
-        const row = (point[1] - at[1] + self.scroll) / atlas.line_height;
+        const at = self.origin(cx);
+        const row = (point[1] - at[1] + self.scroll) / cx.atlas.line_height;
         const index = if (row < 0)
             0
         else
@@ -477,7 +461,7 @@ pub const TextView = struct {
         // A click lands on a line that was drawn, but the row arithmetic
         // clamps, and what it clamps to need not have been.
         const entry = &self.document.lines.items[index];
-        if (!entry.shaped) try atlas.shapeLine(try self.document.buffer.lineSlice(index), entry);
+        if (!entry.shaped) try cx.atlas.shapeLine(try self.document.buffer.lineSlice(index), entry);
 
         self.cursor = self.document.buffer.lineStart(index) + caretOffset(entry.carets.items, point[0] - at[0]);
     }
