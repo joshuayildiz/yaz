@@ -498,7 +498,7 @@ they have to patch the line index, so they return it as an `Edit` and the cache
 gets the same splice. The buffer never learns that shaping exists; the atlas
 never learns that a document does.
 
-Both live inside `TextView`, so an edit and its splice are one call — the only
+Both live inside `Document`, so an edit and its splice are one call — the only
 real way to keep two structures indexed the same way from drifting apart.
 
 Measured on a synthetic Latin document, ReleaseFast, native x86-64. This is all
@@ -821,10 +821,11 @@ asked without the other — shaping decides which glyphs exist, rasterizing deci
 where they land. It shapes one line at a time, into that line's own coordinates,
 and knows nothing about documents.
 
-`text_view.zig` holds a document beside the layout of its lines. The cache
-belongs to a view rather than to a font: one atlas serves every document, and
-each view caches its own lines. One struct is also what makes them impossible to
-get out of step.
+`components/text_view.zig` owns a document and adds what a *view* of one has: a
+caret, a scroll offset, a scrollbar, and the rect all three are measured from. It
+is the only thing that turns a click into a byte offset. Pointing it at another
+file hands the whole document back rather than dropping it, which is why looking
+away from one and returning to it reshapes nothing.
 
 `renderer.zig` is handed a finished array of quads and knows nothing else: not
 what they spell, not which line each came from, not that shaping happened.

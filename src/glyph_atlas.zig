@@ -8,9 +8,9 @@
 //! so it is the only thing that can say what to sample.
 //!
 //! What is not here is which lines a document has and which of them have
-//! changed. That belongs to a view of a document rather than to a font: one
-//! atlas serves every document, and each view of one caches its own lines. See
-//! components/text_view.zig.
+//! changed. That belongs to the document rather than to a font: one atlas serves
+//! every document, and each document caches its own shaped lines. See
+//! document.zig.
 
 const std = @import("std");
 const builtin = @import("builtin");

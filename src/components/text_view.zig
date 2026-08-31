@@ -1,11 +1,10 @@
-//! A view of a document: the text, where the caret sits in it, and the shaped
-//! layout of every line.
+//! A view of a document: where the caret sits in it, how far down it is being
+//! looked at, and the scrollbar that says so.
 //!
-//! The layout cache lives here rather than with the atlas because it belongs to
-//! a view rather than to a font. One atlas serves every document; each view of
-//! one caches its own lines. Holding the document beside the cache is also what
-//! makes them impossible to get out of step -- an edit and the splice that
-//! answers it are one call, not two that a caller has to remember to pair.
+//! The document is owned rather than pointed at, and everything derived from the
+//! bytes -- the line index, the shaped layout of every line -- lives on it. What
+//! a view adds is a position and a rect, which is also all it has to hand over
+//! when it is pointed at another file. See document.zig.
 
 const std = @import("std");
 
@@ -55,8 +54,8 @@ const bar_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.scrollb
 
 /// Where a reader was in a file: what the caret was on, and what was on screen.
 ///
-/// Kept by whoever outlives the document, because reopening a view throws the
-/// document away and this has to survive that.
+/// Kept by whoever outlives the view, since a view shows one file at a time and
+/// this is the half of the last one that the document itself does not hold.
 pub const Position = struct {
     cursor: usize,
     scroll: f32,
@@ -127,13 +126,9 @@ pub const TextView = struct {
         };
     }
 
-    /// Points this view at another file, at `was` if this file has been looked
-    /// at before and at the top if it has not.
-    ///
-    /// Nothing else of the old one survives: the document goes and its layout
-    /// cache with it.
     /// Points this view at `document`, taking ownership of it, and hands back
-    /// what it was showing for the caller to keep or throw away.
+    /// what it was showing for the caller to keep or throw away. `was` is where
+    /// this file was last looked at, or null to start at the top.
     ///
     /// The document is passed in rather than made here so that one already in
     /// memory can be handed straight back: everything expensive about it -- the
