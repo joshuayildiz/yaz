@@ -3,10 +3,37 @@
 Known problems, written down when found rather than when fixed. Each one says
 what is wrong, why it has been left alone, and what would settle it.
 
-Nothing here is urgent. Neither entry below has been observed: the first is
-reasoned from what the atlas costs at a scale nobody here has run it at, and the
-second from reading SDL's headers, so the first step for each is to find out
-whether it is real.
+The first entry below is real and reproducible. The other two have not been
+observed: one is reasoned from what the atlas costs at a scale nobody here has
+run it at, the other from reading SDL's headers, so the first step for each is
+to find out whether it is real.
+
+---
+
+## Edits can hide in a file that is not on screen
+
+**Where:** `src/main.zig`, `App.park`.
+
+There is still no way to save, and a document now survives being looked away
+from. Together those mean typing into a file, opening another, and losing the
+first edit on close without ever seeing a sign of it. Before documents were
+parked the edit died at the switch, which was worse but at least visible.
+
+Nothing anywhere says a parked file has been changed. The finder lists paths and
+the window titles the first one, and neither knows the difference between a file
+as it is on disk and a file with an hour of typing in it.
+
+**Left alone because** the answer is saving, not a warning about not saving.
+Marking modified files would be work thrown away the moment writing to disk
+exists, and a warning that a file cannot be saved is not much of a warning.
+
+**To assess:** type into a file, open another through the finder, and close the
+window. Nothing asks, and nothing is written.
+
+**Likely fix:** writing to disk, which is what the README already says is
+missing. Once a document can be saved, a modified flag on it has somewhere to
+be shown -- the finder's rows and the window title are both already built out of
+per-file information.
 
 ---
 
