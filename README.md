@@ -90,14 +90,22 @@ yaz a.md b.md     # both, in equal columns
 Any number of paths, in equal columns left to right in the order named; the
 window takes its title from the first. A **tab bar** runs along the top with one
 tab per file open in the window — the ones named here and the ones picked with
-cmd+P — and pressing a tab puts that file in the column that has the keyboard.
-**cmd+1** to **cmd+9** do the same for the first nine of them (ctrl elsewhere,
-and either works on any platform). A file already in a column is focused rather
-than opened twice, so on a window that is showing three files the bindings move
-the keyboard between the columns.
+cmd+P.
+
+**Pressing a tab shows that file and nothing else**, and **cmd+1** to **cmd+9**
+do the same for the first nine of them (ctrl elsewhere, and either works on any
+platform). Choosing one of something is choosing it instead of the rest, so the
+other columns go back to being open but not on screen — nothing is closed.
+
+A tab says two things at once, because with the window split they have different
+answers. **Its ground says whether the file is on screen**: lifted out of the
+strip for a file in a column, recessed into it for one that is only open.
+**Its name's colour says whether it has the keyboard**: black for the one being
+typed into, grey for the rest.
 
 **cmd+alt+1** to **cmd+alt+9** put that file beside what is already split, or
-take it away again when it is already there. Taking one away is not closing it:
+take it away again when it is already there — the one binding that adds a column
+rather than replacing what is there. Taking one away is not closing it:
 the file keeps its tab and its document is parked, so putting it back costs
 nothing and it lands where it was, since the columns follow the bar's order. The
 last column stays — something has to be there to type into.

@@ -192,7 +192,11 @@ fn App(comptime Stack: type) type {
                 .tab => |which| if (comptime Stack.has(Workspace)) {
                     const tabs = self.stack.get(Workspace).get(Tabs);
                     if (tabs.nth(which)) |path| {
-                        try self.act(.{ .open = try self.gpa.dupe(u8, path) });
+                        // Copied, because pointing a column at it frees the
+                        // bar's copy when the file it displaces is parked.
+                        const wanted = try self.gpa.dupe(u8, path);
+                        defer self.gpa.free(wanted);
+                        try self.selectOnly(wanted);
                     }
                     return;
                 },
@@ -221,14 +225,7 @@ fn App(comptime Stack: type) type {
                 },
                 .open => |path| {
                     defer self.gpa.free(path);
-
-                    // A panel that opens something is done with the screen. The
-                    // tab bar is not a panel, and lowering the workspace would
-                    // put the finder in front of it.
-                    if (comptime Stack.has(Finder)) {
-                        if (self.stack.inFront(Finder)) self.stack.lowerFront();
-                    }
-
+                    self.dismissPanel();
                     self.dirty = true;
                     if (comptime Stack.has(Workspace)) {
                         const workspace = self.stack.get(Workspace);
@@ -236,10 +233,14 @@ fn App(comptime Stack: type) type {
 
                         // Choosing a file is choosing to read it, so the
                         // keyboard follows it into the column it landed in --
-                        // whether the choice came from the bar or from the
-                        // finder, and wherever the press that made it happened.
+                        // wherever the press that chose it happened.
                         workspace.focusOn(Views);
                     }
+                },
+                .only => |path| {
+                    defer self.gpa.free(path);
+                    self.dirty = true;
+                    if (comptime Stack.has(Workspace)) try self.selectOnly(path);
                 },
             }
         }
@@ -283,6 +284,47 @@ fn App(comptime Stack: type) type {
             errdefer document.deinit();
 
             try self.park(try view.swap(document, path, was, &self.renderer.atlas));
+        }
+
+        /// Puts a panel away once it has opened something. The tab bar is not a
+        /// panel, and lowering the workspace would put the finder in front of
+        /// it, so this asks which is in front rather than lowering whatever is.
+        fn dismissPanel(self: *Self) void {
+            if (comptime Stack.has(Finder)) {
+                if (self.stack.inFront(Finder)) self.stack.lowerFront();
+            }
+        }
+
+        /// Shows the nth file on the bar and nothing else: every other column
+        /// goes back to being open but not on screen.
+        ///
+        /// Choosing one of something is choosing it instead of the rest, which
+        /// is what makes this the plain binding and `cmd+alt` the one that adds.
+        fn selectOnly(self: *Self, path: []const u8) !void {
+            const workspace = self.stack.get(Workspace);
+            const views = workspace.get(Views);
+
+            self.dismissPanel();
+
+            // Down to one column, keeping the one already showing it if there
+            // is one. Whatever is taken away is parked, not closed.
+            var column: usize = 0;
+            while (views.items.items.len > 1) {
+                const named = views.items.items[column].path;
+                if (named != null and std.mem.eql(u8, named.?, path)) {
+                    column += 1;
+                    continue;
+                }
+                var gone = views.remove(column);
+                try self.park(gone.retire());
+            }
+
+            views.focus = 0;
+            workspace.focusOn(Views);
+            // Points the one that is left at the file, or does nothing when it
+            // is the one that was kept.
+            try self.reveal(path);
+            self.dirty = true;
         }
 
         /// Puts the nth file on the bar beside what is already split, or takes
@@ -450,9 +492,13 @@ fn App(comptime Stack: type) type {
 
                 // Which files have been changed, asked of the documents that
                 // hold them: a document is either in a column or parked, and
-                // the bar lists both.
+                // the bar lists both. Which are on screen comes from the same
+                // walk, since that is what being in a column means.
+                tabs.forgetColumns();
                 for (views.items.items) |*view| {
-                    if (view.path) |named| tabs.mark(named, view.document.modified);
+                    const named = view.path orelse continue;
+                    tabs.columnShows(named);
+                    tabs.mark(named, view.document.modified);
                 }
                 var resting = self.parked.iterator();
                 while (resting.next()) |entry| {

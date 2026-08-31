@@ -11,8 +11,11 @@ pub const Intent = union(enum) {
     nothing,
     /// I am done being in front. Put me back where I was.
     dismiss,
-    /// Put this file in front of the reader. Whoever takes it owns the path.
+    /// Put this file in front of the reader, in whichever column has the
+    /// keyboard. Whoever takes it owns the path.
     open: []u8,
+    /// Show this file and nothing else. Whoever takes it owns the path.
+    only: []u8,
 };
 
 /// Already in pixels by the time one of these is made, so nothing that handles

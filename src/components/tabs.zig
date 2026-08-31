@@ -34,9 +34,12 @@ const advance = @import("../text.zig").advance;
 /// Below the finder's 3 and above, and never over a document: the bar has the
 /// top strip to itself. The ground and the rule under it do not overlap, so they
 /// share a layer; the tab in front covers both and needs one of its own.
-const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.panel_colour };
+/// The strip is recessed so that a tab lifted out of it reads as lifted. Against
+/// the panel colour it did not: three parts in a hundred is not a difference
+/// anyone can see.
+const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.chip_colour };
 const rule_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.edge_colour };
-const front_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.background };
+const shown_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.background };
 const seam_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.edge_colour };
 const name_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = config.text_colour };
 const other_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = config.muted_colour };
@@ -76,6 +79,11 @@ pub const Tabs = struct {
     /// rather than worked out here: which documents exist is not its business.
     unsaved: std.ArrayList(bool) = .empty,
 
+    /// Whether each file is in a column. Several are once the window is split,
+    /// so this is not the same question as which one has the keyboard -- a tab
+    /// says both, with the ground it is on and the colour of its name.
+    in_column: std.ArrayList(bool) = .empty,
+
     /// The mark itself, shaped once. Its width is reserved on every tab whether
     /// it is drawn or not, so a file does not shift the bar by being typed into,
     /// and again on the other side of the name, so the name sits in the middle
@@ -103,6 +111,7 @@ pub const Tabs = struct {
         for (self.names.items) |*name| name.deinit(self.gpa);
         self.names.deinit(self.gpa);
         self.unsaved.deinit(self.gpa);
+        self.in_column.deinit(self.gpa);
         self.rects.deinit(self.gpa);
         self.bullet.deinit(self.gpa);
     }
@@ -121,6 +130,8 @@ pub const Tabs = struct {
         try self.names.append(self.gpa, .{});
         errdefer _ = self.names.pop();
         try self.unsaved.append(self.gpa, false);
+        errdefer _ = self.unsaved.pop();
+        try self.in_column.append(self.gpa, false);
         try self.rects.append(self.gpa, .{ .x = 0, .y = 0, .width = 0, .height = 0 });
         self.dirty = true;
     }
@@ -150,6 +161,7 @@ pub const Tabs = struct {
             var name = self.names.orderedRemove(which);
             name.deinit(self.gpa);
             _ = self.unsaved.orderedRemove(which);
+            _ = self.in_column.orderedRemove(which);
             _ = self.rects.orderedRemove(which);
 
             self.dirty = true;
@@ -167,6 +179,21 @@ pub const Tabs = struct {
                 self.dirty = true;
             }
             return;
+        }
+    }
+
+    /// Forgets which files are in columns. Asked again every frame rather than
+    /// kept in step, because a file leaves a column without the bar being told.
+    pub fn forgetColumns(self: *Tabs) void {
+        for (self.in_column.items) |*shown| shown.* = false;
+    }
+
+    /// Says a column is showing `path`. Several may be.
+    pub fn columnShows(self: *Tabs, path: []const u8) void {
+        const which = self.indexOf(path) orelse return;
+        if (!self.in_column.items[which]) {
+            self.in_column.items[which] = true;
+            self.dirty = true;
         }
     }
 
@@ -221,9 +248,10 @@ pub const Tabs = struct {
 
         for (self.rects.items, 0..) |rect, which| {
             if (!rect.contains(at)) continue;
-            // The same answer the finder gives, so the same code above acts on
-            // it: whoever takes the path owns it.
-            return .{ .open = try self.gpa.dupe(u8, self.paths.items[which]) };
+            // Pressing a tab is choosing that file over the others, which is
+            // what cmd+N means too. The finder answers `open` instead: picking
+            // a file there is not a statement about the ones already on screen.
+            return .{ .only = try self.gpa.dupe(u8, self.paths.items[which]) };
         }
         return .nothing;
     }
@@ -272,8 +300,12 @@ pub const Tabs = struct {
             // The one in front is the colour of the page. It stops short of the
             // rule along the bottom rather than covering it, so the bar's edge
             // runs unbroken under every tab.
-            const in_front = which == self.front;
-            if (in_front) try painter.add(front_key, .solid(
+            // Two signals, because there are two questions and with the window
+            // split they have different answers: the ground says whether the
+            // file is on screen at all, and the name's colour says whether it is
+            // the one being typed into.
+            const on_screen = self.in_column.items[which];
+            if (on_screen) try painter.add(shown_key, .solid(
                 .{ left, self.rect.y },
                 .{ width, @max(0, self.rect.height - line) },
             ));
@@ -285,7 +317,7 @@ pub const Tabs = struct {
                 .{ line, @max(0, self.rect.height - line) },
             ));
 
-            const key = if (in_front) name_key else other_key;
+            const key = if (which == self.front) name_key else other_key;
             const baseline = @round(self.rect.y + @round(down * atlas.scale) + atlas.ascent);
 
             // The mark's room is taken whether or not it is drawn, so a file
