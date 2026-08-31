@@ -22,6 +22,9 @@ const Key = painter_mod.Key;
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
+const drawLine = @import("../text.zig").draw;
+const advance = @import("../text.zig").advance;
+
 const tools = @import("../tools.zig");
 
 /// The card is behind everything, the accent and the chip on it, the text on top
@@ -57,23 +60,13 @@ const Piece = struct {
         self.layout.deinit(gpa);
     }
 
-    /// How wide the shaped text is. `shapeLine` leaves a last caret at the pen
-    /// after the final glyph, which is exactly the line's advance.
     fn width(self: *const Piece) f32 {
-        const carets = self.layout.carets.items;
-        return if (carets.len == 0) 0 else carets[carets.len - 1].x;
+        return advance(&self.layout);
     }
 
     fn draw(self: *const Piece, painter: *Painter, at: [2]f32) !void {
         const key: Key = .{ .layer = text_layer, .pipeline = .glyphs, .colour = self.colour };
-        try painter.reserve(self.layout.sprites.items.len);
-        for (self.layout.sprites.items) |sprite| {
-            try painter.add(key, .{
-                .dest = .{ sprite.dest[0] + at[0], sprite.dest[1] + at[1] },
-                .source = sprite.source,
-                .size = sprite.size,
-            });
-        }
+        try drawLine(painter, key, &self.layout, at);
     }
 };
 

@@ -22,6 +22,9 @@ const Key = painter_mod.Key;
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
+const drawLine = @import("../text.zig").draw;
+const advance = @import("../text.zig").advance;
+
 const tools = @import("../tools.zig");
 
 /// Above a view's 0, 1 and 2, so the overlay covers the text rather than
@@ -30,7 +33,12 @@ const scrim_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = config.scrim
 const rule_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.rule_colour };
 const accent_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.bad_colour };
 const caret_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.caret_colour };
-const text_layer = 5;
+
+/// Words, above both. Which of the three a row is set in is what says whether it
+/// is the chosen one, so the colours are keys rather than an argument.
+const text_key: Key = .{ .layer = 5, .pipeline = .glyphs, .colour = config.text_colour };
+const muted_key: Key = .{ .layer = 5, .pipeline = .glyphs, .colour = config.muted_colour };
+const faint_key: Key = .{ .layer = 5, .pipeline = .glyphs, .colour = config.faint_colour };
 
 /// The column the whole thing is set in, as a share of the window, and where it
 /// starts down it. Nothing is boxed: the scrim is the ground, and these two
@@ -331,7 +339,7 @@ pub const Finder = struct {
         // far end of the same measure.
         const query_baseline = @round(top + atlas.ascent);
         if (!self.query_layout.shaped) try atlas.shapeLine(self.query.items, &self.query_layout);
-        try put(painter, &self.query_layout, .{ left, query_baseline }, config.text_colour);
+        try drawLine(painter, text_key, &self.query_layout, .{ left, query_baseline });
 
         const caret_x = @round(left + advance(&self.query_layout));
         try painter.add(caret_key, .solid(
@@ -340,11 +348,11 @@ pub const Finder = struct {
         ));
 
         try self.shapeCount(atlas);
-        try put(
+        try drawLine(
             painter,
+            faint_key,
             &self.count_layout,
             .{ @round(right - advance(&self.count_layout)), query_baseline },
-            config.faint_colour,
         );
 
         // A hairline across the measure, which is what says the query above it
@@ -389,26 +397,14 @@ pub const Finder = struct {
                 ));
             }
 
-            try put(
+            try drawLine(
                 painter,
+                if (chosen_row) text_key else muted_key,
                 &row.name,
                 .{ left, baseline },
-                if (chosen_row) config.text_colour else config.muted_colour,
             );
-            try put(
-                painter,
-                &row.directory,
-                .{ @round(right - directory_width), baseline },
-                config.faint_colour,
-            );
+            try drawLine(painter, faint_key, &row.directory, .{ @round(right - directory_width), baseline });
         }
-    }
-
-    /// How wide a shaped line is. The last caret sits at the pen after the final
-    /// glyph, which is the line's advance.
-    fn advance(layout: *const LineLayout) f32 {
-        const carets = layout.carets.items;
-        return if (carets.len == 0) 0 else carets[carets.len - 1].x;
     }
 
     fn shapeCount(self: *Finder, atlas: *GlyphAtlas) !void {
@@ -450,17 +446,5 @@ pub const Finder = struct {
             try atlas.shapeLine(directory, &row.directory);
         }
         self.laid_out = true;
-    }
-
-    fn put(painter: *Painter, layout: *const LineLayout, at: [2]f32, colour: [4]f32) !void {
-        const key: Key = .{ .layer = text_layer, .pipeline = .glyphs, .colour = colour };
-        try painter.reserve(layout.sprites.items.len);
-        for (layout.sprites.items) |sprite| {
-            try painter.add(key, .{
-                .dest = .{ sprite.dest[0] + at[0], sprite.dest[1] + at[1] },
-                .source = sprite.source,
-                .size = sprite.size,
-            });
-        }
     }
 };

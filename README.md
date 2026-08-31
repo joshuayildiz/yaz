@@ -741,6 +741,7 @@ src/
     finder.zig     #   cmd+P, driving rg and fzf
     healthcheck.zig#   what is shown when a tool is missing
   painter.zig      # what a frame is made of, before the GPU hears about it
+  text.zig         # placing a shaped line, and how wide one is
   tools.zig        # the pinned binaries, and installing them
   event.zig        # what happened, in our words rather than SDL's
   document.zig     # the gap buffer, the line index, the layout cache
@@ -763,10 +764,11 @@ the order to read it in:
 | `glyph_atlas.zig` | config, sdl |
 | `document.zig` | glyph_atlas |
 | `painter.zig` | glyph_atlas |
+| `text.zig` | glyph_atlas, painter |
 | `renderer.zig` | config, sdl, glyph_atlas, painter |
 | `tools.zig` | nothing of ours |
-| `components/text_view.zig` | config, document, event, glyph_atlas, painter |
-| `components/finder.zig`, `components/healthcheck.zig` | config, event, glyph_atlas, painter, tools |
+| `components/text_view.zig` | config, document, event, glyph_atlas, painter, text |
+| `components/finder.zig`, `components/healthcheck.zig` | config, event, glyph_atlas, painter, text, tools |
 | `main.zig` | all of the above |
 
 **No component imports another.** Each is given a rect, told what happened in it

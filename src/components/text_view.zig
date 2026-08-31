@@ -17,6 +17,7 @@ const Painter = painter_mod.Painter;
 pub const Rect = painter_mod.Rect;
 
 const Document = @import("../document.zig").Document;
+const drawLine = @import("../text.zig").draw;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Caret = glyph_atlas.Caret;
@@ -379,14 +380,7 @@ pub const TextView = struct {
             std.debug.assert(entry.bytes == self.document.buffer.lineLength(index));
 
             const baseline = @round(self.rect.y + lineTop(index, top, self.scroll, atlas.line_height) + atlas.ascent);
-            try painter.reserve(entry.sprites.items.len);
-            for (entry.sprites.items) |sprite| {
-                try painter.add(glyph_key, .{
-                    .dest = .{ sprite.dest[0] + x, sprite.dest[1] + baseline },
-                    .source = sprite.source,
-                    .size = sprite.size,
-                });
-            }
+            try drawLine(painter, glyph_key, entry, .{ x, baseline });
 
             if (index == caret_line) caret = self.caretOn(atlas, entry, index, x, baseline);
         }
