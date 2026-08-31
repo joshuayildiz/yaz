@@ -3,6 +3,7 @@ const std = @import("std");
 const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const TextView = @import("./text_view.zig").TextView;
+const Position = @import("./text_view.zig").Position;
 const Event = @import("./event.zig").Event;
 const Painter = @import("./painter.zig").Painter;
 const Rect = @import("./painter.zig").Rect;
@@ -150,6 +151,11 @@ const App = struct {
     /// Null only alongside `health`, for the same reason.
     finder: ?Finder = null,
 
+    /// Where the reader was in each file they have looked at, by path. Kept
+    /// here because reopening a view throws its document away, and this has to
+    /// outlive that. Keys are owned.
+    positions: std.StringHashMapUnmanaged(Position) = .empty,
+
     /// Left to right across the window. Empty only while `health` is set; a
     /// document nobody named is still a document.
     views: std.ArrayList(TextView) = .empty,
@@ -167,6 +173,10 @@ const App = struct {
     dirty: bool = true,
 
     fn deinit(self: *App) void {
+        var keys = self.positions.keyIterator();
+        while (keys.next()) |key| self.gpa.free(key.*);
+        self.positions.deinit(self.gpa);
+
         if (self.finder) |*finder| finder.deinit();
         if (self.health) |*health| health.deinit();
         for (self.views.items) |*view| view.deinit();
@@ -319,7 +329,27 @@ const App = struct {
         var file = try open(self.gpa, self.io, path);
         defer file.deinit(self.gpa);
 
-        try self.views.items[self.focus].reopen(file.text, path);
+        // Before the view is pointed anywhere else, because afterwards there is
+        // nothing left to ask where it was.
+        try self.remember(&self.views.items[self.focus]);
+
+        try self.views.items[self.focus].reopen(
+            file.text,
+            path,
+            self.positions.get(path),
+            &self.renderer.atlas,
+        );
+    }
+
+    /// Records where a view is, so that coming back to the file it is showing
+    /// comes back to the same place in it.
+    fn remember(self: *App, view: *const TextView) !void {
+        const path = view.path orelse return;
+
+        const slot = try self.positions.getOrPut(self.gpa, path);
+        // The key borrows the view's path, which is about to be freed.
+        if (!slot.found_existing) slot.key_ptr.* = try self.gpa.dupe(u8, path);
+        slot.value_ptr.* = view.position();
     }
 
     fn redraw(self: *App) !void {

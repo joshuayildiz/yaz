@@ -52,6 +52,15 @@ const glyph_key: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = config.text
 const caret_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.caret_colour };
 const bar_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.scrollbar_colour };
 
+/// Where a reader was in a file: what the caret was on, and what was on screen.
+///
+/// Kept by whoever outlives the document, because reopening a view throws the
+/// document away and this has to survive that.
+pub const Position = struct {
+    cursor: usize,
+    scroll: f32,
+};
+
 pub const TextView = struct {
     gpa: std.mem.Allocator,
     document: Document,
@@ -108,12 +117,18 @@ pub const TextView = struct {
         };
     }
 
-    /// Points this view at another file.
+    /// Points this view at another file, at `was` if this file has been looked
+    /// at before and at the top if it has not.
     ///
-    /// Nothing of the old one survives but the room the view was given: the
-    /// document goes, and its layout cache with it, and the caret and the
-    /// scroll go back to the top, because they described somewhere else.
-    pub fn reopen(self: *TextView, text: []const u8, path: []const u8) !void {
+    /// Nothing else of the old one survives: the document goes and its layout
+    /// cache with it.
+    pub fn reopen(
+        self: *TextView,
+        text: []const u8,
+        path: []const u8,
+        was: ?Position,
+        atlas: *const GlyphAtlas,
+    ) !void {
         var document = try Document.init(self.gpa, text);
         errdefer document.deinit();
         const named = try self.gpa.dupe(u8, path);
@@ -123,12 +138,29 @@ pub const TextView = struct {
 
         self.document = document;
         self.path = named;
-        self.cursor = 0;
-        self.scroll = 0;
         self.pending = 0;
+        // Not set even when the caret is restored off screen: the remembered
+        // scroll is what was being looked at, and following the caret would
+        // overrule it.
         self.follow_caret = false;
         self.drag = null;
         self.dirty = true;
+
+        const seen = was orelse {
+            self.cursor = 0;
+            self.scroll = 0;
+            return;
+        };
+
+        // Clamped, both of them: the file may have been edited on disk since it
+        // was last looked at, and an offset past the end of it is not a caret.
+        self.cursor = @min(seen.cursor, self.document.buffer.byteLen());
+        self.scrollTo(seen.scroll, atlas);
+    }
+
+    /// Where this view is, to be given back to `reopen` later.
+    pub fn position(self: *const TextView) Position {
+        return .{ .cursor = self.cursor, .scroll = self.scroll };
     }
 
     pub fn deinit(self: *TextView) void {

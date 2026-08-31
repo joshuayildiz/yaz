@@ -76,7 +76,7 @@ pub const Buffer = struct {
         self.gpa.free(self.bytes);
     }
 
-    fn byteLen(self: *const Buffer) usize {
+    pub fn byteLen(self: *const Buffer) usize {
         return self.bytes.len - (self.gap_end - self.gap_start);
     }
 
