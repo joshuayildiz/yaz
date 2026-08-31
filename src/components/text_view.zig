@@ -61,6 +61,15 @@ pub const Position = struct {
     scroll: f32,
 };
 
+/// What a view was showing before it was pointed somewhere else. The caller owns
+/// all of it, and can hand the document straight back later rather than reading
+/// the file again.
+pub const Retired = struct {
+    document: Document,
+    path: ?[]u8,
+    position: Position,
+};
+
 pub const TextView = struct {
     gpa: std.mem.Allocator,
     document: Document,
@@ -122,19 +131,27 @@ pub const TextView = struct {
     ///
     /// Nothing else of the old one survives: the document goes and its layout
     /// cache with it.
-    pub fn reopen(
+    /// Points this view at `document`, taking ownership of it, and hands back
+    /// what it was showing for the caller to keep or throw away.
+    ///
+    /// The document is passed in rather than made here so that one already in
+    /// memory can be handed straight back: everything expensive about it -- the
+    /// buffer, the line index, every line already shaped -- survives being
+    /// looked away from.
+    pub fn swap(
         self: *TextView,
-        text: []const u8,
+        document: Document,
         path: []const u8,
         was: ?Position,
         atlas: *const GlyphAtlas,
-    ) !void {
-        var document = try Document.init(self.gpa, text);
-        errdefer document.deinit();
+    ) !Retired {
         const named = try self.gpa.dupe(u8, path);
 
-        self.document.deinit();
-        if (self.path) |old| self.gpa.free(old);
+        const retired: Retired = .{
+            .document = self.document,
+            .path = self.path,
+            .position = self.position(),
+        };
 
         self.document = document;
         self.path = named;
@@ -149,16 +166,17 @@ pub const TextView = struct {
         const seen = was orelse {
             self.cursor = 0;
             self.scroll = 0;
-            return;
+            return retired;
         };
 
         // Clamped, both of them: the file may have been edited on disk since it
         // was last looked at, and an offset past the end of it is not a caret.
         self.cursor = @min(seen.cursor, self.document.buffer.byteLen());
         self.scrollTo(seen.scroll, atlas);
+        return retired;
     }
 
-    /// Where this view is, to be given back to `reopen` later.
+    /// Where this view is, to be given back to `swap` later.
     pub fn position(self: *const TextView) Position {
         return .{ .cursor = self.cursor, .scroll = self.scroll };
     }

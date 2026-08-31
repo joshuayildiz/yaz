@@ -263,10 +263,32 @@ which still pays for `getAlloc` -- once now, rather than twice.
 **Check:** time `tools.missing` around the call. Anything near 26ms means the
 per-tool path lookup is back.
 
+## 13. Keeping a file that was looked away from
+
+Switching files used to free the document and read the file again on the way
+back, which threw away a gap buffer, a line index, and every line already
+shaped, to buy nothing. `App` keeps it instead, by path, and hands it straight
+back.
+
+Measured on an M2: a first visit is **1240us**, a return **95us**, and the
+return reshapes **0 lines** where the first visit shaped 51. A document is in
+exactly one view or parked, never both, so nothing has to be kept in step.
+
+**Costs memory, and is not bounded.** Nine files of this codebase -- 5050 lines
+-- park in about 520KB: 205KB of text and 315KB of cache entries, at 64 bytes a
+line whether or not that line was ever drawn, plus the sprites of the ones that
+were. A session that visits a hundred files would hold a few MB.
+
+**Check:** count `shapeLine` calls across a return trip. Anything above zero
+means the document is being rebuilt rather than handed back.
+
 ## Not optimizations yet
 
 Stated so they are not mistaken for finished work:
 
+- **Nothing evicts a parked document.** Every file visited stays in memory for
+  the life of the window. Fine for a working set of a few dozen files; a cap
+  would be the fix if it stops being.
 - **Startup pays ~11ms to spawn both tools.** The check is that they *run*,
   which is what catches a truncated download or a wrong-architecture binary --
   a stat would pass both. Recording the result and re-checking only when the

@@ -141,12 +141,13 @@ own matching, 63ms for 50,000 candidates, which is the work fzf does anywhere.
 
 Returning on a file that is **already open focuses that view** rather than
 opening a second copy of it. Otherwise the focused view is pointed at the new
-file, and the old document goes with its layout cache.
+file, and the one it was showing is **kept rather than thrown away** — its
+buffer, its line index, every line already shaped, and where the caret and the
+scroll were.
 
-**Where you were in a file is remembered**, so coming back to one comes back to
-the same caret and the same scroll rather than to the top. It is kept per path
-by `App`, because reopening a view throws its document away and this has to
-outlive that. Nothing is written to disk, so it lasts as long as the window.
+So a file is read from disk once per session. Coming back to one is 95µs and
+reshapes nothing, against 1.2ms and a full re-read the first time. Nothing is
+written to disk; it all lasts as long as the window.
 
 ## Platform notes
 

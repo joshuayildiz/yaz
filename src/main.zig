@@ -4,6 +4,8 @@ const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const TextView = @import("./components/text_view.zig").TextView;
 const Position = @import("./components/text_view.zig").Position;
+const Retired = @import("./components/text_view.zig").Retired;
+const Document = @import("./document.zig").Document;
 const Event = @import("./event.zig").Event;
 const Painter = @import("./painter.zig").Painter;
 const Rect = @import("./painter.zig").Rect;
@@ -137,6 +139,12 @@ fn pointer(event: Event) ?[2]f32 {
     };
 }
 
+/// A file that is in memory but not on screen.
+const Parked = struct {
+    document: Document,
+    position: Position,
+};
+
 /// Together because the event watch reaches them from behind one `void *`.
 const App = struct {
     gpa: std.mem.Allocator,
@@ -151,10 +159,13 @@ const App = struct {
     /// Null only alongside `health`, for the same reason.
     finder: ?Finder = null,
 
-    /// Where the reader was in each file they have looked at, by path. Kept
-    /// here because reopening a view throws its document away, and this has to
-    /// outlive that. Keys are owned.
-    positions: std.StringHashMapUnmanaged(Position) = .empty,
+    /// Files that have been looked at and are not on screen now, by path.
+    ///
+    /// Kept whole rather than re-read: a document is a buffer, a line index and
+    /// every line already shaped, and looking away from a file is no reason to
+    /// throw that away and pay for it again on the way back. Keys are owned, and
+    /// a document is either here or in exactly one view, never both.
+    parked: std.StringHashMapUnmanaged(Parked) = .empty,
 
     /// Left to right across the window. Empty only while `health` is set; a
     /// document nobody named is still a document.
@@ -173,9 +184,12 @@ const App = struct {
     dirty: bool = true,
 
     fn deinit(self: *App) void {
-        var keys = self.positions.keyIterator();
-        while (keys.next()) |key| self.gpa.free(key.*);
-        self.positions.deinit(self.gpa);
+        var resting = self.parked.iterator();
+        while (resting.next()) |entry| {
+            self.gpa.free(entry.key_ptr.*);
+            entry.value_ptr.document.deinit();
+        }
+        self.parked.deinit(self.gpa);
 
         if (self.finder) |*finder| finder.deinit();
         if (self.health) |*health| health.deinit();
@@ -323,33 +337,57 @@ const App = struct {
             return;
         }
 
-        // Through `open`, so a file picked here meets the same rules as one
-        // named on the command line: the size limit, the UTF-8 check, and CRLF
-        // turned into LF.
-        var file = try open(self.gpa, self.io, path);
-        defer file.deinit(self.gpa);
+        var document: Document = undefined;
+        var was: ?Position = null;
 
-        // Before the view is pointed anywhere else, because afterwards there is
-        // nothing left to ask where it was.
-        try self.remember(&self.views.items[self.focus]);
+        if (self.parked.fetchRemove(path)) |entry| {
+            // Looked at before: everything about it is still here.
+            self.gpa.free(entry.key);
+            document = entry.value.document;
+            was = entry.value.position;
+        } else {
+            // Through `open`, so a file picked here meets the same rules as one
+            // named on the command line: the size limit, the UTF-8 check, and
+            // CRLF turned into LF.
+            var file = try open(self.gpa, self.io, path);
+            defer file.deinit(self.gpa);
+            document = try Document.init(self.gpa, file.text);
+        }
+        errdefer document.deinit();
 
-        try self.views.items[self.focus].reopen(
-            file.text,
+        const retired = try self.views.items[self.focus].swap(
+            document,
             path,
-            self.positions.get(path),
+            was,
             &self.renderer.atlas,
         );
+        try self.park(retired);
     }
 
-    /// Records where a view is, so that coming back to the file it is showing
-    /// comes back to the same place in it.
-    fn remember(self: *App, view: *const TextView) !void {
-        const path = view.path orelse return;
+    /// Keeps what a view was showing, against being asked for it again.
+    fn park(self: *App, retired: Retired) !void {
+        var leaving = retired;
 
-        const slot = try self.positions.getOrPut(self.gpa, path);
-        // The key borrows the view's path, which is about to be freed.
-        if (!slot.found_existing) slot.key_ptr.* = try self.gpa.dupe(u8, path);
-        slot.value_ptr.* = view.position();
+        const path = leaving.path orelse {
+            // A document nobody named cannot be asked for by name.
+            leaving.document.deinit();
+            return;
+        };
+        errdefer {
+            self.gpa.free(path);
+            leaving.document.deinit();
+        }
+
+        const slot = try self.parked.getOrPut(self.gpa, path);
+        if (slot.found_existing) {
+            // The same file was open in two views, which only the command line
+            // can arrange. Keep what was just put down.
+            slot.value_ptr.document.deinit();
+            self.gpa.free(path);
+        } else {
+            slot.key_ptr.* = path;
+        }
+        slot.value_ptr.* = .{ .document = leaving.document, .position = leaving.position };
     }
 
     fn redraw(self: *App) !void {
