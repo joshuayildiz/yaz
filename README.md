@@ -735,9 +735,11 @@ change nothing, which is the opposite of what the event loop is for.
 ```
 src/
   main.zig         # SDL setup, the window, the event loop, opening a file
-  text_view.zig    # scrolling, the caret, hit-testing
-  finder.zig       # cmd+P, driving rg and fzf
-  healthcheck.zig  # what is shown when a tool is missing
+  components/      # anything that is given a rect and draws in it
+    text_view.zig  #   scrolling, the caret, hit-testing
+    finder.zig     #   cmd+P, driving rg and fzf
+    healthcheck.zig#   what is shown when a tool is missing
+  painter.zig      # what a frame is made of, before the GPU hears about it
   tools.zig        # the pinned binaries, and installing them
   event.zig        # what happened, in our words rather than SDL's
   document.zig     # the gap buffer, the line index, the layout cache
@@ -759,11 +761,16 @@ the order to read it in:
 | `event.zig` | sdl |
 | `glyph_atlas.zig` | config, sdl |
 | `document.zig` | glyph_atlas |
-| `renderer.zig` | config, sdl, glyph_atlas |
-| `text_view.zig` | document, event, glyph_atlas |
+| `painter.zig` | glyph_atlas |
+| `renderer.zig` | config, sdl, glyph_atlas, painter |
 | `tools.zig` | nothing of ours |
-| `finder.zig`, `healthcheck.zig` | config, event, glyph_atlas, painter, tools |
+| `components/text_view.zig` | config, document, event, glyph_atlas, painter |
+| `components/finder.zig`, `components/healthcheck.zig` | config, event, glyph_atlas, painter, tools |
 | `main.zig` | all of the above |
+
+**No component imports another.** Each is given a rect, told what happened in it
+and asked for its quads; `App` in `main.zig` is the only thing that knows there
+is more than one. That is what the directory is saying.
 
 Where to start depends on what you are changing: what a keystroke does is
 `TextView.handle`; where text lands on screen is `TextView.layout`; what a glyph

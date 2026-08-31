@@ -10,19 +10,19 @@
 
 const std = @import("std");
 
-const config = @import("./config.zig");
-const Event = @import("./event.zig").Event;
+const config = @import("../config.zig");
+const Event = @import("../event.zig").Event;
 
-const glyph_atlas = @import("./glyph_atlas.zig");
+const glyph_atlas = @import("../glyph_atlas.zig");
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 
-const painter_mod = @import("./painter.zig");
+const painter_mod = @import("../painter.zig");
 const Key = painter_mod.Key;
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
-const tools = @import("./tools.zig");
+const tools = @import("../tools.zig");
 
 /// The card is behind everything, the accent and the chip on it, the text on top
 /// of both. Nothing within a layer overlaps.

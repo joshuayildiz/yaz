@@ -2,15 +2,15 @@ const std = @import("std");
 
 const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
-const TextView = @import("./text_view.zig").TextView;
-const Position = @import("./text_view.zig").Position;
+const TextView = @import("./components/text_view.zig").TextView;
+const Position = @import("./components/text_view.zig").Position;
 const Event = @import("./event.zig").Event;
 const Painter = @import("./painter.zig").Painter;
 const Rect = @import("./painter.zig").Rect;
 const sdl = @import("./sdl.zig");
 const tools = @import("./tools.zig");
-const Healthcheck = @import("./healthcheck.zig").Healthcheck;
-const Finder = @import("./finder.zig").Finder;
+const Healthcheck = @import("./components/healthcheck.zig").Healthcheck;
+const Finder = @import("./components/finder.zig").Finder;
 const c = sdl.c;
 
 /// The largest file yaz will open. What still costs per line of the document
@@ -642,5 +642,5 @@ test {
     // `main` is never called in a test build, so nothing references these and
     // their tests would be compiled out of the binary entirely.
     _ = @import("./renderer.zig");
-    _ = @import("./text_view.zig");
+    _ = @import("./components/text_view.zig");
 }

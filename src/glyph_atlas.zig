@@ -10,7 +10,7 @@
 //! What is not here is which lines a document has and which of them have
 //! changed. That belongs to a view of a document rather than to a font: one
 //! atlas serves every document, and each view of one caches its own lines. See
-//! text_view.zig.
+//! components/text_view.zig.
 
 const std = @import("std");
 const builtin = @import("builtin");

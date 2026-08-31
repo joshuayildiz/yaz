@@ -3,7 +3,7 @@
 //!
 //! Everything here is derived from the bytes and from nothing a view has. What
 //! a view keeps of its own is where its caret is and how far down it is
-//! looking. See text_view.zig.
+//! looking. See components/text_view.zig.
 
 const std = @import("std");
 

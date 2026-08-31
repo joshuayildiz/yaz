@@ -9,16 +9,16 @@
 
 const std = @import("std");
 
-const config = @import("./config.zig");
-const Event = @import("./event.zig").Event;
-const painter_mod = @import("./painter.zig");
+const config = @import("../config.zig");
+const Event = @import("../event.zig").Event;
+const painter_mod = @import("../painter.zig");
 const Key = painter_mod.Key;
 const Painter = painter_mod.Painter;
 pub const Rect = painter_mod.Rect;
 
-const Document = @import("./document.zig").Document;
+const Document = @import("../document.zig").Document;
 
-const glyph_atlas = @import("./glyph_atlas.zig");
+const glyph_atlas = @import("../glyph_atlas.zig");
 const Caret = glyph_atlas.Caret;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
@@ -760,6 +760,6 @@ test "the two directions agree at every boundary" {
 test {
     // Tests follow the imports: this file pulls in the document's, so a test
     // build reaches them without `main` having to know they exist.
-    _ = @import("./document.zig");
-    _ = @import("./painter.zig");
+    _ = @import("../document.zig");
+    _ = @import("../painter.zig");
 }
