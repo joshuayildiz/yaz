@@ -26,19 +26,33 @@ const tools = @import("./tools.zig");
 
 /// Above a view's 0, 1 and 2, so the overlay covers the text rather than
 /// interleaving with it.
-const panel_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = config.panel_colour };
-const selection_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.chip_colour };
-const caret_key: Key = .{ .layer = 5, .pipeline = .solid, .colour = config.caret_colour };
+const scrim_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = config.scrim_colour };
+const rule_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.rule_colour };
+const accent_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.bad_colour };
+const caret_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = config.caret_colour };
 const text_layer = 5;
 
-/// In points, scaled like the font.
-const pad = 14;
-const margin_top = 90;
-const width_share = 0.62;
+/// The column the whole thing is set in, as a share of the window, and where it
+/// starts down it. Nothing is boxed: the scrim is the ground, and these two
+/// numbers are the whole layout.
+const column_share = 0.38;
+const top_share = 0.20;
 
-/// The most results on screen at once. Fewer matches make a shorter panel
-/// rather than a panel with empty rows in it.
+/// In points, scaled like the font.
+const accent = 3;
+const gap = 12;
+
+/// Rows are set looser than body text. Air is most of what makes a list read as
+/// set rather than dumped.
+const leading = 1.45;
+
+/// The most results on screen at once.
 const visible_rows = 12;
+
+const Row = struct {
+    name: LineLayout = .{},
+    directory: LineLayout = .{},
+};
 
 pub const Finder = struct {
     gpa: std.mem.Allocator,
@@ -67,7 +81,12 @@ pub const Finder = struct {
     top_row: usize = 0,
 
     query_layout: LineLayout = .{},
-    rows: std.ArrayList(LineLayout) = .empty,
+    count_layout: LineLayout = .{},
+
+    /// A row is set on two axes: the filename flush left, the directory it is
+    /// in flush right. The name is what is being chosen, so it gets the strong
+    /// edge and the strong colour.
+    rows: std.ArrayList(Row) = .empty,
     /// Whether `rows` describes the matches currently on screen.
     laid_out: bool = false,
 
@@ -90,9 +109,13 @@ pub const Finder = struct {
 
         self.query_layout.sprites.deinit(self.gpa);
         self.query_layout.carets.deinit(self.gpa);
+        self.count_layout.sprites.deinit(self.gpa);
+        self.count_layout.carets.deinit(self.gpa);
         for (self.rows.items) |*row| {
-            row.sprites.deinit(self.gpa);
-            row.carets.deinit(self.gpa);
+            row.name.sprites.deinit(self.gpa);
+            row.name.carets.deinit(self.gpa);
+            row.directory.sprites.deinit(self.gpa);
+            row.directory.carets.deinit(self.gpa);
         }
         self.rows.deinit(self.gpa);
 
@@ -137,6 +160,7 @@ pub const Finder = struct {
 
     pub fn invalidate(self: *Finder) void {
         self.query_layout.shaped = false;
+        self.count_layout.shaped = false;
         self.laid_out = false;
         self.dirty = true;
     }
@@ -233,6 +257,7 @@ pub const Finder = struct {
         // query is drawn once -- empty, on the frame it opened -- and every
         // character typed after goes on the panel without appearing on it.
         self.query_layout.shaped = false;
+        self.count_layout.shaped = false;
 
         self.matches.clearRetainingCapacity();
         self.selected = 0;
@@ -286,63 +311,120 @@ pub const Finder = struct {
     pub fn draw(self: *Finder, atlas: *GlyphAtlas, painter: *Painter) !void {
         if (!self.showing) return;
 
-        const scale = atlas.scale;
-        const step = atlas.line_height;
-        const padding = @round(pad * scale);
-
-        const width = @round(self.rect.width * width_share);
-        const left = @round(self.rect.x + (self.rect.width - width) / 2);
-        const top = @round(self.rect.y + margin_top * scale);
-
-        // A row for the query, a gap, then as many results as there are, up to
-        // what fits.
-        const shown = @min(self.matches.items.len, visible_rows);
-        const rows_shown: f32 = @floatFromInt(shown);
-        const height = @round(2 * padding + step * (rows_shown + 2));
-
-        const panel: Rect = .{ .x = left, .y = top, .width = width, .height = height };
-        painter.clipTo(panel);
+        painter.clipTo(self.rect);
         defer painter.clipTo(null);
 
-        try painter.add(panel_key, .solid(.{ left, top }, .{ width, height }));
+        // The ground the whole thing is set on. Everything below stays legible
+        // through it, which is what keeps this an overlay rather than a
+        // different screen.
+        try painter.add(scrim_key, .solid(
+            .{ self.rect.x, self.rect.y },
+            .{ self.rect.width, self.rect.height },
+        ));
 
-        const text_left = left + padding;
-        const query_baseline = @round(top + padding + atlas.ascent);
+        const scale = atlas.scale;
+        const step = @round(atlas.line_height * leading);
+        const spacing = @round(gap * scale);
 
+        const column = @round(self.rect.width * column_share);
+        const left = @round(self.rect.x + (self.rect.width - column) / 2);
+        const right = left + column;
+        const top = @round(self.rect.y + self.rect.height * top_share);
+
+        // The query, on its own line, with what it matched said quietly at the
+        // far end of the same measure.
+        const query_baseline = @round(top + atlas.ascent);
         if (!self.query_layout.shaped) try atlas.shapeLine(self.query.items, &self.query_layout);
-        try put(painter, &self.query_layout, .{ text_left, query_baseline }, config.text_colour);
+        try put(painter, &self.query_layout, .{ left, query_baseline }, config.text_colour);
 
-        // Where the next character would land, which is the end of the query:
-        // there is no cursor movement in here to put it anywhere else.
-        const carets = self.query_layout.carets.items;
-        const caret_x = @round(text_left + if (carets.len == 0) 0 else carets[carets.len - 1].x);
+        const caret_x = @round(left + advance(&self.query_layout));
         try painter.add(caret_key, .solid(
             .{ caret_x, @round(query_baseline - atlas.ascent) },
-            .{ @max(1, @round(scale)), step },
+            .{ @max(1, @round(scale)), atlas.line_height },
         ));
+
+        try self.shapeCount(atlas);
+        try put(
+            painter,
+            &self.count_layout,
+            .{ @round(right - advance(&self.count_layout)), query_baseline },
+            config.faint_colour,
+        );
+
+        // A hairline across the measure, which is what says the query above it
+        // and the list below it are one thing.
+        const rule_y = @round(top + atlas.line_height + spacing);
+        try painter.add(rule_key, .solid(.{ left, rule_y }, .{ column, @max(1, @round(scale)) }));
 
         try self.layOut(atlas);
 
-        const first_row_top = @round(top + padding + 2 * step);
+        const first_top = @round(rule_y + spacing * 2);
         for (self.rows.items, 0..) |*row, index| {
             const which = self.top_row + index;
             if (which >= self.matches.items.len) break;
 
-            const row_top = first_row_top + @as(f32, @floatFromInt(index)) * step;
-            if (which == self.selected) {
-                try painter.add(selection_key, .solid(
-                    .{ left, row_top },
-                    .{ width, step },
+            const chosen_row = which == self.selected;
+            const baseline = @round(first_top + @as(f32, @floatFromInt(index)) * step + atlas.ascent);
+
+            // The selection is the filename going black while the rest stay
+            // grey, and a mark hanging in the margin. No bar behind it: value
+            // carries it, and a bar would be the only box on the screen.
+            if (chosen_row) {
+                const mark = @round(accent * scale);
+                try painter.add(accent_key, .solid(
+                    .{ left - spacing - mark, @round(baseline - atlas.ascent) },
+                    .{ mark, atlas.line_height },
+                ));
+            }
+
+            const name_width = advance(&row.name);
+            const directory_width = advance(&row.directory);
+
+            // A leader across the gap, on the chosen row only. Two flush edges
+            // with nothing between them read as two lists; this is what a
+            // contents page does about that. On every row it would be a texture
+            // rather than a connection, so it goes where the eye already is.
+            if (chosen_row and directory_width > 0) {
+                const from = @round(left + name_width + spacing);
+                const to = @round(right - directory_width - spacing);
+                if (to > from) try painter.add(rule_key, .solid(
+                    .{ from, @round(baseline - atlas.ascent * 0.32) },
+                    .{ to - from, @max(1, @round(scale)) },
                 ));
             }
 
             try put(
                 painter,
-                row,
-                .{ text_left, @round(row_top + atlas.ascent) },
-                if (which == self.selected) config.text_colour else config.muted_colour,
+                &row.name,
+                .{ left, baseline },
+                if (chosen_row) config.text_colour else config.muted_colour,
+            );
+            try put(
+                painter,
+                &row.directory,
+                .{ @round(right - directory_width), baseline },
+                config.faint_colour,
             );
         }
+    }
+
+    /// How wide a shaped line is. The last caret sits at the pen after the final
+    /// glyph, which is the line's advance.
+    fn advance(layout: *const LineLayout) f32 {
+        const carets = layout.carets.items;
+        return if (carets.len == 0) 0 else carets[carets.len - 1].x;
+    }
+
+    fn shapeCount(self: *Finder, atlas: *GlyphAtlas) !void {
+        if (self.count_layout.shaped) return;
+
+        var buffer: [32]u8 = undefined;
+        const text = if (self.matches.items.len == self.all.items.len)
+            try std.fmt.bufPrint(&buffer, "{d}", .{self.all.items.len})
+        else
+            try std.fmt.bufPrint(&buffer, "{d} of {d}", .{ self.matches.items.len, self.all.items.len });
+
+        try atlas.shapeLine(text, &self.count_layout);
     }
 
     /// Shapes the rows on screen, and only those: the match set is the whole
@@ -357,11 +439,19 @@ pub const Finder = struct {
         for (self.rows.items, 0..) |*row, index| {
             const which = self.top_row + index;
             if (which >= self.matches.items.len) {
-                row.sprites.clearRetainingCapacity();
-                row.carets.clearRetainingCapacity();
+                row.name.sprites.clearRetainingCapacity();
+                row.directory.sprites.clearRetainingCapacity();
                 continue;
             }
-            try atlas.shapeLine(self.matches.items[which], row);
+
+            const path = self.matches.items[which];
+            try atlas.shapeLine(std.fs.path.basename(path), &row.name);
+
+            // Everything up to the last separator, kept: two files of the same
+            // name are told apart by what is in front of them, and that is the
+            // whole reason the directory is on the row at all.
+            const directory = std.fs.path.dirname(path) orelse "";
+            try atlas.shapeLine(directory, &row.directory);
         }
         self.laid_out = true;
     }

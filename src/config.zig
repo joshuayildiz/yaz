@@ -29,6 +29,19 @@ pub const chip_colour: [4]f32 = .{ 0.855, 0.855, 0.875, 1 };
 /// Paths and anything else said quietly.
 pub const muted_colour: [4]f32 = .{ 0.40, 0.40, 0.44, 1 };
 
+/// Hairlines: under the finder's query, and the leader that ties a chosen
+/// filename to the directory it is in.
+pub const rule_colour: [4]f32 = .{ 0, 0, 0, 0.14 };
+
+/// Quieter still: the directory in front of a filename, and a count nobody is
+/// reading unless they went looking for it.
+pub const faint_colour: [4]f32 = .{ 0.62, 0.62, 0.66, 1 };
+
+/// Laid over the document while the finder is up. White rather than black, and
+/// not opaque: what is behind stays legible as a ghost, so the window does not
+/// feel like it went somewhere else.
+pub const scrim_colour: [4]f32 = .{ 1, 1, 1, 0.955 };
+
 /// A tool that runs, and one that does not. Both are said in words as well, so
 /// the colour is a second signal rather than the only one.
 pub const good_colour: [4]f32 = .{ 0.13, 0.52, 0.28, 1 };
