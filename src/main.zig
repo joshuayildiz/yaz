@@ -6,6 +6,7 @@ const TextView = @import("./components/text_view.zig").TextView;
 const Position = @import("./components/text_view.zig").Position;
 const Retired = @import("./components/text_view.zig").Retired;
 const Document = @import("./document.zig").Document;
+const GlyphAtlas = @import("./glyph_atlas.zig").GlyphAtlas;
 const Event = @import("./event.zig").Event;
 const Painter = @import("./painter.zig").Painter;
 const Rect = @import("./painter.zig").Rect;
@@ -80,7 +81,6 @@ pub fn main(init: std.process.Init) !void {
 
     var app: App = .{
         .gpa = init.gpa,
-        .io = init.io,
         .health = if (absent.any())
             try Healthcheck.init(init.gpa, init.minimal.environ, absent)
         else
@@ -90,13 +90,9 @@ pub fn main(init: std.process.Init) !void {
         // Only where there is an editor to find files for. With a tool missing
         // its paths cannot even be resolved.
         .finder = if (absent.any()) null else try Finder.init(init.gpa, init.io, init.minimal.environ),
+        .columns = try Columns.init(init.gpa, init.io, opened.items),
     };
     defer app.deinit();
-
-    try app.views.ensureTotalCapacity(init.gpa, opened.items.len);
-    for (opened.items) |file| {
-        app.views.appendAssumeCapacity(try TextView.init(init.gpa, file.text, file.path));
-    }
 
     if (!c.SDL_AddEventWatch(redrawWhileResizing, &app)) {
         std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
@@ -145,18 +141,23 @@ const Parked = struct {
     position: Position,
 };
 
-/// Together because the event watch reaches them from behind one `void *`.
-const App = struct {
+/// The files on screen, side by side, and the ones only in memory.
+///
+/// Everything that comes of having several documents open is here: how the room
+/// is divided between them, which one a keystroke goes to, and what becomes of a
+/// document nobody is looking at.
+const Columns = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
-    renderer: Renderer,
 
-    /// When set, one of the two tools does not run, and this is the whole
-    /// window: no views, no files read, nothing routed anywhere else.
-    health: ?Healthcheck = null,
+    /// Left to right across the window. Never empty: a document nobody named is
+    /// still a document.
+    views: std.ArrayList(TextView) = .empty,
 
-    /// Null only alongside `health`, for the same reason.
-    finder: ?Finder = null,
+    /// Which of them a keystroke goes to. Moved by a press and by nothing else:
+    /// the pointer routes by position without consulting it, so the wheel turns
+    /// whatever it is over without deciding where typing lands.
+    focus: usize = 0,
 
     /// Files that have been looked at and are not on screen now, by path.
     ///
@@ -166,23 +167,18 @@ const App = struct {
     /// a document is either here or in exactly one view, never both.
     parked: std.StringHashMapUnmanaged(Parked) = .empty,
 
-    /// Left to right across the window. Empty only while `health` is set; a
-    /// document nobody named is still a document.
-    views: std.ArrayList(TextView) = .empty,
+    fn init(gpa: std.mem.Allocator, io: std.Io, opened: []const Opened) !Columns {
+        var self: Columns = .{ .gpa = gpa, .io = io };
+        errdefer self.deinit();
 
-    /// Which of them a keystroke goes to. Moved by a press and by nothing else:
-    /// the pointer routes by position without consulting it, so the wheel turns
-    /// whatever it is over without deciding where typing lands.
-    focus: usize = 0,
+        try self.views.ensureTotalCapacity(gpa, opened.len);
+        for (opened) |file| {
+            self.views.appendAssumeCapacity(try TextView.init(gpa, file.text, file.path));
+        }
+        return self;
+    }
 
-    painter: Painter,
-    running: bool = true,
-
-    /// What has changed at this level, as against inside the view. True to
-    /// begin with: the first frame has never been drawn.
-    dirty: bool = true,
-
-    fn deinit(self: *App) void {
+    fn deinit(self: *Columns) void {
         var resting = self.parked.iterator();
         while (resting.next()) |entry| {
             self.gpa.free(entry.key_ptr.*);
@@ -190,41 +186,27 @@ const App = struct {
         }
         self.parked.deinit(self.gpa);
 
-        if (self.finder) |*finder| finder.deinit();
-        if (self.health) |*health| health.deinit();
         for (self.views.items) |*view| view.deinit();
         self.views.deinit(self.gpa);
-        self.painter.deinit();
-        self.renderer.deinit();
     }
 
-    /// Answers for everything it holds, so the loop asks one thing.
-    fn isDirty(self: *const App) bool {
-        if (self.health) |*health| return self.dirty or health.isDirty();
-        if (self.finder) |*finder| {
-            if (finder.isDirty()) return true;
-        }
+    fn isDirty(self: *const Columns) bool {
         for (self.views.items) |*view| {
             if (view.isDirty()) return true;
         }
-        return self.dirty;
+        return false;
     }
 
-    fn setDirty(self: *App, value: bool) void {
-        self.dirty = value;
-        if (self.health) |*health| return health.setDirty(value);
-        if (self.finder) |*finder| finder.setDirty(value);
+    fn setDirty(self: *Columns, value: bool) void {
         for (self.views.items) |*view| view.setDirty(value);
     }
 
-    /// Divides the room it has been given between what it holds: equal columns,
-    /// left to right.
-    fn place(self: *App, rect: Rect) void {
-        if (self.health) |*health| return health.place(rect);
+    fn invalidate(self: *Columns) void {
+        for (self.views.items) |*view| view.invalidate();
+    }
 
-        // The whole window: it is an overlay, not one of the columns.
-        if (self.finder) |*finder| finder.place(rect);
-
+    /// Equal columns, left to right.
+    fn place(self: *Columns, rect: Rect) void {
         const count: f32 = @floatFromInt(self.views.items.len);
         var left = rect.x;
         for (self.views.items, 1..) |*view, nth| {
@@ -237,41 +219,7 @@ const App = struct {
         }
     }
 
-    /// Takes what belongs to the window and hands the rest down. What changed
-    /// is not answered here; it is asked for afterwards, through `isDirty`.
-    fn update(self: *App, event: Event) !void {
-        switch (event) {
-            .quit => {
-                self.running = false;
-                return;
-            },
-            .resized => {
-                self.dirty = true;
-                return;
-            },
-            else => {},
-        }
-
-        // Nothing below the window works while a tool is missing.
-        if (self.health) |*health| return health.update(event);
-
-        if (self.finder) |*finder| {
-            if (event == .find and !finder.isOpen()) return finder.show();
-
-            // While it is up it has the keyboard entirely, and the pointer is
-            // not routed to it at all -- clicking a view behind it would be a
-            // way to type into something the panel is covering.
-            if (finder.isOpen()) {
-                if (try finder.update(event)) |path| {
-                    defer self.gpa.free(path);
-                    try self.reveal(path);
-                }
-                return;
-            }
-        }
-
-        const atlas = &self.renderer.atlas;
-
+    fn update(self: *Columns, event: Event, atlas: *GlyphAtlas) !void {
         // A view holding the scrollbar keeps the pointer until it lets go,
         // wherever it wanders. Without this a drag crossing into the next view
         // would be handed over half way through.
@@ -299,7 +247,7 @@ const App = struct {
     }
 
     /// Which view has hold of the pointer through its scrollbar, if any.
-    fn holding(self: *App) ?usize {
+    fn holding(self: *Columns) ?usize {
         for (self.views.items, 0..) |*view, which| {
             if (view.drag != null) return which;
         }
@@ -308,18 +256,20 @@ const App = struct {
 
     /// Which view a point falls in. The columns do not overlap, so at most one
     /// can answer.
-    fn over(self: *App, at: [2]f32) ?usize {
+    fn over(self: *Columns, at: [2]f32) ?usize {
         for (self.views.items, 0..) |*view, which| {
             if (view.rect.contains(at)) return which;
         }
         return null;
     }
 
-    /// Every quad the frame is made of, from everything it holds.
-    fn draw(self: *App, painter: *Painter) !void {
-        if (self.health) |*health| return health.draw(&self.renderer.atlas, painter);
-        for (self.views.items) |*view| try view.draw(&self.renderer.atlas, painter);
-        if (self.finder) |*finder| try finder.draw(&self.renderer.atlas, painter);
+    fn draw(self: *Columns, atlas: *GlyphAtlas, painter: *Painter) !void {
+        // Read here rather than acted on at the keystroke that set it: a view
+        // has to have been given its room before it can say what is in it.
+        for (self.views.items) |*view| {
+            if (view.follow_caret) view.scrollToCaret(atlas);
+        }
+        for (self.views.items) |*view| try view.draw(atlas, painter);
     }
 
     /// Puts `path` in front of the reader.
@@ -327,7 +277,7 @@ const App = struct {
     /// A view already showing it is focused rather than a second copy opened,
     /// which is both what one expects and the only way two views of one file
     /// cannot drift apart -- they share no document.
-    fn reveal(self: *App, path: []const u8) !void {
+    fn reveal(self: *Columns, path: []const u8, atlas: *const GlyphAtlas) !void {
         for (self.views.items, 0..) |*view, which| {
             const named = view.path orelse continue;
             if (!std.mem.eql(u8, named, path)) continue;
@@ -354,17 +304,11 @@ const App = struct {
         }
         errdefer document.deinit();
 
-        const retired = try self.views.items[self.focus].swap(
-            document,
-            path,
-            was,
-            &self.renderer.atlas,
-        );
-        try self.park(retired);
+        try self.park(try self.views.items[self.focus].swap(document, path, was, atlas));
     }
 
     /// Keeps what a view was showing, against being asked for it again.
-    fn park(self: *App, retired: Retired) !void {
+    fn park(self: *Columns, retired: Retired) !void {
         var leaving = retired;
 
         const path = leaving.path orelse {
@@ -388,6 +332,106 @@ const App = struct {
         }
         slot.value_ptr.* = .{ .document = leaving.document, .position = leaving.position };
     }
+};
+
+/// Together because the event watch reaches them from behind one `void *`.
+const App = struct {
+    gpa: std.mem.Allocator,
+    renderer: Renderer,
+    painter: Painter,
+
+    /// When set, one of the two tools does not run, and this is the whole
+    /// window: no columns, no files read, nothing routed anywhere else.
+    health: ?Healthcheck = null,
+
+    /// Null only alongside `health`, for the same reason.
+    finder: ?Finder = null,
+
+    columns: Columns,
+
+    running: bool = true,
+
+    /// What has changed at this level, as against inside a component. True to
+    /// begin with: the first frame has never been drawn.
+    dirty: bool = true,
+
+    fn deinit(self: *App) void {
+        if (self.finder) |*finder| finder.deinit();
+        if (self.health) |*health| health.deinit();
+        self.columns.deinit();
+        self.painter.deinit();
+        self.renderer.deinit();
+    }
+
+    /// Answers for everything it holds, so the loop asks one thing.
+    fn isDirty(self: *const App) bool {
+        if (self.health) |*health| return self.dirty or health.isDirty();
+        if (self.finder) |*finder| {
+            if (finder.isDirty()) return true;
+        }
+        return self.dirty or self.columns.isDirty();
+    }
+
+    fn setDirty(self: *App, value: bool) void {
+        self.dirty = value;
+        if (self.health) |*health| return health.setDirty(value);
+        if (self.finder) |*finder| finder.setDirty(value);
+        self.columns.setDirty(value);
+    }
+
+    fn place(self: *App, rect: Rect) void {
+        if (self.health) |*health| return health.place(rect);
+
+        // The whole window: it is an overlay, not one of the columns.
+        if (self.finder) |*finder| finder.place(rect);
+        self.columns.place(rect);
+    }
+
+    /// Takes what belongs to the window and hands the rest down. What changed
+    /// is not answered here; it is asked for afterwards, through `isDirty`.
+    fn update(self: *App, event: Event) !void {
+        switch (event) {
+            .quit => {
+                self.running = false;
+                return;
+            },
+            .resized => {
+                self.dirty = true;
+                return;
+            },
+            else => {},
+        }
+
+        // Nothing below the window works while a tool is missing.
+        if (self.health) |*health| return health.update(event);
+
+        const atlas = &self.renderer.atlas;
+
+        if (self.finder) |*finder| {
+            if (event == .find and !finder.isOpen()) return finder.show();
+
+            // While it is up it has the keyboard entirely, and the pointer is
+            // not routed to it at all -- clicking a view behind it would be a
+            // way to type into something the panel is covering.
+            if (finder.isOpen()) {
+                if (try finder.update(event)) |path| {
+                    defer self.gpa.free(path);
+                    try self.columns.reveal(path, atlas);
+                }
+                return;
+            }
+        }
+
+        try self.columns.update(event, atlas);
+    }
+
+    /// Every quad the frame is made of, from everything it holds.
+    fn draw(self: *App, painter: *Painter) !void {
+        const atlas = &self.renderer.atlas;
+        if (self.health) |*health| return health.draw(atlas, painter);
+        try self.columns.draw(atlas, painter);
+        if (self.finder) |*finder| try finder.draw(atlas, painter);
+    }
 
     fn redraw(self: *App) !void {
         // Read rather than listened for: three window events can imply the
@@ -397,7 +441,7 @@ const App = struct {
         if (try self.renderer.atlas.setScale(scale)) {
             if (self.health) |*health| health.invalidate();
             if (self.finder) |*finder| finder.invalidate();
-            for (self.views.items) |*view| view.invalidate();
+            self.columns.invalidate();
         }
 
         // The window rather than the swapchain, which is not acquired until
@@ -413,10 +457,6 @@ const App = struct {
             .width = @floatFromInt(width),
             .height = @floatFromInt(height),
         });
-
-        for (self.views.items) |*view| {
-            if (view.follow_caret) view.scrollToCaret(&self.renderer.atlas);
-        }
 
         self.painter.clear();
         try self.draw(&self.painter);
