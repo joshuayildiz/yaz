@@ -281,6 +281,17 @@ pub const Model = struct {
             .none => return,
             .nothing_but_draw => {},
 
+            .batch => |these| {
+                // Owned by the effect and let go of here: whatever gathered it
+                // handed it over, and this is where it stops.
+                defer self.allocator.free(these);
+
+                // Each asks for a frame if it needs one, so this must not ask
+                // again on the way out: a batch of nothing changed nothing.
+                for (these) |each| try self.apply(each);
+                return;
+            },
+
             .quit => self.running = false,
 
             .insert => |what| {
@@ -1280,4 +1291,81 @@ test "asking for a name a second time replaces the first" {
     // The old path is let go of rather than leaked, which the testing
     // allocator is what checks.
     try std.testing.expectEqualStrings(second, file.path.?);
+}
+
+test "a batch applies each of its effects in order" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "");
+    defer model.deinit();
+
+    try model.apply(try Effect.gather(allocator, &.{
+        .{ .insert = .{ .column = 0, .text = "one" } },
+        .{ .insert = .{ .column = 0, .text = " two" } },
+    }));
+
+    // In order, and both of them: the second typed after the first, not over it.
+    try std.testing.expectEqualStrings("one two", try whatIsIn(&model));
+}
+
+test "a batch is let go of once it has been walked" {
+    // The testing allocator is what checks this: a batch that apply did not
+    // free is a leak the test fails on, and one it freed twice is a crash.
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "abc");
+    defer model.deinit();
+
+    try model.apply(try Effect.gather(allocator, &.{
+        .{ .selection = .{ .column = 0, .from = 0, .to = 3 } },
+        .{ .backspace = 0 },
+    }));
+
+    try std.testing.expectEqualStrings("", try whatIsIn(&model));
+}
+
+test "a batch survives the frame it was built in" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "");
+    defer model.deinit();
+
+    // Built inside a call that returns before apply sees it, which is what
+    // `&.{...}` alone cannot survive: the column is a runtime value, so the
+    // list would be on this function's stack rather than anywhere lasting.
+    const made = try builtElsewhere(allocator, 0);
+    try model.apply(made);
+
+    try std.testing.expectEqualStrings("kept", try whatIsIn(&model));
+}
+
+fn builtElsewhere(allocator: std.mem.Allocator, column: usize) !Effect {
+    return Effect.gather(allocator, &.{
+        .{ .insert = .{ .column = column, .text = "kept" } },
+    });
+}
+
+test "a batch of nothing changes nothing and does not ask for a frame" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "as it was");
+    defer model.deinit();
+
+    model.dirty = false;
+    try model.apply(try Effect.gather(allocator, &.{ .none, .none }));
+
+    try std.testing.expect(!model.dirty);
+    try std.testing.expectEqualStrings("as it was", try whatIsIn(&model));
+}
+
+test "a batch inside a batch is walked and freed like any other" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "");
+    defer model.deinit();
+
+    const inner = try Effect.gather(allocator, &.{
+        .{ .insert = .{ .column = 0, .text = "in" } },
+    });
+    try model.apply(try Effect.gather(allocator, &.{
+        inner,
+        .{ .insert = .{ .column = 0, .text = "out" } },
+    }));
+
+    try std.testing.expectEqualStrings("inout", try whatIsIn(&model));
 }

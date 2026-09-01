@@ -24,12 +24,24 @@ const lines_per_notch = 3;
 /// say that it changed something: an effect is that, and `none` is its
 /// absence.
 ///
-/// Nothing here owns memory. What used to be a path copied out of the finder's
-/// listing is now the index of the thing that was chosen, which the model can
-/// look up for itself.
+/// Nothing here owns memory but `batch`, which cannot avoid it: a union may not
+/// hold an array of itself, so several effects can only travel as a slice, and
+/// a slice of a stack literal is gone by the time `apply` reads it. What used to
+/// be a path copied out of the finder's listing is now the index of the thing
+/// that was chosen, which the model can look up for itself.
 pub const Effect = union(enum) {
     /// Nothing happened, or nothing that shows. The window does not draw again.
     none,
+
+    /// Several changes, in order, from one message. The only effect that owns
+    /// anything: `apply` frees the list once it has walked it, so a batch is
+    /// handed over rather than lent.
+    ///
+    /// Build one with `gather` rather than by hand. `&.{ a, b }` written at a
+    /// return points at the frame that is about to go, and effects carry
+    /// runtime values, so nothing about it is comptime enough to be placed
+    /// somewhere that lasts. It compiles and it reads rubbish.
+    batch: []const Effect,
 
     /// Nothing in the model moved, but the window has to be drawn again anyway
     /// -- which is only ever true of a resize, where what changed is the room
@@ -102,6 +114,16 @@ pub const Effect = union(enum) {
     down,
     /// Open what the finder has selected, in the column with the keyboard.
     choose,
+
+    /// Gathers effects into one, copying the list somewhere that outlives the
+    /// call. `Model.apply` frees it.
+    ///
+    /// This is the only safe way to make a batch, and the reason it takes an
+    /// allocator: the list a caller writes at the point of return lives on that
+    /// caller's stack, and the copy is what it is here for.
+    pub fn gather(allocator: std.mem.Allocator, these: []const Effect) !Effect {
+        return .{ .batch = try allocator.dupe(Effect, these) };
+    }
 };
 
 /// Already in pixels by the time one of these is made, so nothing that handles

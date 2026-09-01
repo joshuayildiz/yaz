@@ -1102,7 +1102,19 @@ it is the only place in the program where any of this moves.
 That is what makes the redraw question answer itself. An effect is a change, so
 the frame is asked for once, in `apply`, rather than by every component
 remembering to say it changed something; `none` is the absence of a change
-and leaves the window alone. There is no damage tracking — the whole window is
+and leaves the window alone.
+
+**`batch` is one message meaning several changes**, walked in order. It is the
+one effect that owns anything, and it cannot avoid it: a union may not hold an
+array of itself, so several effects can only travel as a slice, and a slice of a
+list written at the point of return is on a stack frame that has gone by the
+time `apply` reads it. That compiles, warns about nothing, and reads rubbish
+— effects carry runtime values like a column index, so there is nothing
+comptime enough to be placed somewhere lasting. `Effect.gather` copies the list
+into the model's allocator and `apply` frees it once it has walked it, so a
+batch is handed over rather than lent, and building one by hand is the mistake
+`gather` exists to stop. A batch of nothing asks for no frame, and a batch
+inside a batch is walked and freed like any other. There is no damage tracking — the whole window is
 redrawn — but presenting blocks on the swapchain, so the question worth asking
 is only ever *whether* to draw.
 
