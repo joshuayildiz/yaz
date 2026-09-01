@@ -19,19 +19,9 @@ pub const std_options: std.Options = .{ .log_level = .info };
 pub fn main(init: std.process.Init) !void {
     if (try wantsSetup(init)) return setup(init);
 
-    // Built once, and the whole of what the window is showing. Everything
-    // below reads its state out of this and writes changes back into it.
     var model: Model = .init(init);
     defer model.deinit();
 
-    // The tools before anything else: with either of them missing nothing but
-    // the healthcheck runs, and reading a file first would report the wrong
-    // problem when the path is also bad.
-    //
-    // Opening the library is the check. It used to be two `--version` spawns
-    // of two 4MB binaries, which cost 11ms of every launch (OPTIMIZATIONS 12);
-    // this is the same library the finder is about to use, opened once, and
-    // every symbol has to resolve before it counts as working.
     model.locate(init.minimal.environ) catch |err| switch (err) {
         error.CannotOpenLibrary, error.MissingSymbol, error.CannotIndex => {
             const stopped = try Healthcheck.init(model.allocator, init.minimal.environ, .{ .fff = true });

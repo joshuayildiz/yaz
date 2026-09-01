@@ -118,7 +118,9 @@ pub const Message = union(enum) {
     /// Show the file finder.
     find,
     /// Show the nth file open in the window, counted from zero: cmd+1 to cmd+9.
-    tab: u8,
+    /// Named for what it asks for rather than for the strip it is asked from,
+    /// which leaves `tab` to mean the key of that name.
+    show: u8,
     /// Put the nth file beside what is already split, or take it away again:
     /// cmd+alt+1 to cmd+alt+9.
     split: u8,
@@ -126,6 +128,9 @@ pub const Message = union(enum) {
     close,
     /// Take the whole file: cmd+A.
     select_all,
+    /// The tab key. Not text and does not arrive as any: SDL drops a keystroke
+    /// whose text is a control character, and a tab is one.
+    tab,
     /// The selection to the system clipboard and back: cmd+X, cmd+C, cmd+V.
     cut,
     copy,
@@ -173,16 +178,16 @@ pub const Message = union(enum) {
     /// every other window on those machines answers to, and shift for the
     /// second. Ctrl says nothing about a digit there -- with alt meaning a tab,
     /// ctrl+1 and ctrl+alt+1 are chords this no longer has an answer for.
-    fn numbered(mod: c.SDL_Keymod) ?enum { tab, split } {
+    fn numbered(mod: c.SDL_Keymod) ?enum { show, split } {
         const alt = mod & c.SDL_KMOD_ALT != 0;
 
         if (macos) {
             if (!commanded(mod)) return null;
-            return if (alt) .split else .tab;
+            return if (alt) .split else .show;
         }
 
         if (commanded(mod) or !alt) return null;
-        return if (mod & c.SDL_KMOD_SHIFT != 0) .split else .tab;
+        return if (mod & c.SDL_KMOD_SHIFT != 0) .split else .show;
     }
 
     /// Null for what nothing here acts on, which is most of what SDL sends.
@@ -218,7 +223,7 @@ pub const Message = union(enum) {
                     if (numbered(from.key.mod)) |what| {
                         const which: u8 = @intCast(code - c.SDL_SCANCODE_1);
                         break :key switch (what) {
-                            .tab => .{ .tab = which },
+                            .show => .{ .show = which },
                             .split => .{ .split = which },
                         };
                     }
@@ -227,6 +232,7 @@ pub const Message = union(enum) {
                 break :key switch (from.key.key) {
                     c.SDLK_RETURN => .newline,
                     c.SDLK_BACKSPACE => .backspace,
+                    c.SDLK_TAB => .tab,
                     c.SDLK_UP => .up,
                     c.SDLK_DOWN => .down,
                     c.SDLK_ESCAPE => .cancel,
@@ -325,10 +331,10 @@ test "a digit on its own is a character, not a binding" {
 
 test "the platform's modifier and a digit reach that tab, counted from zero" {
     const first = pressed(c.SDL_SCANCODE_1, c.SDLK_1, shows);
-    try std.testing.expectEqual(@as(u8, 0), Message.init(&first, 1, a_line).?.tab);
+    try std.testing.expectEqual(@as(u8, 0), Message.init(&first, 1, a_line).?.show);
 
     const ninth = pressed(c.SDL_SCANCODE_9, c.SDLK_9, shows);
-    try std.testing.expectEqual(@as(u8, 8), Message.init(&ninth, 1, a_line).?.tab);
+    try std.testing.expectEqual(@as(u8, 8), Message.init(&ninth, 1, a_line).?.show);
 }
 
 test "the second modifier splits that tab instead of showing it" {
@@ -361,7 +367,7 @@ test "on macOS the command key is still what the digits answer to" {
     try std.testing.expectEqual(@as(?Message, null), Message.init(&alone, 1, a_line));
 
     const commanded_digit = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LCTRL);
-    try std.testing.expectEqual(@as(u8, 0), Message.init(&commanded_digit, 1, a_line).?.tab);
+    try std.testing.expectEqual(@as(u8, 0), Message.init(&commanded_digit, 1, a_line).?.show);
 }
 
 test "the keycode a modifier produces is not what a digit is read from" {
@@ -421,4 +427,17 @@ test "a touchpad's fraction of a notch moves that fraction of the lines" {
 
     const nudged = Message.init(&turned(-0.25), 1, a_line).?;
     try std.testing.expectEqual(@as(f32, lines_per_notch * a_line / 4), nudged.wheel.delta);
+}
+
+test "the tab key is a message of its own, not text" {
+    // SDL drops a keystroke whose text is a control character and a tab is one,
+    // so it arrives as a key or it does not arrive.
+    const message = pressed(c.SDL_SCANCODE_TAB, c.SDLK_TAB, 0);
+    try std.testing.expectEqual(Message.tab, Message.init(&message, 1, a_line).?);
+}
+
+test "a modifier does not turn the tab key into something else" {
+    // Nothing is bound to it yet, but it must not fall through to the digits.
+    const message = pressed(c.SDL_SCANCODE_TAB, c.SDLK_TAB, c.SDL_KMOD_LCTRL);
+    try std.testing.expectEqual(Message.tab, Message.init(&message, 1, a_line).?);
 }

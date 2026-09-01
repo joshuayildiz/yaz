@@ -105,7 +105,7 @@ pub const TextView = struct {
             // The window's own, and a name that came back from a save dialog,
             // which the window deals with because the file it belongs to need
             // not be the one this column is showing.
-            .quit, .resized, .find, .tab, .split, .close, .up, .down, .cancel, .named => return .nothing,
+            .quit, .resized, .find, .show, .split, .close, .up, .down, .cancel, .named => return .nothing,
             .save => return .{ .save = self.which },
             .cut => return .{ .cut = self.which },
             .copy => return .{ .copy = self.which },
@@ -117,6 +117,7 @@ pub const TextView = struct {
             } },
             .text => |typed| return .{ .insert = .{ .column = self.which, .text = typed } },
             .newline => return .{ .insert = .{ .column = self.which, .text = "\n" } },
+            .tab => return .{ .insert = .{ .column = self.which, .text = "\t" } },
             .backspace => return .{ .backspace = self.which },
             .wheel => |wheel| return self.scrollBy(model, wheel.delta),
             .press => |what| {

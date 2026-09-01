@@ -788,8 +788,14 @@ the letter after it arrive as the accented character they compose to, and a CJK
 conversion as the characters it produced. None of that is our code, which is most
 of the reason SDL is here.
 
-Return and backspace are not text and do not arrive as any, so they come from
-`SDL_EVENT_KEY_DOWN` instead.
+Return, backspace and **tab** are not text and do not arrive as any, so they come
+from `SDL_EVENT_KEY_DOWN` instead. SDL drops a keystroke whose text is a control
+character, and all three of them are one; a tab is 0x09. See [Tabs](#tabs) for
+what one is worth once it is in.
+
+The message for the key is `.tab`, and the one that shows the nth file on the
+bar — which used to have that name — is now `.show`, after the effect it has
+always produced.
 
 Backspace removes **a whole UTF-8 sequence rather than a byte** — one press
 takes off `é` or `漢` entire. Not yet a whole grapheme cluster, though: `e` plus

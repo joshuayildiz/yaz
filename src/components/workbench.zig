@@ -168,7 +168,7 @@ pub const Workbench = struct {
     /// means.
     pub fn update(self: *Workbench, model: *const Model, message: Message) !Effect {
         switch (message) {
-            .tab => |which| return .{ .show = which },
+            .show => |which| return .{ .show = which },
             .split => |which| return .{ .split = which },
             .close => return .close,
             else => {},
