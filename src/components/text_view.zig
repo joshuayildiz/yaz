@@ -18,6 +18,7 @@ const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
 const open_file = @import("../open_file.zig");
+const Buffer = open_file.Buffer;
 const OpenFile = open_file.OpenFile;
 const Span = open_file.Span;
 const drawLine = @import("../text.zig").draw;
@@ -117,6 +118,11 @@ pub const TextView = struct {
                 if (self.thumbGrab(model, what.at)) |grab| {
                     return .{ .grab = .{ .column = self.which, .at = grab } };
                 }
+                // A second press in the same place asks for something around
+                // where it landed rather than for a caret in it. Shift is not
+                // consulted: a double-click says what it wants outright.
+                if (what.clicks >= 2) return self.chooseAt(model, what.at);
+
                 // Answered whether it moved anything or not, unlike a drag: a
                 // press on the character the caret is already at still has a
                 // selection to collapse and a pointer to take hold of.
@@ -362,8 +368,43 @@ pub const TextView = struct {
     /// A click below the last line or right of a line's end lands on the nearest
     /// place the caret can go, which is what makes dragging past the end behave.
     fn caretAt(self: *const TextView, model: *const Model, point: [2]f32, extend: bool) Effect {
+        const where = self.landing(model, point) orelse return .nothing;
+        return .{ .caret = .{ .column = self.which, .at = where.offset, .extend = extend } };
+    }
+
+    /// What a double-click takes, which is decided by what it landed on: the
+    /// line when it fell past the end of one, what a bracket holds when it fell
+    /// beside one, and the word otherwise.
+    ///
+    /// A click that lands on none of those -- on a space, say -- leaves the
+    /// caret the first of the two presses put there rather than reaching for
+    /// something to select.
+    fn chooseAt(self: *const TextView, model: *const Model, point: [2]f32) Effect {
+        const where = self.landing(model, point) orelse return .nothing;
+        const buffer = &self.file.buffer;
+
+        if (where.past_end) return self.take(wholeLine(buffer, where.index));
+        if (bracketAround(buffer, where.offset)) |inside| return self.take(inside);
+        if (wordAround(buffer, where.offset)) |word| return self.take(word);
+        return .nothing;
+    }
+
+    /// Both ends at once, which is what every double-click asks for.
+    fn take(self: *const TextView, span: Span) Effect {
+        return .{ .selection = .{ .column = self.which, .from = span.from, .to = span.to } };
+    }
+
+    /// Where a point falls: which line, how far into the file, and whether it
+    /// landed past the last glyph on that line -- which is what makes clicking
+    /// out to the right mean the line rather than a place in it.
+    ///
+    /// A click lands on a line that was drawn, but the row arithmetic clamps,
+    /// and what it clamps to need not have been. Shaping it here writes to the
+    /// atlas rather than to the model: the glyphs of a line are the same
+    /// whoever asks for them.
+    fn landing(self: *const TextView, model: *const Model, point: [2]f32) ?Landing {
         // Nothing has been laid out, so there is nothing on screen to click.
-        if (self.file.lines.items.len == 0) return .nothing;
+        if (self.file.lines.items.len == 0) return null;
 
         const at = self.origin(model);
         const row = (point[1] - at[1] + self.file.scroll) / model.atlas.line_height;
@@ -372,20 +413,172 @@ pub const TextView = struct {
         else
             @min(self.file.buffer.lineCount() - 1, @as(usize, @intFromFloat(row)));
 
-        // A click lands on a line that was drawn, but the row arithmetic
-        // clamps, and what it clamps to need not have been. Shaping it here
-        // writes to the atlas rather than to the model: the glyphs of a line
-        // are the same whoever asks for them.
         const entry = &self.file.lines.items[index];
         if (!entry.shaped) {
-            const text = self.file.buffer.lineSlice(index) catch return .nothing;
-            model.atlas.shapeLine(text, entry) catch return .nothing;
+            const text = self.file.buffer.lineSlice(index) catch return null;
+            model.atlas.shapeLine(text, entry) catch return null;
         }
 
-        const to = self.file.buffer.lineStart(index) + caretOffset(entry.carets.items, point[0] - at[0]);
-        return .{ .caret = .{ .column = self.which, .at = to, .extend = extend } };
+        const x = point[0] - at[0];
+        return .{
+            .index = index,
+            .offset = self.file.buffer.lineStart(index) + caretOffset(entry.carets.items, x),
+            .past_end = x > entry.carets.items[entry.carets.items.len - 1].x,
+        };
     }
 };
+
+/// Where a point fell, once the line it fell on has been shaped.
+const Landing = struct {
+    index: usize,
+    /// Into the file, not into the line.
+    offset: usize,
+    /// Right of the last glyph on the line, where there is no character to put
+    /// a caret in front of.
+    past_end: bool,
+};
+
+/// The whole of line `index`, its ending included, so that a line taken this
+/// way can be cut out and put back as a line rather than as a run of text. The
+/// last line of a file has no ending and stops at the end of the file.
+fn wholeLine(buffer: *const Buffer, index: usize) Span {
+    const start = buffer.lineStart(index);
+    const end = if (index + 1 < buffer.lineCount())
+        buffer.lineStart(index + 1)
+    else
+        buffer.byteLen();
+    return .{ .from = start, .to = end };
+}
+
+/// The closer that ends `byte`, or none if it opens nothing.
+fn opening(byte: u8) ?u8 {
+    return switch (byte) {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        else => null,
+    };
+}
+
+/// The opener that `byte` ends, or none if it closes nothing.
+fn closing(byte: u8) ?u8 {
+    return switch (byte) {
+        ')' => '(',
+        ']' => '[',
+        '}' => '{',
+        else => null,
+    };
+}
+
+/// What the bracket beside `offset` holds, or none when there is no bracket
+/// there and none when nothing closes the one that is.
+///
+/// The character ahead of the caret is looked at before the one behind it, so a
+/// click landing between two brackets takes the one it is in front of. The
+/// bracket is not part of the answer: what is wanted is what is inside it.
+///
+/// Nesting is counted and nothing else is. A bracket in a string or a comment
+/// is a bracket as far as this is concerned, which is the price of not knowing
+/// what language the file is written in.
+fn bracketAround(buffer: *const Buffer, offset: usize) ?Span {
+    if (offset < buffer.byteLen()) {
+        const ahead = buffer.byteAt(offset);
+        if (opening(ahead)) |shut| {
+            if (matchForward(buffer, offset, ahead, shut)) |found| {
+                return .{ .from = offset + 1, .to = found };
+            }
+        }
+        if (closing(ahead)) |open| {
+            if (matchBackward(buffer, offset, ahead, open)) |found| {
+                return .{ .from = found + 1, .to = offset };
+            }
+        }
+    }
+
+    if (offset > 0) {
+        const behind = buffer.byteAt(offset - 1);
+        if (opening(behind)) |shut| {
+            if (matchForward(buffer, offset - 1, behind, shut)) |found| {
+                return .{ .from = offset, .to = found };
+            }
+        }
+        if (closing(behind)) |open| {
+            if (matchBackward(buffer, offset - 1, behind, open)) |found| {
+                return .{ .from = found + 1, .to = offset - 1 };
+            }
+        }
+    }
+
+    return null;
+}
+
+/// Where the bracket at `from` is closed, counting the ones opened on the way.
+fn matchForward(buffer: *const Buffer, from: usize, open: u8, shut: u8) ?usize {
+    var depth: usize = 1;
+    var at = from + 1;
+    while (at < buffer.byteLen()) : (at += 1) {
+        const byte = buffer.byteAt(at);
+        if (byte == open) {
+            depth += 1;
+        } else if (byte == shut) {
+            depth -= 1;
+            if (depth == 0) return at;
+        }
+    }
+    return null;
+}
+
+/// Where the bracket at `from` was opened, counting the ones closed on the way.
+fn matchBackward(buffer: *const Buffer, from: usize, shut: u8, open: u8) ?usize {
+    var depth: usize = 1;
+    var at = from;
+    while (at > 0) {
+        at -= 1;
+        const byte = buffer.byteAt(at);
+        if (byte == shut) {
+            depth += 1;
+        } else if (byte == open) {
+            depth -= 1;
+            if (depth == 0) return at;
+        }
+    }
+    return null;
+}
+
+/// What counts as part of a word: letters, digits, underscore, and every byte
+/// above ASCII.
+///
+/// Taking all of the high bytes keeps a word with an accent in it whole. Which
+/// of them are really letters needs Unicode tables, which is the same bargain
+/// `Buffer.stepBack` already makes and for the same reason.
+fn inWord(byte: u8) bool {
+    return switch (byte) {
+        'a'...'z', 'A'...'Z', '0'...'9', '_' => true,
+        else => byte >= 0x80,
+    };
+}
+
+/// The word `offset` is in, or none when it is not in one.
+///
+/// The character ahead of the caret decides, and the one behind it when there
+/// is no word ahead: a double-click at either edge of a word means that word.
+fn wordAround(buffer: *const Buffer, offset: usize) ?Span {
+    const end = buffer.byteLen();
+
+    var from = offset;
+    if (from < end and inWord(buffer.byteAt(from))) {
+        // In a word already.
+    } else if (from > 0 and inWord(buffer.byteAt(from - 1))) {
+        from -= 1;
+    } else {
+        return null;
+    }
+
+    var to = from;
+    while (to < end and inWord(buffer.byteAt(to))) to += 1;
+    while (from > 0 and inWord(buffer.byteAt(from - 1))) from -= 1;
+    return .{ .from = from, .to = to };
+}
 
 /// What a selection covers of one line, as offsets within it.
 const Band = struct {
@@ -788,4 +981,85 @@ test "a line wholly inside a longer selection is covered end to end" {
     try std.testing.expectEqual(@as(usize, 0), band.first);
     try std.testing.expectEqual(@as(usize, 3), band.last);
     try std.testing.expect(band.newline);
+}
+
+/// A buffer to ask the double-click rules about. They read bytes and lines and
+/// nothing else, so none of this needs a window, an atlas or a model.
+fn textOf(comptime text: []const u8) Buffer {
+    return Buffer.init(std.testing.allocator, text) catch unreachable;
+}
+
+test "a double-click in a word takes the word" {
+    var buffer = textOf("one two three");
+    defer buffer.deinit();
+
+    // From inside it, from its first edge, and from its last.
+    try std.testing.expectEqual(Span{ .from = 4, .to = 7 }, wordAround(&buffer, 5).?);
+    try std.testing.expectEqual(Span{ .from = 4, .to = 7 }, wordAround(&buffer, 4).?);
+    try std.testing.expectEqual(Span{ .from = 4, .to = 7 }, wordAround(&buffer, 7).?);
+}
+
+test "a word runs through digits and underscores and stops at punctuation" {
+    var buffer = textOf("a.some_name2.b");
+    defer buffer.deinit();
+
+    try std.testing.expectEqual(Span{ .from = 2, .to = 12 }, wordAround(&buffer, 6).?);
+}
+
+test "a double-click on nothing takes nothing" {
+    var buffer = textOf("one   two");
+    defer buffer.deinit();
+
+    // Between the spaces, with no word on either side of the caret.
+    try std.testing.expectEqual(@as(?Span, null), wordAround(&buffer, 5));
+}
+
+test "a double-click beside a bracket takes what is inside it" {
+    var buffer = textOf("call(a, b) end");
+    defer buffer.deinit();
+
+    // In front of the opener, and just after it.
+    try std.testing.expectEqual(Span{ .from = 5, .to = 9 }, bracketAround(&buffer, 4).?);
+    try std.testing.expectEqual(Span{ .from = 5, .to = 9 }, bracketAround(&buffer, 5).?);
+
+    // In front of the closer, and just after it.
+    try std.testing.expectEqual(Span{ .from = 5, .to = 9 }, bracketAround(&buffer, 9).?);
+    try std.testing.expectEqual(Span{ .from = 5, .to = 9 }, bracketAround(&buffer, 10).?);
+}
+
+test "the bracket taken is the innermost one the click is beside" {
+    var buffer = textOf("f(g(x), y)");
+    defer buffer.deinit();
+
+    // Beside the inner opener: the inner pair, not the outer one it is in.
+    try std.testing.expectEqual(Span{ .from = 4, .to = 5 }, bracketAround(&buffer, 4).?);
+    // Beside the outer opener: the outer pair, whose closer is past the inner.
+    try std.testing.expectEqual(Span{ .from = 2, .to = 9 }, bracketAround(&buffer, 2).?);
+}
+
+test "a bracket that nothing closes takes nothing" {
+    var buffer = textOf("f(g, h");
+    defer buffer.deinit();
+
+    try std.testing.expectEqual(@as(?Span, null), bracketAround(&buffer, 2));
+}
+
+test "the three kinds of bracket are matched only against their own" {
+    var buffer = textOf("a[b{c}d]e");
+    defer buffer.deinit();
+
+    try std.testing.expectEqual(Span{ .from = 2, .to = 7 }, bracketAround(&buffer, 2).?);
+    try std.testing.expectEqual(Span{ .from = 4, .to = 5 }, bracketAround(&buffer, 4).?);
+}
+
+test "a whole line carries its ending, and the last line has none to carry" {
+    var buffer = textOf("one\ntwo\nthree");
+    defer buffer.deinit();
+
+    // Through to the start of the next line, so cutting it takes the break too.
+    try std.testing.expectEqual(Span{ .from = 0, .to = 4 }, wholeLine(&buffer, 0));
+    try std.testing.expectEqual(Span{ .from = 4, .to = 8 }, wholeLine(&buffer, 1));
+
+    // The last line stops at the end of the file.
+    try std.testing.expectEqual(Span{ .from = 8, .to = 13 }, wholeLine(&buffer, 2));
 }

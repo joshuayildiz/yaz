@@ -117,8 +117,9 @@ pub const Message = union(enum) {
     /// while it happened -- which is what decides whose view moves.
     wheel: struct { delta: f32, at: [2]f32 },
     /// `extend` is shift being held, which keeps the far end of the selection
-    /// where it is instead of starting a new one.
-    press: struct { at: [2]f32, extend: bool },
+    /// where it is instead of starting a new one. `clicks` is how many presses
+    /// in a row this is, which is what tells a click from a double-click.
+    press: struct { at: [2]f32, extend: bool, clicks: u8 },
     move: [2]f32,
     release,
 
@@ -208,6 +209,7 @@ pub const Message = union(enum) {
                 .{ .press = .{
                     .at = .{ from.button.x * density, from.button.y * density },
                     .extend = c.SDL_GetModState() & c.SDL_KMOD_SHIFT != 0,
+                    .clicks = from.button.clicks,
                 } }
             else
                 null,

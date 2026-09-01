@@ -264,7 +264,7 @@ test "a press moves the keyboard down the column and typing follows it" {
     column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
 
     _ = try column.update(&model, .{ .text = "a" });
-    _ = try column.update(&model, .{ .press = .{ .at = .{ 10, 50 }, .extend = false } });
+    _ = try column.update(&model, .{ .press = .{ .at = .{ 10, 50 }, .extend = false, .clicks = 1 } });
     _ = try column.update(&model, .{ .text = "b" });
 
     try std.testing.expectEqualStrings("hll", told.items);
