@@ -103,6 +103,9 @@ pub const TextView = struct {
             // only when nothing is over it, and there is no cursor movement to
             // give them to yet.
             .quit, .resized, .find, .tab, .split, .close, .up, .down, .cancel => return .nothing,
+            .cut => return .{ .cut = self.which },
+            .copy => return .{ .copy = self.which },
+            .paste => return .{ .paste = self.which },
             .select_all => return .{ .selection = .{
                 .column = self.which,
                 .from = 0,

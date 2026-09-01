@@ -55,6 +55,16 @@ pub const Effect = union(enum) {
     /// gestures: they say where a selection is rather than moving one end of
     /// it.
     selection: struct { column: usize, from: usize, to: usize },
+
+    /// The selection to the system clipboard, with and without taking it out of
+    /// the file, and what is on the clipboard into the file.
+    ///
+    /// Named by column and carrying nothing else: the text is in the file
+    /// already, or on the clipboard already, and copying it into an effect
+    /// would be the one thing here that owned memory.
+    cut: usize,
+    copy: usize,
+    paste: usize,
     /// `pending` is what is left of a gesture too small to have moved a whole
     /// pixel yet, carried in the effect rather than kept by whatever worked it
     /// out. A scroll that only moves the fraction changes nothing on screen.
@@ -107,6 +117,10 @@ pub const Message = union(enum) {
     close,
     /// Take the whole file: cmd+A.
     select_all,
+    /// The selection to the system clipboard and back: cmd+X, cmd+C, cmd+V.
+    cut,
+    copy,
+    paste,
     /// Move a selection, not a caret: nothing in a file reads these yet.
     up,
     down,
@@ -177,6 +191,12 @@ pub const Message = union(enum) {
                         null,
                     c.SDLK_W => if (commanded(from.key.mod)) .close else null,
                     c.SDLK_A => if (commanded(from.key.mod)) .select_all else null,
+                    // The letters are safe to bind: SDL drops a keystroke whose
+                    // text is a control character, so ctrl+C does not also
+                    // arrive as the 0x03 Windows makes of it.
+                    c.SDLK_X => if (commanded(from.key.mod)) .cut else null,
+                    c.SDLK_C => if (commanded(from.key.mod)) .copy else null,
+                    c.SDLK_V => if (commanded(from.key.mod)) .paste else null,
                     else => null,
                 };
             },

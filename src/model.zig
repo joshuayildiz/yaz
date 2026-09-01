@@ -17,6 +17,8 @@ const open_file = @import("./open_file.zig");
 const OpenFile = open_file.OpenFile;
 const Span = open_file.Span;
 const tools = @import("./tools.zig");
+const sdl = @import("./sdl.zig");
+const c = sdl.c;
 const fff = @import("./fff.zig");
 const Effect = @import("./message.zig").Effect;
 
@@ -349,6 +351,20 @@ pub const Model = struct {
                 file.drag = where.at;
             },
 
+            .copy => |which| {
+                try self.copyOut(which);
+                // The clipboard is not drawn, so nothing on screen moved.
+                return;
+            },
+            .cut => |which| {
+                try self.copyOut(which);
+                const file = self.column(which) orelse return;
+                if (!file.hasSelection()) return;
+                _ = try dropSelection(file);
+                file.follow_caret = true;
+            },
+            .paste => |which| try self.pasteIn(which),
+
             .focus => |which| self.focus = which,
             .holding => |which| self.holding = which,
 
@@ -365,6 +381,55 @@ pub const Model = struct {
             .choose => try self.choose(),
         }
         self.changed();
+    }
+
+    /// Puts the selection on the system clipboard.
+    ///
+    /// Nothing selected leaves the clipboard as it was. Cutting nothing should
+    /// not throw away what somebody put there.
+    ///
+    /// SDL's clipboard is a C string either way, so a file holding a zero byte
+    /// copies as far as the first one. Nothing here can do better without
+    /// leaving the API SDL offers.
+    fn copyOut(self: *Model, which: usize) !void {
+        const file = self.column(which) orelse return;
+        const chosen = file.selected();
+        if (chosen.empty()) return;
+
+        // Terminated for SDL, which copies what it is given: the buffer's own
+        // slice is neither terminated nor good past the next call into it.
+        const text = try file.buffer.slice(chosen.from, chosen.to);
+        const owned = try self.allocator.dupeZ(u8, text);
+        defer self.allocator.free(owned);
+
+        if (!c.SDL_SetClipboardText(owned.ptr)) {
+            std.log.err("SDL_SetClipboardText: {s}", .{sdl.lastError()});
+        }
+    }
+
+    /// Puts what is on the system clipboard into the file, over the selection
+    /// if there is one.
+    fn pasteIn(self: *Model, which: usize) !void {
+        const file = self.column(which) orelse return;
+
+        // A copy SDL made and wants back. Empty rather than null when there is
+        // nothing on the clipboard, which is not an error.
+        const given = c.SDL_GetClipboardText();
+        if (given == null) return;
+        defer c.SDL_free(given);
+
+        const text = std.mem.span(given);
+        if (text.len == 0) return;
+
+        const mended = try unixEndings(self.allocator, text);
+        defer if (mended) |owned| self.allocator.free(owned);
+        const putting = mended orelse text;
+
+        const at = try dropSelection(file);
+        _ = try file.insert(at, putting);
+        file.cursor = at + putting.len;
+        file.anchor = file.cursor;
+        file.follow_caret = true;
     }
 
     /// Takes out whatever is selected and answers where the caret ends up.
@@ -743,6 +808,57 @@ test "stripCarriageReturns handles a trailing carriage return" {
     const stripped = try stripCarriageReturns(allocator, text);
     defer allocator.free(stripped);
     try std.testing.expectEqualStrings("one\n\r", stripped);
+}
+
+/// Clipboard text with its line endings made into the one the line index
+/// counts, or null when it already has them.
+///
+/// Windows puts CRLF on the clipboard and SDL hands it over unchanged; older
+/// Mac text is a bare CR. Only `\n` starts a line here, so either would land in
+/// the file as a byte with nothing on screen to account for it -- a glyph at
+/// the end of every pasted line, and a column count nobody could explain.
+///
+/// Null rather than a copy when there is nothing to mend, which is every paste
+/// that came from another window of this editor.
+fn unixEndings(allocator: std.mem.Allocator, text: []const u8) !?[]u8 {
+    if (std.mem.indexOfScalar(u8, text, '\r') == null) return null;
+
+    var mended: std.ArrayList(u8) = .empty;
+    errdefer mended.deinit(allocator);
+    // No more than what came in: every ending either shrinks or stays.
+    try mended.ensureTotalCapacity(allocator, text.len);
+
+    var at: usize = 0;
+    while (at < text.len) : (at += 1) {
+        if (text[at] != '\r') {
+            mended.appendAssumeCapacity(text[at]);
+            continue;
+        }
+        // A CR is one line ending whether an LF follows it or not.
+        mended.appendAssumeCapacity('\n');
+        if (at + 1 < text.len and text[at + 1] == '\n') at += 1;
+    }
+
+    return try mended.toOwnedSlice(allocator);
+}
+
+test "clipboard text that already ends its lines the right way is left alone" {
+    try std.testing.expectEqual(
+        @as(?[]u8, null),
+        try unixEndings(std.testing.allocator, "one\ntwo\n"),
+    );
+}
+
+test "a CRLF from another window becomes the ending the file counts" {
+    const mended = (try unixEndings(std.testing.allocator, "one\r\ntwo\r\n")).?;
+    defer std.testing.allocator.free(mended);
+    try std.testing.expectEqualStrings("one\ntwo\n", mended);
+}
+
+test "a CR on its own is a line ending too" {
+    const mended = (try unixEndings(std.testing.allocator, "one\rtwo\r\nthree")).?;
+    defer std.testing.allocator.free(mended);
+    try std.testing.expectEqualStrings("one\ntwo\nthree", mended);
 }
 
 /// A model with one file in one column, which is what the tests below all want
