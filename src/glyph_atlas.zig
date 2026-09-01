@@ -175,6 +175,9 @@ pub const GlyphAtlas = struct {
     ascent: f32,
     line_height: f32,
 
+    /// How far a tab advances the pen. Measured, not derived: see `measureTab`.
+    tab_width: f32,
+
     /// What everything above was built at, so a move to a display of a
     /// different density is a float compare rather than the right event.
     scale: f32,
@@ -226,6 +229,7 @@ pub const GlyphAtlas = struct {
             .glyphs = glyphs,
             .ascent = fromFixed(face.*.size.*.metrics.ascender),
             .line_height = fromFixed(face.*.size.*.metrics.height),
+            .tab_width = measureTab(&shaper),
             .scale = scale,
         };
     }
@@ -247,6 +251,7 @@ pub const GlyphAtlas = struct {
         self.shaper.setScale(scale);
         self.ascent = fromFixed(self.face.*.size.*.metrics.ascender);
         self.line_height = fromFixed(self.face.*.size.*.metrics.height);
+        self.tab_width = measureTab(&self.shaper);
         self.scale = scale;
 
         @memset(self.slots, no_slot);
@@ -281,16 +286,50 @@ pub const GlyphAtlas = struct {
         entry.sprites.clearRetainingCapacity();
         entry.carets.clearRetainingCapacity();
 
-        const shaped = self.shaper.shape(text);
+        // The line is shaped in the runs between its tabs, so a tab never
+        // reaches the shaper. It is not a character the font has anything to
+        // say about -- what it is worth is a decision, not a metric -- and a
+        // run either side of one is a separate piece of text anyway.
         var pen: f32 = 0;
+        var at: usize = 0;
+        while (at < text.len) {
+            const stop = std.mem.indexOfScalarPos(u8, text, at, '\t') orelse text.len;
+            if (stop > at) pen = try self.shapeRun(text[at..stop], at, pen, entry);
+            if (stop == text.len) break;
+
+            // A boundary where the tab begins, and then the pen moves. Nothing
+            // is drawn, so there is no glyph to ask the atlas for.
+            try entry.carets.append(self.allocator, .{ .offset = @intCast(stop), .x = pen });
+            pen += self.tab_width;
+            at = stop + 1;
+        }
+
+        // No glyph begins at the end of the line, so the caret can only go
+        // there by being appended.
+        try entry.carets.append(self.allocator, .{ .offset = @intCast(text.len), .x = pen });
+
+        entry.bytes = text.len;
+        entry.shaped = true;
+    }
+
+    /// One run of a line with no tab in it, laid out from `pen` and answering
+    /// where the pen ended up.
+    ///
+    /// `base` is where the run begins in the line, since a cluster is counted
+    /// from the start of what was handed to the shaper rather than of the line.
+    fn shapeRun(self: *GlyphAtlas, text: []const u8, base: usize, from: f32, entry: *LineLayout) !f32 {
+        const shaped = self.shaper.shape(text);
+        var pen = from;
         for (shaped.infos, shaped.positions) |info, offset| {
             try self.request(info.codepoint);
+
+            const cluster = info.cluster + @as(u32, @intCast(base));
 
             // Clusters only climb, so the last entry is the only possible
             // repeat. Glyphs sharing one -- a letter and its mark -- are a
             // single boundary at the pen before the first.
-            if (entry.carets.items.len == 0 or entry.carets.getLast().offset != info.cluster) {
-                try entry.carets.append(self.allocator, .{ .offset = info.cluster, .x = pen });
+            if (entry.carets.items.len == 0 or entry.carets.getLast().offset != cluster) {
+                try entry.carets.append(self.allocator, .{ .offset = cluster, .x = pen });
             }
 
             // Moves a glyph off the pen without moving the pen, which is how
@@ -309,13 +348,7 @@ pub const GlyphAtlas = struct {
                 .size = .{ @floatFromInt(g.width), @floatFromInt(g.height) },
             });
         }
-
-        // No glyph begins at the end of the line, so the caret can only go
-        // there by being appended.
-        try entry.carets.append(self.allocator, .{ .offset = @intCast(text.len), .x = pen });
-
-        entry.bytes = text.len;
-        entry.shaped = true;
+        return pen;
     }
 
     /// Rasterises `id` the first time it is asked for. Runs once per glyph laid
@@ -702,6 +735,19 @@ test "shaping follows a change of scale" {
 /// What FreeType and HarfBuzz are both set to. Whole pixels, because that is the
 /// unit FreeType takes; the fraction of a *pen position* is a different question,
 /// and what the subpixel variants are for.
+/// How far a tab advances the pen: the width of `config.tab_stop`.
+///
+/// Measured through the shaper rather than taken off the face, so it is the
+/// same arithmetic that lays out the text a tab is lining up against, and it
+/// follows the font and the display scale without anything having to remember
+/// to make it.
+fn measureTab(shaper: *Shaper) f32 {
+    const shaped = shaper.shape(config.tab_stop);
+    var pen: f32 = 0;
+    for (shaped.positions) |offset| pen += fromFixed(offset.x_advance);
+    return pen;
+}
+
 fn pixelSize(scale: f32) u32 {
     const px = @round(@as(f32, config.font_size) * scale);
     // A zero-pixel face makes FreeType fail somewhere less obvious.
@@ -794,4 +840,41 @@ fn createAtlas(allocator: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUT
     }
 
     return texture;
+}
+
+test "a tab is worth more than the spaces it would otherwise have been" {
+    var shaper = try Shaper.init(1);
+    defer shaper.deinit();
+
+    const tab = measureTab(&shaper);
+
+    // Four spaces: what a tab would be worth if it were spaces, and the whole
+    // reason it is not. A proportional font's space is about half a digit.
+    var spaces: f32 = 0;
+    for (shaper.shape("    ").positions) |offset| spaces += fromFixed(offset.x_advance);
+
+    try std.testing.expect(spaces > 0);
+    try std.testing.expect(tab > spaces * 1.5);
+}
+
+test "a tab is as wide as the stop it is measured from" {
+    var shaper = try Shaper.init(1);
+    defer shaper.deinit();
+
+    const tab = measureTab(&shaper);
+
+    var stop: f32 = 0;
+    for (shaper.shape(config.tab_stop).positions) |offset| stop += fromFixed(offset.x_advance);
+
+    try std.testing.expectEqual(stop, tab);
+}
+
+test "a tab grows with the display scale, like everything else measured" {
+    var one = try Shaper.init(1);
+    defer one.deinit();
+    var two = try Shaper.init(2);
+    defer two.deinit();
+
+    // Not exactly twice: the pixel size is rounded before the font is asked.
+    try std.testing.expect(measureTab(&two) > measureTab(&one) * 1.5);
 }

@@ -9,6 +9,15 @@ pub const font_path = "assets/DejaVuSans.ttf";
 /// scale, so text is the same size to look at on any display.
 pub const font_size = 13;
 
+/// What a tab is worth, written as the text it is as wide as.
+///
+/// Four of them because four is the indent, and zeros rather than spaces
+/// because a proportional font's space is far too thin to indent with -- four
+/// spaces of DejaVu Sans are narrower than one letter of the code they would be
+/// indenting. A digit is the one glyph in a text font that is reliably wide and
+/// the same width as its fellows.
+pub const tab_stop = "0000";
+
 // -- Theme --------------------------------------------------------------------
 //
 // The swapchain is a plain UNORM target, so these are the numbers that reach it.

@@ -483,6 +483,40 @@ composes into the same glyph as a precomposed `é`. None of those is what any
 character maps to; they exist only because `liga` and `ccmp` substituted them
 in.
 
+### Tabs
+
+**A tab never reaches the shaper.** A line is shaped in the runs between its
+tabs, and the pen is moved by a fixed amount at each one. There is nothing to
+draw, so no glyph is asked for.
+
+That is because what a tab is worth is a decision rather than a metric. The font
+has an opinion about it and the opinion is useless: U+0009 is a control
+character, not something a text face is designed to set.
+
+The amount is **the width of `config.tab_stop`, which is `"0000"`** — four
+digits, measured through the shaper at the current display scale. Four because
+four is the indent. Digits rather than spaces because a proportional font's
+space is far too thin to indent with: in DejaVu Sans a space is about half the
+width of a digit, so four spaces come out narrower than one letter of the code
+they would be indenting. A digit is the one glyph in a text font that is
+reliably wide and the same width as its fellows, which is why it is what a tab
+is measured in.
+
+It is measured rather than derived so that it follows the font and the scale
+without anything having to remember to make it, and through the shaper rather
+than off the face so that it is the same arithmetic that lays out the text a tab
+is lining up against.
+
+Every tab is worth the same amount wherever it falls, rather than advancing to
+the next stop from the start of the line. Leading indentation is the case that
+matters and both rules agree on it; they differ only for a tab in the middle of
+a line, where stops would line a column up with the line above and this does
+not.
+
+A tab gets **a caret boundary at each end**, so clicking in its left half puts
+the caret before it and its right half after, and one press of backspace takes
+the whole of it — it is one byte.
+
 ### Direction
 
 **yaz is left-to-right, strictly.** Not left-to-right until someone reports it —
