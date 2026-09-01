@@ -101,9 +101,10 @@ tab per file open in the window — the ones named here and the ones picked with
 cmd+P.
 
 **Pressing a tab shows that file and nothing else**, and **cmd+1** to **cmd+9**
-do the same for the first nine of them (ctrl elsewhere, and either works on any
-platform). Choosing one of something is choosing it instead of the rest, so the
-other columns go back to being open but not on screen — nothing is closed.
+do the same for the first nine of them — **alt+1** to **alt+9** off macOS, which
+is what the tab strip of every other window on those machines answers to.
+Choosing one of something is choosing it instead of the rest, so the other
+columns go back to being open but not on screen — nothing is closed.
 
 A tab says two things at once, because with the window split they have different
 answers. **Its ground says whether the file is on screen**: lifted out of the
@@ -112,21 +113,27 @@ strip for a file in a column, recessed into it for one that is only open.
 typed into, grey for the rest.
 
 **cmd+alt+1** to **cmd+alt+9** put that file beside what is already split, or
-take it away again when it is already there — the one binding that adds a column
-rather than replacing what is there. Taking one away is not closing it: the file
-stays open with its tab and its caret where you left it, so putting it back
-costs nothing and it lands where it was, since the columns follow the bar's
-order. The last column stays — something has to be there to type into.
+take it away again when it is already there — **shift+alt+1** to **shift+alt+9**
+off macOS. This is the one binding that adds a column rather than replacing what
+is there. Taking one away is not closing it: the file stays open with its tab
+and its caret where you left it, so putting it back costs nothing and it lands
+where it was, since the columns follow the bar's order. The last column stays —
+something has to be there to type into.
 
-*(Alt rather than shift, because macOS has taken shift+cmd+3 and shift+cmd+4 for
-screenshots and never passes them on.)*
+*(The digits are the one family of bindings that is not the same on every
+platform. macOS cannot use shift for the second of them — shift+cmd+3 and
+shift+cmd+4 are the system's screenshots and never reach an application — so it
+adds alt instead. Everywhere else alt is already the first of them, and shift is
+free. Ctrl says nothing about a digit off macOS: with alt meaning a tab, ctrl+1
+and ctrl+alt+1 are chords yaz has no answer for. Every other binding is still
+cmd on macOS and ctrl elsewhere, either accepted on any platform.)*
 
 **cmd+W** closes the file the focused column is showing: its tab goes, the file
 goes out of memory, and its column goes with it, so there is one less to split.
 The last column stays and falls back to the first file nothing else is showing —
 or to an empty file when there is none, which is where a window with no file
 named starts. It closes what that column has, so a file sitting in another column
-is reached with cmd+N or a press before it can be closed.
+is reached with the digit binding or a press before it can be closed.
 
 **With nothing left on the bar, cmd+W closes the window.** That is also how a
 window that was never given a file ends, so `yaz` on its own is not a thing you
@@ -957,8 +964,8 @@ typed into rather than with the bar holding it.
 `Tabs` lays its own tabs out rather than dividing the bar evenly, because a row
 of equal shares is the wrong shape for a row of words: each tab is as wide as
 the name in it. It answers a press with `Effect.show` and the tab's place on the
-bar, which is exactly what cmd+N means, so a tab reached either way says the
-same thing and neither has to name a file.
+bar, which is exactly what the digit binding means, so a tab reached either way
+says the same thing and neither has to name a file.
 
 **`VTuple` stacks members top to bottom, and is the one place where they are
 not all the same size.** Each is asked how tall it wants to be, and one that

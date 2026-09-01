@@ -141,8 +141,33 @@ pub const Message = union(enum) {
     /// command". Cmd on macOS, Ctrl elsewhere -- either is accepted everywhere,
     /// so one binding is right on every platform and nothing has to ask which
     /// one it is on.
+    ///
+    /// The letters go by this. The digits do not: see `numbered`.
     fn commanded(mod: c.SDL_Keymod) bool {
         return mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL) != 0;
+    }
+
+    /// The two things a digit can mean, or neither.
+    ///
+    /// The one family of bindings that is not the same everywhere. macOS holds
+    /// the command key and adds alt for the second of them, because shift is
+    /// not available to it: shift+cmd+3 and shift+cmd+4 are the system's
+    /// screenshots and never reach an application.
+    ///
+    /// Everywhere else it is alt on its own, which is what the tab strip of
+    /// every other window on those machines answers to, and shift for the
+    /// second. Ctrl says nothing about a digit there -- with alt meaning a tab,
+    /// ctrl+1 and ctrl+alt+1 are chords this no longer has an answer for.
+    fn numbered(mod: c.SDL_Keymod) ?enum { tab, split } {
+        const alt = mod & c.SDL_KMOD_ALT != 0;
+
+        if (macos) {
+            if (!commanded(mod)) return null;
+            return if (alt) .split else .tab;
+        }
+
+        if (commanded(mod) or !alt) return null;
+        return if (mod & c.SDL_KMOD_SHIFT != 0) .split else .tab;
     }
 
     /// Null for what nothing here acts on, which is most of what SDL sends.
@@ -163,18 +188,14 @@ pub const Message = union(enum) {
                 // a modifier turns `1` into something else on most layouts, and
                 // what these mean is the key under the finger. They are
                 // contiguous, so the key is its own index.
-                //
-                // Alt rather than shift for the second of them: macOS has taken
-                // shift+cmd+3 and shift+cmd+4 for screenshots and never passes
-                // them on.
-                if (commanded(from.key.mod)) {
-                    const code = from.key.scancode;
-                    if (code >= c.SDL_SCANCODE_1 and code <= c.SDL_SCANCODE_9) {
+                const code = from.key.scancode;
+                if (code >= c.SDL_SCANCODE_1 and code <= c.SDL_SCANCODE_9) {
+                    if (numbered(from.key.mod)) |what| {
                         const which: u8 = @intCast(code - c.SDL_SCANCODE_1);
-                        break :key if (from.key.mod & c.SDL_KMOD_ALT != 0)
-                            .{ .split = which }
-                        else
-                            .{ .tab = which };
+                        break :key switch (what) {
+                            .tab => .{ .tab = which },
+                            .split => .{ .split = which },
+                        };
                     }
                 }
 
@@ -250,6 +271,15 @@ pub const Message = union(enum) {
 /// wheel counts its notches in it.
 const a_line: f32 = 15;
 
+/// What means "show the nth file" and "put it beside what is there" on the
+/// platform the tests are running on, so a test can say which binding it means
+/// without saying which keys that is.
+const shows: u16 = if (macos) c.SDL_KMOD_LGUI else c.SDL_KMOD_LALT;
+const splits: u16 = if (macos)
+    c.SDL_KMOD_LGUI | c.SDL_KMOD_LALT
+else
+    c.SDL_KMOD_LALT | c.SDL_KMOD_LSHIFT;
+
 /// A key going down, as SDL reports one. The scancode is the key's place on the
 /// keyboard and the keycode is what it would type; the bindings below care about
 /// one or the other, never both.
@@ -267,29 +297,52 @@ test "a digit on its own is a character, not a binding" {
     try std.testing.expectEqual(@as(?Message, null), Message.init(&message, 1, a_line));
 }
 
-test "cmd and a digit reach that tab, counted from zero" {
-    const first = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LGUI);
+test "the platform's modifier and a digit reach that tab, counted from zero" {
+    const first = pressed(c.SDL_SCANCODE_1, c.SDLK_1, shows);
     try std.testing.expectEqual(@as(u8, 0), Message.init(&first, 1, a_line).?.tab);
 
-    const ninth = pressed(c.SDL_SCANCODE_9, c.SDLK_9, c.SDL_KMOD_LGUI);
+    const ninth = pressed(c.SDL_SCANCODE_9, c.SDLK_9, shows);
     try std.testing.expectEqual(@as(u8, 8), Message.init(&ninth, 1, a_line).?.tab);
 }
 
-test "ctrl does what cmd does, on any platform" {
-    const message = pressed(c.SDL_SCANCODE_3, c.SDLK_3, c.SDL_KMOD_LCTRL);
-    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).?.tab);
+test "the second modifier splits that tab instead of showing it" {
+    const message = pressed(c.SDL_SCANCODE_3, c.SDLK_3, splits);
+    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).?.split);
 }
 
-test "adding alt splits that tab instead of showing it" {
-    const message = pressed(c.SDL_SCANCODE_3, c.SDLK_3, c.SDL_KMOD_LGUI | c.SDL_KMOD_LALT);
-    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).?.split);
+test "ctrl still does what cmd does for the letters, on any platform" {
+    const shut = pressed(c.SDL_SCANCODE_W, c.SDLK_W, c.SDL_KMOD_LCTRL);
+    try std.testing.expectEqual(Message.close, Message.init(&shut, 1, a_line).?);
+}
+
+test "off macOS the digits are alt's, and ctrl has no answer for them" {
+    if (macos) return error.SkipZigTest;
+
+    // What used to show a tab.
+    const with_ctrl = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LCTRL);
+    try std.testing.expectEqual(@as(?Message, null), Message.init(&with_ctrl, 1, a_line));
+
+    // And what used to split one.
+    const with_both = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LCTRL | c.SDL_KMOD_LALT);
+    try std.testing.expectEqual(@as(?Message, null), Message.init(&with_both, 1, a_line));
+}
+
+test "on macOS the command key is still what the digits answer to" {
+    if (!macos) return error.SkipZigTest;
+
+    // Alt on its own is the binding everywhere else, and nothing here.
+    const alone = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LALT);
+    try std.testing.expectEqual(@as(?Message, null), Message.init(&alone, 1, a_line));
+
+    const commanded_digit = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LCTRL);
+    try std.testing.expectEqual(@as(u8, 0), Message.init(&commanded_digit, 1, a_line).?.tab);
 }
 
 test "the keycode a modifier produces is not what a digit is read from" {
     // Holding a modifier turns `3` into `#` on a US layout and into something
     // else again elsewhere. The scancode is the key under the finger either way,
     // and is what these bindings are read from.
-    const message = pressed(c.SDL_SCANCODE_3, c.SDLK_HASH, c.SDL_KMOD_LGUI | c.SDL_KMOD_LALT);
+    const message = pressed(c.SDL_SCANCODE_3, c.SDLK_HASH, splits);
     try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).?.split);
 }
 
