@@ -1,17 +1,15 @@
-//! A column of components, top to bottom.
+//! A column of components, top to bottom, whose members are not all the same
+//! size.
 //!
-//! The third of the three, and the one whose members are not all the same size:
-//! a `ZTuple` gives every member the whole rect, an `HTuple` divides it evenly,
-//! and here each member says how tall it wants to be. One that says nothing
-//! takes what is left, which is how a list under a heading gets the rest of the
-//! window without either of them knowing the window's size.
-//!
-//! The atlas comes with the rect because a height is nearly always a number of
-//! lines, and what a line is worth is a property of the font at the display's
-//! scale rather than of the layout.
+//! Each member says how tall it wants to be, and one that says nothing takes
+//! what is left -- which is how a list under a heading gets the rest of the
+//! window without either of them knowing the window's size. The atlas comes
+//! with the rect because a height is nearly always a number of lines, and what
+//! a line is worth is a property of the font at the display's scale rather than
+//! of the layout.
 //!
 //! All of them draw, since none covers another. A press moves the keyboard and
-//! takes the pointer until the release, as in `HTuple`.
+//! takes the pointer until the release.
 
 const std = @import("std");
 
@@ -55,27 +53,6 @@ pub fn VTuple(comptime members: []const type) type {
 
         pub fn deinit(self: *Self, model: *Model) void {
             inline for (0..count) |i| self.items[i].deinit(model);
-        }
-
-        pub fn has(comptime T: type) bool {
-            inline for (members) |member| {
-                if (member == T) return true;
-            }
-            return false;
-        }
-
-        pub fn get(self: *Self, comptime T: type) *T {
-            return &self.items[comptime indexOf(T)];
-        }
-
-        /// The member with the keyboard, when it is a `T`.
-        pub fn focused(self: *Self, comptime T: type) ?*T {
-            inline for (0..count) |i| {
-                if (comptime members[i] == T) {
-                    if (self.focus == i) return &self.items[i];
-                }
-            }
-            return null;
         }
 
         /// Hands the keyboard to `T`, for whoever knows something the column

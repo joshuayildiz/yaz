@@ -70,7 +70,7 @@ pub const Finding = struct {
     }
 
     /// What return would open.
-    pub fn chosen(self: *const Finding) ?[]const u8 {
+    fn chosen(self: *const Finding) ?[]const u8 {
         return self.path(self.selected);
     }
 };
@@ -187,7 +187,7 @@ pub const Model = struct {
     /// One search with nothing typed, for the count alone. It is what the panel
     /// says before a query narrows it, and asking is how many files the index
     /// holds -- which the watcher moves while nobody is looking.
-    pub fn find(self: *Model) !void {
+    fn find(self: *Model) !void {
         self.stopFinding();
         self.finding = .{};
 
@@ -201,7 +201,7 @@ pub const Model = struct {
 
     /// Everything that only exists while the finder is open, which is now the
     /// query and the answer to it. The index outlives the panel.
-    pub fn stopFinding(self: *Model) void {
+    fn stopFinding(self: *Model) void {
         const finding = &(self.finding orelse return);
         finding.typed.deinit(self.allocator);
         if (finding.found) |*found| found.deinit();
@@ -210,7 +210,7 @@ pub const Model = struct {
     }
 
     /// Adds to the query and re-ranks against it.
-    pub fn typeInto(self: *Model, text: []const u8) !void {
+    fn typeInto(self: *Model, text: []const u8) !void {
         const finding = &(self.finding orelse return);
         try finding.typed.appendSlice(self.allocator, text);
         try self.rank();
@@ -219,7 +219,7 @@ pub const Model = struct {
     /// Takes a character back off the query. One byte at a time is wrong the
     /// moment the query is not ASCII, and `Buffer.stepBack` is where that is
     /// already solved; this is a query, not a file, and cannot reach it.
-    pub fn rubOut(self: *Model) !void {
+    fn rubOut(self: *Model) !void {
         const finding = &(self.finding orelse return);
         if (finding.typed.items.len == 0) return;
         finding.typed.items.len -= 1;
@@ -227,7 +227,7 @@ pub const Model = struct {
     }
 
     /// Moves the selection, and the window on to it, by one.
-    pub fn select(self: *Model, by: enum { up, down }) void {
+    fn select(self: *Model, by: enum { up, down }) void {
         const finding = &(self.finding orelse return);
         switch (by) {
             .up => if (finding.selected > 0) {
@@ -349,14 +349,14 @@ pub const Model = struct {
     }
 
     /// The file the nth column is showing.
-    pub fn column(self: *const Model, which: usize) ?*OpenFile {
+    fn column(self: *const Model, which: usize) ?*OpenFile {
         if (which >= self.columns.items.len) return null;
         return self.columns.items[which];
     }
 
     /// The nth file on the bar, or none when the bar is shorter than that. A
     /// file nobody named has no tab, so it is not counted.
-    pub fn tab(self: *const Model, which: usize) ?*OpenFile {
+    fn tab(self: *const Model, which: usize) ?*OpenFile {
         var counted: usize = 0;
         for (self.files.items) |file| {
             if (file.path == null) continue;
@@ -484,7 +484,7 @@ pub const Model = struct {
     }
 
     /// Which column is showing `file`, if one is.
-    pub fn columnOf(self: *const Model, file: *const OpenFile) ?usize {
+    fn columnOf(self: *const Model, file: *const OpenFile) ?usize {
         for (self.columns.items, 0..) |shown, which| {
             if (shown == file) return which;
         }
@@ -507,7 +507,7 @@ pub const Model = struct {
     ///
     /// Asking twice gives the same file back, which is what stops two columns
     /// showing two copies of one file that drift apart.
-    pub fn open(self: *Model, path: []const u8) !*OpenFile {
+    fn open(self: *Model, path: []const u8) !*OpenFile {
         if (self.opened(path)) |already| return already;
 
         const text = try self.read(path);
@@ -516,11 +516,11 @@ pub const Model = struct {
     }
 
     /// A file nobody named, which is what a window with nothing to show has.
-    pub fn blank(self: *Model) !*OpenFile {
+    fn blank(self: *Model) !*OpenFile {
         return self.hold("", null);
     }
 
-    pub fn opened(self: *Model, path: []const u8) ?*OpenFile {
+    fn opened(self: *Model, path: []const u8) ?*OpenFile {
         for (self.files.items) |file| {
             const named = file.path orelse continue;
             if (std.mem.eql(u8, named, path)) return file;
@@ -528,7 +528,7 @@ pub const Model = struct {
         return null;
     }
 
-    pub fn indexOf(self: *Model, file: *const OpenFile) ?usize {
+    fn indexOf(self: *Model, file: *const OpenFile) ?usize {
         for (self.files.items, 0..) |listed, which| {
             if (listed == file) return which;
         }
@@ -537,7 +537,7 @@ pub const Model = struct {
 
     /// Out of the window and out of memory. Closing is the one thing that means
     /// a file is finished with.
-    pub fn close(self: *Model, file: *OpenFile) void {
+    fn close(self: *Model, file: *OpenFile) void {
         const which = self.indexOf(file) orelse return;
         _ = self.files.orderedRemove(which);
         file.deinit();

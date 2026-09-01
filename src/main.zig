@@ -195,9 +195,8 @@ fn run(model: *Model, comptime Component: type, component: Component, title: ?[]
 
     // Only a window with a file in it has anything to be called. SDL copies the
     // string, so the sentinel it wants is borrowed for the length of the call
-    // rather than carried around by the view -- where it would be a path whose
-    // allocation is one byte longer than its length, and the parked documents
-    // are keyed by exactly that path.
+    // rather than carried around by the file, where it would be a path one byte
+    // longer than its length for the sake of one call at startup.
     if (title) |named| {
         const owned = try model.allocator.dupeZ(u8, named);
         defer model.allocator.free(owned);
@@ -304,8 +303,6 @@ test {
     _ = @import("./components/text_view.zig");
     _ = @import("./components/editor.zig");
     _ = @import("./fff.zig");
-    _ = @import("./components/htuple.zig");
-    _ = @import("./components/hlist.zig");
     _ = @import("./components/tabs.zig");
     _ = @import("./components/vtuple.zig");
     _ = @import("./components/workbench.zig");

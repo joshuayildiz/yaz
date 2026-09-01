@@ -34,7 +34,7 @@ const TextView = @import("./text_view.zig").TextView;
 /// `model.columns`, and a column is made from it for as long as it takes to place
 /// it, draw it, or hand it an message. What is kept is where each one ended up,
 /// so a press can be turned back into the column it fell in.
-pub const Views = struct {
+const Views = struct {
     rects: std.ArrayList(Rect) = .empty,
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },

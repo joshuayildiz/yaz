@@ -1,13 +1,13 @@
 //! A tab per file open in this window, along the top.
 //!
 //! Each is as wide as the name in it, packed from the left, so the bar reads as
-//! labels rather than as a grid. That is why this lays its own tabs out instead
-//! of being an `HList`, which divides evenly: a row of equal shares is the wrong
-//! shape for a row of words.
+//! labels rather than as a grid: a row of equal shares is the wrong shape for a
+//! row of words, which is why this lays its own tabs out.
 //!
-//! It owns the names and nothing else. Which file is in front of the reader is
-//! asked of the columns every frame rather than remembered here, so the bar
-//! cannot disagree with what is on screen.
+//! It owns nothing but the rects it drew them at. Which files exist, which are
+//! on screen, which is being typed into and which have been changed are all
+//! read off the model as it draws, so the bar cannot disagree with what is
+//! there.
 //!
 //! A press answers `Effect.show` and the tab's place on the bar, which is what
 //! cmd+N means as well, so a tab reached either way says the same thing: show

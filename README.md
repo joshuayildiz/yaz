@@ -140,7 +140,7 @@ not saved**, which is every file that has been typed into, since there is still
 no way to save. The mark's room is reserved whether it is drawn or not, so typing
 into a file does not shift the bar along, and again on the other side of the name
 so the name sits in the middle of its tab rather than hard against one edge. The
-mark stays on a file that has been parked behind another, which is what makes an
+mark stays on a file that is open behind another, which is what makes an
 unsaved edit visible rather than hidden — see [FIXME.md](FIXME.md).
 
 `assets/sample.txt` is there to be opened — six lines exercising ligatures, a

@@ -331,8 +331,8 @@ pub const Finder = struct {
     /// What a keystroke means while the panel is up. Nothing here changes
     /// anything: it says what it wants and the model does it.
     ///
-    /// The path it answers with is copied out of the listing, which closing
-    /// frees, so whoever takes it owns it.
+    /// Nothing it answers with owns memory either -- return is `choose`, and
+    /// which file that is is the model's to look up.
     pub fn update(_: *Finder, _: *const Model, message: Message) !Effect {
         return switch (message) {
             .cancel, .find => .dismiss,

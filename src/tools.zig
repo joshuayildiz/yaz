@@ -161,10 +161,6 @@ pub fn probe(exe: []const u8) bool {
 pub const Missing = struct {
     fff: bool,
 
-    pub fn any(self: Missing) bool {
-        return self.fff;
-    }
-
     pub fn has(self: Missing, tool: Tool) bool {
         return switch (tool) {
             .fff => self.fff,

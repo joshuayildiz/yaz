@@ -69,7 +69,6 @@ const Symbols = struct {
     create: *const fn (*const CreateOptions) callconv(.c) *Result,
     destroy: *const fn (*anyopaque) callconv(.c) void,
     search: *const fn (*anyopaque, [*:0]const u8, ?[*:0]const u8, u32, u32, u32, i32, u32) callconv(.c) *Result,
-    scanning: *const fn (*anyopaque) callconv(.c) bool,
 
     free_result: *const fn (*Result) callconv(.c) void,
     free_search: *const fn (*anyopaque) callconv(.c) void,
@@ -88,7 +87,6 @@ const Symbols = struct {
         .{ "create", "fff_create_instance_with" },
         .{ "destroy", "fff_destroy" },
         .{ "search", "fff_search" },
-        .{ "scanning", "fff_is_scanning" },
         .{ "free_result", "fff_free_result" },
         .{ "free_search", "fff_free_search_result" },
         .{ "count", "fff_search_result_get_count" },
@@ -191,12 +189,6 @@ pub const Index = struct {
 
     pub fn close(self: *Index) void {
         self.at.destroy(self.handle);
-    }
-
-    /// Whether the first walk is still going. Not an error while it is: a
-    /// search against a partial index answers with what has been found so far.
-    pub fn scanning(self: *const Index) bool {
-        return self.at.scanning(self.handle);
     }
 
     /// The paths matching `query`, best first. The caller owns what comes back.
