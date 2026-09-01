@@ -705,15 +705,24 @@ fn shapedWidth(shaper: *Shaper, text: []const u8) f32 {
     return total;
 }
 
-test "shaping kerns a pair that plain advances would set too far apart" {
+test "every character advances the same, which is what monospace means" {
     var shaper = try Shaper.init(1);
     defer shaper.deinit();
 
-    // Nothing but the kerning table makes the pair narrower than the letters
-    // measured alone, and every other test here would pass without it.
-    const together = shapedWidth(&shaper, "AV");
-    const apart = shapedWidth(&shaper, "A") + shapedWidth(&shaper, "V");
-    try std.testing.expect(together < apart);
+    // The narrowest letter, the widest, a digit and a space. One width between
+    // them, which is the property the indentation rules now lean on.
+    const one = shapedWidth(&shaper, "i");
+    try std.testing.expect(one > 0);
+    try std.testing.expectEqual(one, shapedWidth(&shaper, "W"));
+    try std.testing.expectEqual(one, shapedWidth(&shaper, "0"));
+    try std.testing.expectEqual(one, shapedWidth(&shaper, " "));
+
+    // And nothing between a pair that is not in the pair itself: this font has
+    // no kerning to apply, so a run is as wide as its characters counted up.
+    try std.testing.expectEqual(
+        shapedWidth(&shaper, "A") + shapedWidth(&shaper, "V"),
+        shapedWidth(&shaper, "AV"),
+    );
 }
 
 test "shaping returns one glyph per character for unkerned Latin" {
@@ -728,20 +737,22 @@ test "shaping returns one glyph per character for unkerned Latin" {
     for (shaped.infos, 0..) |info, i| try std.testing.expectEqual(@as(u32, @intCast(i)), info.cluster);
 }
 
-test "a ligature's characters share one cluster" {
+test "a character and its combining mark share one cluster" {
     var shaper = try Shaper.init(1);
     defer shaper.deinit();
 
-    // "office" is six characters and four glyphs: f, f and i become one.
-    const shaped = shaper.shape("office");
-    try std.testing.expectEqual(4, shaped.infos.len);
+    // `e` and a combining acute are three bytes and one glyph: the font has a
+    // composed form and shaping finds it. This font has no ligatures, but a
+    // mark does the same thing to the byte-to-glyph mapping.
+    const shaped = shaper.shape("e\u{0301}x");
+    try std.testing.expectEqual(2, shaped.infos.len);
 
     // Why the caret search works on boundaries rather than characters: the
-    // ligature reports the offset of its first character, so 2 and 3 appear
+    // composed glyph reports the offset of its first byte, so 1 and 2 appear
     // nowhere here.
-    var clusters: [4]u32 = undefined;
+    var clusters: [2]u32 = undefined;
     for (shaped.infos, &clusters) |info, *cluster| cluster.* = info.cluster;
-    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 4, 5 }, &clusters);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 3 }, &clusters);
 }
 
 test "an empty line shapes to no glyphs rather than crashing" {
@@ -902,24 +913,16 @@ fn createAtlas(allocator: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUT
     return texture;
 }
 
-/// What `text` shapes to the width of, which is what the indent is measured
-/// against in the tests below.
-fn widthOf(shaper: *Shaper, text: []const u8) f32 {
-    var pen: f32 = 0;
-    for (shaper.shape(text).positions) |offset| pen += fromFixed(offset.x_advance);
-    return pen;
-}
-
-test "an indent step is worth more than the space it stands in for" {
+test "an indent step is one character wide" {
     var shaper = try Shaper.init(1);
     defer shaper.deinit();
 
-    // The whole reason indentation is not left to the font: a proportional
-    // space is about half a digit, so four of them are narrower than one
-    // letter of what they would be indenting.
-    const space = widthOf(&shaper, " ");
+    // The same as a space, this font being monospace, so widening a leading
+    // one changes nothing. It is measured from a digit anyway: what the rule
+    // has to hold against is the font, not the other way round.
+    const space = shapedWidth(&shaper, " ");
     try std.testing.expect(space > 0);
-    try std.testing.expect(measureIndent(&shaper) > space * 1.5);
+    try std.testing.expectEqual(space, measureIndent(&shaper));
 }
 
 test "an indent step is as wide as the stop it is measured from" {
@@ -927,7 +930,7 @@ test "an indent step is as wide as the stop it is measured from" {
     defer shaper.deinit();
 
     try std.testing.expectEqual(
-        widthOf(&shaper, config.indent_stop),
+        shapedWidth(&shaper, config.indent_stop),
         measureIndent(&shaper),
     );
 }
@@ -967,3 +970,4 @@ test "a line nobody has shaped is stamped with no generation at all" {
     const entry: LineLayout = .{};
     try std.testing.expectEqual(@as(u32, 0), entry.stamp);
 }
+

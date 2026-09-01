@@ -3,7 +3,7 @@
 //! the build actually embeds.
 
 /// Embedded at build time, not opened at runtime. Relative to the repo root.
-pub const font_path = "assets/DejaVuSans.ttf";
+pub const font_path = "assets/DejaVuSansMono.ttf";
 
 /// Nominal, not pixels: what reaches FreeType is this times the window's display
 /// scale, so text is the same size to look at on any display.

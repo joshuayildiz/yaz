@@ -2,14 +2,15 @@
 
 A text editor built for low latency, low resource usage, and high performance.
 
-Native GPU rendering with proportional (variable-width) fonts, targeting Linux,
-macOS, and Windows.
+Native GPU rendering with shaped, kerned text, targeting Linux, macOS, and
+Windows. The pipeline is written for proportional fonts; the one that ships is
+monospace.
 
 ## Status
 
 Early. Lines of text shaped by HarfBuzz and drawn from a glyph atlas FreeType
-fills as glyphs are asked for: proportional, kerned, with a per-line layout cache
-so a keystroke reshapes one line rather than the screen. The text comes out of a
+fills as glyphs are asked for, with a per-line layout cache so a keystroke
+reshapes one line rather than the screen. The text comes out of a
 gap buffer, there is a caret, and you can type or click to move it. Files are
 opened by naming them on the command line or by picking them with cmd+P.
 
@@ -154,8 +155,8 @@ so the name sits in the middle of its tab rather than hard against one edge. The
 mark stays on a file that is open behind another, which is what makes an
 unsaved edit visible rather than hidden — see [FIXME.md](FIXME.md).
 
-`assets/sample.txt` is there to be opened — six lines exercising ligatures, a
-combining mark, `.notdef` and proportional advances.
+`assets/sample.txt` is there to be opened — six lines exercising a combining
+mark, `.notdef`, and text the shipped font has no glyph for.
 
 Naming a file that does not exist is how a new file begins, so that is not an
 error. A directory, an unreadable file, one past 1MB, or one that is not UTF-8
@@ -367,7 +368,7 @@ until the drag ends.
 
 Redrawing during the drag is only half of it on macOS. A `CAMetalLayer` keeps
 `CALayer`'s default `kCAGravityResize`, so until the next frame arrives the
-compositor stretches the last one over the new bounds — on proportional text,
+compositor stretches the last one over the new bounds — on text,
 that reads as the glyphs changing width. It is set to `kCAGravityTopLeft`
 instead.
 
@@ -443,33 +444,40 @@ than vendored, so nothing of Apple's enters the repository.
 
 ## Fonts
 
-One font ships inside the binary: `assets/DejaVuSans.ttf`, embedded with
+One font ships inside the binary: `assets/DejaVuSansMono.ttf`, embedded with
 `@embedFile` and rasterized by FreeType. There is no system font discovery and
 there is not meant to be — every platform renders the same pixels from the same
 bytes, which makes rendering bugs reproducible.
 
-The cost is 759KB of binary, most of which subsetting would recover if it ever
+The cost is 335KB of binary, most of which subsetting would recover if it ever
 matters.
 
-DejaVu Sans is under the Bitstream Vera licence, which permits redistribution;
-see `assets/DejaVuSans.LICENSE`.
+DejaVu Sans Mono is under the Bitstream Vera licence, which permits
+redistribution; see `assets/DejaVuSansMono.LICENSE`.
 
-Proportional, not monospace — that choice is what makes shaping and a per-line
-layout cache necessary rather than optional, and it is the constraint the text
-pipeline is designed around.
+**The font is monospace; the pipeline is not.** Nothing below assumes a fixed
+advance: every pen position comes out of shaping, every line is measured from
+the glyphs it produced, and a caret is found by searching boundaries rather than
+by multiplying a column by a cell. Swapping in a proportional font changes no
+code — it only starts exercising the paths this one leaves quiet, which is why
+the sections below still describe them.
 
 ### Shaping
 
 Text becomes glyphs through HarfBuzz, not through a loop over characters. With a
-proportional font that is not an optimization, it is the only correct way to get
-a pen position: advances differ per character, and kerning depends on which
-characters are adjacent. `AV` at 32px is 41.73px wide; `A` and `V` measured
-alone sum to 43.78px, and nothing but kerning accounts for the 2.05px.
+proportional font that is not an optimization but the only correct way to get a
+pen position: advances differ per character, and kerning depends on which
+characters are adjacent.
 
-That pair comes from **GPOS**, which HarfBuzz prefers over the legacy `kern`
-table. This font carries both with the same -131 units, so this pair would have
-come out right either way; the general case will not, because GPOS kerning is
-contextual and cannot be reduced to a table of pairs. That is why shaping is a
+**The shipped font has neither.** Every glyph advances 7.83px at a scale of one,
+`AV` is exactly as wide as `A` and `V` counted up, and there is no kerning to
+apply. What shaping still earns here is the byte-to-glyph mapping — see
+combining marks below — and the fact that swapping the font in `config.zig` for
+a proportional one needs no other change.
+
+Kerning, when a font has it, comes from **GPOS**, which HarfBuzz prefers over the
+legacy `kern` table. Reducing it to a table of pairs does not work, because GPOS
+kerning is contextual. That is why shaping is a
 library and not a lookup.
 
 HarfBuzz reads the font tables directly rather than going through `hb-ft`, which
@@ -478,9 +486,10 @@ hinting is on. That would put every pen position on a whole pixel and the
 subpixel atlas below would only ever be asked for one of its four variants.
 Reading the tables keeps `A` at 21.890625px rather than 22.
 
-Shaping is also what makes contextual glyphs appear at all. `fi` is a single
-glyph in DejaVu Sans, `ffi` is another, and `e` followed by a combining acute
-composes into the same glyph as a precomposed `é`. None of those is what any
+Shaping is also what makes contextual glyphs appear at all. `e` followed by a
+combining acute composes into the same glyph as a precomposed `é` — three
+bytes, one glyph, one cluster. This font has no ligatures, but `fi` and `ffi`
+are single glyphs in fonts that do, and reach the same code by the same route. None of those is what any
 character maps to; they exist only because `liga` and `ccmp` substituted them
 in.
 
@@ -499,8 +508,12 @@ character rather than something a text face is designed to set.
 One step of indentation is **the width of `config.indent_stop`, which is
 `"0"`** — one digit, measured through the shaper at the current display scale.
 A digit because it is the one glyph in a text font that is reliably wide and the
-same width as its fellows. In DejaVu Sans a space is about half a digit, so four
-spaces come out narrower than one letter of the code they would be indenting.
+same width as its fellows. **In the shipped font that is every glyph**, so
+widening a leading space changes nothing and the rule costs a loop and buys
+nothing; in a proportional font a space is about half a digit, and four of them
+come out narrower than one letter of the code they would be indenting. The rule
+is kept because it has to hold against whatever font is loaded, not the other
+way round.
 
 **A leading space is worth one step and a tab is worth `config.tab_stops` of
 them**, which is four. The tab's width is derived from the step rather than
@@ -552,7 +565,7 @@ point of embedding the font is that every machine draws the same pixels.
 
 The script tag is a shortcut, but a measured one: `ГА` and `ΑΤ` shape to identical
 advances under `latn` and under their own tags, and the scripts where it would
-change the outcome are not in DejaVu Sans anyway — Devanagari and Thai both come
+change the outcome are not in DejaVu Sans Mono anyway — Devanagari and Thai both come
 back as `.notdef`. It becomes a real question if the font changes.
 
 ### The atlas
@@ -985,16 +998,17 @@ A click below the last line or right of a line's end is not a miss. It lands on
 the nearest place the caret can go, which is what makes clicking into empty
 space behave the way it does everywhere else.
 
-### Inside a ligature
+### Inside a cluster
 
-Cluster boundaries are not character boundaries. `ffi` is one glyph covering
-three bytes, so the two characters inside it have no boundary of their own, and
-an offset that lands there has no position to be given.
+Cluster boundaries are not character boundaries. `e` and a combining acute are
+one glyph covering three bytes, so the two bytes of the mark have no boundary of
+their own, and an offset that lands there has no position to be given. The
+cluster's width is divided across its bytes rather than snapping to its start.
 
-It is reachable: type `fai`, put the caret between the `a` and the `i`, and
-delete the `a` — what is left is `fi`, one ligature, with the caret inside it.
-The cluster's width is divided across its bytes rather than snapping to its
-start.
+The shipped font has no ligatures, so the worst case here is a combining mark.
+In a font that has them, `ffi` is one glyph over three characters and the same
+arithmetic covers it: type `fai`, put the caret between the `a` and the `i`, and
+delete the `a`, and what is left is `fi` with the caret inside it.
 
 An approximation that stops mattering rather than gets fixed: once the cursor
 moves by graphemes it will not land there at all, which is the same change that
@@ -1041,7 +1055,7 @@ src/
   sdl.zig          # the one @cImport of SDL
   config.zig       # font file, size, and the theme
 assets/
-  DejaVuSans.ttf
+  DejaVuSansMono.ttf
   shaders/
 ```
 
