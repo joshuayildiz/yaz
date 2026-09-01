@@ -3,42 +3,39 @@
 Known problems, written down when found rather than when fixed. Each one says
 what is wrong, why it has been left alone, and what would settle it.
 
-The first entry below is real and reproducible, and half of what it described has
-since been fixed. The other two have not been observed: one is reasoned from what
-the atlas costs at a scale nobody here has run it at, the other from reading
-SDL's headers, so the first step for each is to find out whether it is real.
+The first entry below is real and reproducible, and is what is left of one that
+has otherwise been fixed. The other two have not been observed: one is reasoned
+from what the atlas costs at a scale nobody here has run it at, the other from
+reading SDL's headers, so the first step for each is to find out whether it is
+real.
 
 ---
 
-## Edits are visible, and still cannot be kept
+## Nothing warns before an edit is thrown away
 
-**Where:** `src/open_file.zig`, `OpenFile.modified`.
+**Where:** `src/model.zig`, `Model.shut`, and `run`'s loop in `src/main.zig`.
 
-There is no way to save. A file survives being looked away from, so typing into
-one, opening another, and closing the window loses the first edit.
+cmd+S writes a file back, so an edit can now be kept. Nothing makes you keep it.
+cmd+W closes a file and frees its document whether or not the tab says it has
+been changed, and closes the window once the bar is empty; so does the window's
+own close button. Neither asks, and neither looks at `OpenFile.modified`.
 
-What that used to mean is that the edit disappeared without a sign. It no longer
-does: every file open in the window has a tab, an unsaved one carries a mark, and
-the mark stays on a file that is open behind another. So the loss is in
-front of the reader the whole time -- which is the half of this that was worth
-fixing before saving existed, since the flag it needed is the one saving will
-clear.
+What that used to mean was that the edit was unkeepable. It is now merely
+unasked-for: the mark on the tab says which files would go, and a save is one
+keystroke, so the loss is both visible and avoidable the whole time.
 
-What is left is the loss itself, and nothing warns about it on the way out --
-now including cmd+W, which closes a file and frees its document whether or not
-the tab says it has been changed, and which closes the window once the bar is
-empty.
+A blank file has no name to be saved under either, so cmd+S there says so and
+writes nothing.
 
-**Left alone because** the answer is saving, not a better warning about not
-saving. `OpenFile.modified` is now set by every edit and read by the bar, so the
-piece a save would need is already here and already exercised.
+**Left alone because** the answer is a prompt, and a prompt is a modal surface
+this has none of yet -- something to draw, something to give the keyboard to, and
+a third answer besides yes and no. The flag it would read is already right.
 
-**To assess:** type into a file and close the window. The tab says the file has
-changed; nothing asks, and nothing is written.
+**To assess:** type into a file and press cmd+W. It goes, and nothing was asked.
 
-**Likely fix:** writing to disk, which is what the README already says is
-missing. `OpenFile.modified` is where a save would clear, and the bar is already
-watching it.
+**Likely fix:** `Model.shut` and the quit path both consult `modified` and put a
+panel up when it is set. `components/healthcheck.zig` is the nearest thing to the
+surface that would need, being a card over an otherwise empty window.
 
 ---
 

@@ -65,6 +65,9 @@ pub const Effect = union(enum) {
     cut: usize,
     copy: usize,
     paste: usize,
+
+    /// Write the nth column's file back to the path it was opened from.
+    save: usize,
     /// `pending` is what is left of a gesture too small to have moved a whole
     /// pixel yet, carried in the effect rather than kept by whatever worked it
     /// out. A scroll that only moves the fraction changes nothing on screen.
@@ -121,6 +124,8 @@ pub const Message = union(enum) {
     cut,
     copy,
     paste,
+    /// Write the focused file back to where it came from: cmd+S.
+    save,
     /// Move a selection, not a caret: nothing in a file reads these yet.
     up,
     down,
@@ -218,6 +223,7 @@ pub const Message = union(enum) {
                     c.SDLK_X => if (commanded(from.key.mod)) .cut else null,
                     c.SDLK_C => if (commanded(from.key.mod)) .copy else null,
                     c.SDLK_V => if (commanded(from.key.mod)) .paste else null,
+                    c.SDLK_S => if (commanded(from.key.mod)) .save else null,
                     else => null,
                 };
             },

@@ -582,9 +582,15 @@ pub const OpenFile = struct {
     /// glyphs of this file's name, and it outlives every place it is drawn.
     name: LineLayout = .{},
 
-    /// Whether the text has been changed since it was read. Nothing clears it,
-    /// because nothing can yet: there is no way to save.
+    /// Whether the text has been changed since it was read or last written.
+    /// The bar draws a mark for it and a save is what clears it.
     modified: bool = false,
+
+    /// Whether the file's lines ended with a carriage return when it was read.
+    /// The returns are taken out on the way in so that only `\n` starts a line,
+    /// and this is what puts them back on the way out: opening a file written
+    /// on Windows and saving it should not rewrite every line of it.
+    crlf: bool = false,
 
     /// Where the next character lands, as a byte offset, and how far down the
     /// window sits, in whole pixels.

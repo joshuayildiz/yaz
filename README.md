@@ -13,8 +13,10 @@ so a keystroke reshapes one line rather than the screen. The text comes out of a
 gap buffer, there is a caret, and you can type or click to move it. Files are
 opened by naming them on the command line or by picking them with cmd+P.
 
-**There is no way to save.** Anything typed is lost when the window closes, and
-that includes edits to a file that was opened. Nothing is written to disk.
+**cmd+S writes the file back** to where it came from. A file with no name — the
+blank one `yaz` on its own opens — cannot be saved yet, and nothing asks on the
+way out, so closing a window still throws away whatever its tabs are still
+marked with.
 
 Built and run on Linux, Windows and macOS, from a Linux or macOS host. Windows
 binaries are cross-compiled.
@@ -139,12 +141,14 @@ is reached with the digit binding or a press before it can be closed.
 window that was never given a file ends, so `yaz` on its own is not a thing you
 have to reach for the mouse to be rid of.
 
-**There is no save and nothing asks**, so closing a file with a mark on its tab
-throws the edit away — and the last cmd+W throws away every file still open.
+**Nothing asks on the way out**, so closing a file with a mark on its tab throws
+the edit away — and the last cmd+W throws away every file still open. cmd+S
+first is the whole of the answer to that for now.
 
 A tab carries a **mark to the left of its name when the file has been changed and
-not saved**, which is every file that has been typed into, since there is still
-no way to save. The mark's room is reserved whether it is drawn or not, so typing
+not saved**. A save clears it, and a save that failed does not — which is half of
+how a write that could not happen is reported, the other half being a line on
+stderr. The mark's room is reserved whether it is drawn or not, so typing
 into a file does not shift the bar along, and again on the other side of the name
 so the name sits in the middle of its tab rather than hard against one edge. The
 mark stays on a file that is open behind another, which is what makes an
@@ -180,9 +184,10 @@ it finds one that is not, so backspace over stray bytes deletes however many
 happen to be adjacent.
 
 **CRLF becomes LF as the file is read**, so a file written on Windows does not
-show a `.notdef` box at the end of every line. The bytes in memory then stop
-matching the file exactly, which is a trade to revisit when there is a way to
-save.
+show a `.notdef` box at the end of every line. Only `\n` starts a line, so the
+bytes in memory stop matching the file exactly — and **the file remembers what it
+came in as**, so a save puts the returns back. Opening a file written on Windows
+and saving it does not rewrite every line of it.
 
 ## Finding a file
 
@@ -843,6 +848,32 @@ copies as far as the first one. One can only get in by opening a file that has
 one — it is valid UTF-8, so the check on the way in lets it through — and
 the platforms' own text formats are terminated the same way, so a byte-exact copy
 would only be faithful from one yaz window to another.
+
+## Saving
+
+**cmd+S writes the focused column's file back** to the path it was opened from
+(ctrl+S elsewhere). A file nothing has changed is not written at all, so a save
+with nothing to do does not so much as touch the file's timestamp.
+
+It goes through **a temporary beside the file and a rename over the top**, so a
+write that fails part way through leaves the file that was already there rather
+than half of a new one. `tools.install` follows the same rule for the same
+reason. The temporary is in the file's own directory rather than anywhere
+tidier, because a rename is only atomic within one filesystem and that is the
+one place guaranteed to be on the same one.
+
+A file that came in with **CRLF goes back out with CRLF**. The returns are taken
+out on the way in so that only `\n` starts a line, and the file remembers that
+they were there, so opening something written on Windows and saving it does not
+rewrite every line of it.
+
+**A save that fails is reported, not fatal.** A read-only file, a full disk or a
+directory that has gone leaves a line on stderr and the mark still on the tab;
+the window carries on. Returning the error instead would take the window down
+over a file that could not be written.
+
+A file with no name cannot be saved yet: `yaz` on its own opens a blank one, and
+cmd+S there says so and writes nothing.
 
 ## The caret
 

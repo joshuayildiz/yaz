@@ -364,6 +364,25 @@ pub const Model = struct {
                 file.follow_caret = true;
             },
             .paste => |which| try self.pasteIn(which),
+            .save => |which| {
+                const file = self.column(which) orelse return;
+                if (file.path == null) {
+                    std.log.err("this file has no name to be saved under", .{});
+                    return;
+                }
+                // Nothing to write and nothing to say: the file on disk is
+                // already what is on screen.
+                if (!file.modified) return;
+
+                // Reported rather than returned. A file that cannot be written
+                // -- read-only, no room, a directory gone -- is something to be
+                // told about, and the mark staying on its tab is the rest of
+                // the telling. An error here would take the window down.
+                self.writeOut(file) catch |err| {
+                    std.log.err("{s}: {s}", .{ file.path.?, @errorName(err) });
+                };
+                return;
+            },
 
             .focus => |which| self.focus = which,
             .holding => |which| self.holding = which,
@@ -381,6 +400,46 @@ pub const Model = struct {
             .choose => try self.choose(),
         }
         self.changed();
+    }
+
+    /// Writes a file back to the path it was opened from.
+    ///
+    /// Through a temporary beside it and a rename over the top, so that a write
+    /// that fails part way through leaves the file that was already there
+    /// rather than half of a new one. `tools.install` follows the same rule for
+    /// the same reason.
+    ///
+    /// The temporary is beside the file rather than anywhere tidier because a
+    /// rename is only atomic within one filesystem, and the directory the file
+    /// is in is the one place guaranteed to be on the same one.
+    fn writeOut(self: *Model, file: *OpenFile) !void {
+        const path = file.path.?;
+
+        // One slice of the whole file, which copies it when the gap divides it.
+        // A save is rare and already about to write every byte, so a memcpy of
+        // them on the way is not what it costs.
+        const text = try file.buffer.slice(0, file.buffer.byteLen());
+
+        const restored = if (file.crlf) try withCarriageReturns(self.allocator, text) else null;
+        defer if (restored) |owned| self.allocator.free(owned);
+
+        // A bare name is in the working directory, which is what "." is.
+        const where = std.fs.path.dirname(path) orelse ".";
+        const name = std.fs.path.basename(path);
+
+        var dir = try std.Io.Dir.cwd().openDir(self.io, where, .{});
+        defer dir.close(self.io);
+
+        // Hidden and named for what wrote it, so an interrupted save leaves
+        // something a person can recognise rather than wonder about.
+        const partial = try std.fmt.allocPrint(self.allocator, ".{s}.yaz", .{name});
+        defer self.allocator.free(partial);
+        errdefer dir.deleteFile(self.io, partial) catch {};
+
+        try dir.writeFile(self.io, .{ .sub_path = partial, .data = restored orelse text });
+        try dir.rename(partial, dir, name, self.io);
+
+        file.modified = false;
     }
 
     /// Puts the selection on the system clipboard.
@@ -613,14 +672,14 @@ pub const Model = struct {
     fn open(self: *Model, path: []const u8) !*OpenFile {
         if (self.opened(path)) |already| return already;
 
-        const text = try self.read(path);
-        defer self.allocator.free(text);
-        return self.hold(text, path);
+        const was = try self.read(path);
+        defer self.allocator.free(was.text);
+        return self.hold(was.text, path, was.crlf);
     }
 
     /// A file nobody named, which is what a window with nothing to show has.
     fn blank(self: *Model) !*OpenFile {
-        return self.hold("", null);
+        return self.hold("", null, false);
     }
 
     fn opened(self: *Model, path: []const u8) ?*OpenFile {
@@ -655,24 +714,29 @@ pub const Model = struct {
         for (self.files.items) |file| file.invalidate();
     }
 
-    fn hold(self: *Model, text: []const u8, path: ?[]const u8) !*OpenFile {
+    fn hold(self: *Model, text: []const u8, path: ?[]const u8, crlf: bool) !*OpenFile {
         const file = try self.allocator.create(OpenFile);
         errdefer self.allocator.destroy(file);
 
         file.* = try OpenFile.init(self.allocator, text, path);
         errdefer file.deinit();
 
+        // What it came in as, so that saving can put it back that way.
+        file.crlf = crlf;
+
         try self.files.append(self.allocator, file);
         return file;
     }
 
-    fn read(self: *Model, named: []const u8) ![]u8 {
+    fn read(self: *Model, named: []const u8) !Read {
         const allocator = self.allocator;
         const path = try allocator.dupeZ(u8, named);
         defer allocator.free(path);
 
         const contents = std.Io.Dir.cwd().readFileAlloc(self.io, path, allocator, .limited(file_limit)) catch |err| switch (err) {
-            error.FileNotFound => return allocator.alloc(u8, 0),
+            // A file that is not there yet is an empty one that will be, which
+            // is what makes `yaz new.txt` and a save all it takes to write one.
+            error.FileNotFound => return .{ .text = try allocator.alloc(u8, 0), .crlf = false },
             error.StreamTooLong => {
                 std.log.err(
                     "{s} is larger than the {d}MB yaz will open: the layout cache holds an entry for every line of it, on screen or not",
@@ -753,12 +817,12 @@ test "firstInvalidUtf8 rejects a surrogate half" {
 /// the shaper and set as .notdef at the end of every line. The bytes then stop
 /// matching the file exactly, which is a trade to revisit when there is a way
 /// to save.
-fn stripCarriageReturns(allocator: std.mem.Allocator, text: []u8) ![]u8 {
+fn stripCarriageReturns(allocator: std.mem.Allocator, text: []u8) !Read {
     var found: usize = 0;
     for (text, 0..) |byte, i| {
         if (byte == '\r' and i + 1 < text.len and text[i + 1] == '\n') found += 1;
     }
-    if (found == 0) return text;
+    if (found == 0) return .{ .text = text, .crlf = false };
 
     const stripped = try allocator.alloc(u8, text.len - found);
     var out: usize = 0;
@@ -770,24 +834,70 @@ fn stripCarriageReturns(allocator: std.mem.Allocator, text: []u8) ![]u8 {
     std.debug.assert(out == stripped.len);
 
     allocator.free(text);
-    return stripped;
+    return .{ .text = stripped, .crlf = true };
+}
+
+/// What came back from reading a file: the text, and whether its lines ended
+/// with a carriage return before they were taken out.
+///
+/// Carried rather than worked out again later. The returns are gone from the
+/// text by the time anything else sees it, so this is the only chance to know.
+const Read = struct {
+    text: []u8,
+    crlf: bool,
+};
+
+/// The text with a carriage return in front of every newline, which is how a
+/// file that came in with them goes back out.
+fn withCarriageReturns(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    const breaks = std.mem.count(u8, text, "\n");
+    const out = try allocator.alloc(u8, text.len + breaks);
+
+    var at: usize = 0;
+    for (text) |byte| {
+        if (byte == '\n') {
+            out[at] = '\r';
+            at += 1;
+        }
+        out[at] = byte;
+        at += 1;
+    }
+    std.debug.assert(at == out.len);
+
+    return out;
+}
+
+test "a file that came in with carriage returns goes back out with them" {
+    const out = try withCarriageReturns(std.testing.allocator, "one\ntwo\n");
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("one\r\ntwo\r\n", out);
+}
+
+test "a file with no line endings at all is unchanged by either direction" {
+    const out = try withCarriageReturns(std.testing.allocator, "one line");
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("one line", out);
 }
 
 test "stripCarriageReturns leaves a file that has none alone" {
     const allocator = std.testing.allocator;
     const text = try allocator.dupe(u8, "one\ntwo\n");
     const kept = try stripCarriageReturns(allocator, text);
-    defer allocator.free(kept);
+    defer allocator.free(kept.text);
     // The same allocation, not a copy of it.
-    try std.testing.expectEqual(text.ptr, kept.ptr);
+    try std.testing.expectEqual(text.ptr, kept.text.ptr);
+    // And nothing for a save to put back.
+    try std.testing.expect(!kept.crlf);
 }
 
 test "stripCarriageReturns turns CRLF into LF" {
     const allocator = std.testing.allocator;
     const text = try allocator.dupe(u8, "one\r\ntwo\r\n");
     const stripped = try stripCarriageReturns(allocator, text);
-    defer allocator.free(stripped);
-    try std.testing.expectEqualStrings("one\ntwo\n", stripped);
+    defer allocator.free(stripped.text);
+    try std.testing.expectEqualStrings("one\ntwo\n", stripped.text);
+    // Remembered, so that saving writes the file back as it was found.
+    try std.testing.expect(stripped.crlf);
 }
 
 test "stripCarriageReturns keeps a carriage return that is not a line ending" {
@@ -796,8 +906,8 @@ test "stripCarriageReturns keeps a carriage return that is not a line ending" {
     // ending, and a file using bare CR is not a thing this reads.
     const text = try allocator.dupe(u8, "one\rtwo\r\n");
     const stripped = try stripCarriageReturns(allocator, text);
-    defer allocator.free(stripped);
-    try std.testing.expectEqualStrings("one\rtwo\n", stripped);
+    defer allocator.free(stripped.text);
+    try std.testing.expectEqualStrings("one\rtwo\n", stripped.text);
 }
 
 test "stripCarriageReturns handles a trailing carriage return" {
@@ -806,8 +916,8 @@ test "stripCarriageReturns handles a trailing carriage return" {
     // whole of what this is here to catch.
     const text = try allocator.dupe(u8, "one\n\r");
     const stripped = try stripCarriageReturns(allocator, text);
-    defer allocator.free(stripped);
-    try std.testing.expectEqualStrings("one\n\r", stripped);
+    defer allocator.free(stripped.text);
+    try std.testing.expectEqualStrings("one\n\r", stripped.text);
 }
 
 /// Clipboard text with its line endings made into the one the line index
@@ -947,4 +1057,115 @@ test "a selection past the end of the file is clamped to it" {
 
     try model.apply(.{ .selection = .{ .column = 0, .from = 0, .to = 99 } });
     try std.testing.expectEqual(Span{ .from = 0, .to = 3 }, model.columns.items[0].selected());
+}
+
+/// A model whose one file is on disk at `path`, with a real io to reach it by.
+/// The tests below are the only place anything here writes anything.
+fn oneSavedFile(allocator: std.mem.Allocator, path: []const u8, text: []const u8) !Model {
+    var model = try oneOpenFile(allocator, text);
+    errdefer model.deinit();
+
+    model.io = std.testing.io;
+    model.columns.items[0].path = try allocator.dupe(u8, path);
+    return model;
+}
+
+/// Where a temporary directory sits, said the way the working directory sees
+/// it: `writeOut` opens the directory a path names, so the path has to be one.
+fn under(allocator: std.mem.Allocator, tmp: *const std.testing.TmpDir, name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, name });
+}
+
+test "saving writes the file back where it came from and clears the mark" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try under(allocator, &tmp, "kept.txt");
+    defer allocator.free(path);
+
+    var model = try oneSavedFile(allocator, path, "");
+    defer model.deinit();
+    const file = model.columns.items[0];
+
+    try model.apply(.{ .insert = .{ .column = 0, .text = "kept\n" } });
+    try std.testing.expect(file.modified);
+
+    try model.apply(.{ .save = 0 });
+    try std.testing.expect(!file.modified);
+
+    const written = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 16));
+    defer allocator.free(written);
+    try std.testing.expectEqualStrings("kept\n", written);
+}
+
+test "a file that came in with carriage returns is written back with them" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try under(allocator, &tmp, "windows.txt");
+    defer allocator.free(path);
+
+    var model = try oneSavedFile(allocator, path, "one\ntwo\n");
+    defer model.deinit();
+
+    const file = model.columns.items[0];
+    file.crlf = true;
+
+    try model.apply(.{ .insert = .{ .column = 0, .text = "x" } });
+    try model.apply(.{ .save = 0 });
+
+    const written = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 16));
+    defer allocator.free(written);
+
+    // What is on screen has one ending; what is on disk has the other.
+    try std.testing.expectEqualStrings("xone\r\ntwo\r\n", written);
+}
+
+test "saving a file nothing has changed writes nothing at all" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try under(allocator, &tmp, "untouched.txt");
+    defer allocator.free(path);
+
+    var model = try oneSavedFile(allocator, path, "as it was");
+    defer model.deinit();
+
+    try model.apply(.{ .save = 0 });
+
+    // Not even created: a save that had nothing to do did nothing.
+    try std.testing.expectError(
+        error.FileNotFound,
+        std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 16)),
+    );
+}
+
+test "a save leaves nothing of its own behind" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try under(allocator, &tmp, "tidy.txt");
+    defer allocator.free(path);
+
+    var model = try oneSavedFile(allocator, path, "");
+    defer model.deinit();
+
+    try model.apply(.{ .insert = .{ .column = 0, .text = "written" } });
+    try model.apply(.{ .save = 0 });
+
+    // The temporary the write went through is renamed, not left beside it.
+    var walker = try tmp.dir.openDir(std.testing.io, ".", .{ .iterate = true });
+    defer walker.close(std.testing.io);
+
+    var seen: usize = 0;
+    var listing = walker.iterate();
+    while (try listing.next(std.testing.io)) |entry| {
+        try std.testing.expectEqualStrings("tidy.txt", entry.name);
+        seen += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), seen);
 }
