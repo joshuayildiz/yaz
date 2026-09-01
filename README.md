@@ -296,11 +296,21 @@ amount. A fractional offset re-rounds each line on its own and the text shimmers
 as it moves. What a gesture leaves over waits in `pending` for the next event
 rather than rounding away, so a slow drag still moves.
 
-A wheel delta is read as **points, always**: SDL reports tenths of a point from a
-precise device and whole lines from a notched one, in one field with no flag
-between them, and macOS registers a single mouse with no name, so nothing can
-tell them apart. A trackpad therefore tracks the finger exactly and a wheel click
-moves about ten points.
+What a wheel delta counts is **the platform's business**. macOS reports a precise
+device in tenths of a point, so ten times it is how far the finger moved and a
+trackpad tracks it exactly. Everywhere else the field is detents, and a detent is
+**three lines** — what Windows scrolls by default, and what the desktops
+elsewhere settled on.
+
+Reading detents as points was ten pixels a notch on Windows: two thirds of a line
+at every display scale, against the three lines every other window there moves.
+Only the point path wants the display density, since a line is measured in pixels
+already. A Windows precision touchpad sends a fraction of a detent and gets that
+fraction of the lines, so it stays as smooth as a trackpad.
+
+A notched mouse on macOS is still short in the same way — SDL floors its delta to
+whole lines there — but nothing in the event says which device sent it, and
+guessing would cost the trackpad its 1:1.
 
 Momentum is macOS's own. SDL disables it by default, and
 `SDL_HINT_MAC_SCROLL_MOMENTUM` — set before `SDL_Init` — turns it back on, so a
