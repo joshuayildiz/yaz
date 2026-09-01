@@ -129,8 +129,6 @@ pub const TextView = struct {
     }
 
     /// Moves the view by `pixels`, keeping the offset a whole number of them.
-    /// What is left over waits for the next message rather than rounding away.
-    /// Moves the view by `pixels`, keeping the offset a whole number of them.
     /// What is left over rides along in the effect rather than being written
     /// down here, and waits for the next one instead of rounding away.
     fn scrollBy(self: *const TextView, model: *const Model, pixels: f32) Effect {
