@@ -96,8 +96,9 @@ yaz new.md        # new.md does not exist: an empty document under that name
 yaz a.md b.md     # both, in equal columns
 ```
 
-Any number of paths, in equal columns left to right in the order named; the
-window takes its title from the first. A **tab bar** runs along the top with one
+Any number of paths, in equal columns left to right in the order named. The
+window is called `yaz` and stays called that: which files are in it is what the
+tab bar is for, and a title that followed the focus would be saying it twice. A **tab bar** runs along the top with one
 tab per file open in the window — the ones named here and the ones picked with
 cmd+P.
 

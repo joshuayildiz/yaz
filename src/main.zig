@@ -25,32 +25,23 @@ pub fn main(init: std.process.Init) !void {
     model.locate(init.minimal.environ) catch |err| switch (err) {
         error.CannotOpenLibrary, error.MissingSymbol, error.CannotIndex => {
             const stopped = try Healthcheck.init(model.allocator, init.minimal.environ, .{ .fff = true });
-            return run(&model, Healthcheck, stopped, null);
+            return run(&model, Healthcheck, stopped);
         },
         else => |other| return other,
     };
 
-    // Before `run` rather than inside it, so a file that cannot be opened fails
-    // before a window has appeared and gone again.
     var named = try std.process.Args.Iterator.initAllocator(init.minimal.args, model.allocator);
     defer named.deinit();
     _ = named.skip(); // The program itself.
 
-    // One at a time rather than gathering the paths first: the iterator owns
-    // what it returns until the next call, and `open` copies what it keeps.
     while (named.next()) |path| _ = try model.open(path);
 
-    // Never empty, so a window always has something to show.
     if (model.files.items.len == 0) _ = try model.blank();
 
     // A column per file named, left to right in the order they were named.
     try model.columns.appendSlice(model.allocator, model.files.items);
 
-    // Borrowed rather than copied: `run` hands it to SDL, which copies it, and
-    // the context outlives the call.
-    const title = model.files.items[0].path;
-
-    return run(&model, Editor, .{}, title);
+    return run(&model, Editor, .{});
 }
 
 /// The window, and the one component `main` put in it.
@@ -144,7 +135,7 @@ fn App(comptime Component: type) type {
 }
 
 /// Puts a window up and runs `component` in it until it is closed.
-fn run(model: *Model, comptime Component: type, component: Component, title: ?[]const u8) !void {
+fn run(model: *Model, comptime Component: type, component: Component) !void {
     // macOS makes inertial scroll events of its own and SDL turns them off
     // unless asked. Asking costs nothing while nothing is moving: momentum is
     // more wheel events, and they stop arriving when it stops. Before
@@ -201,16 +192,6 @@ fn run(model: *Model, comptime Component: type, component: Component, title: ?[]
     // The last thing the context was missing: the renderer owns the atlas, and
     // the renderer needs a window. Nothing has placed, drawn or measured yet.
     model.attach(&app.renderer.atlas, window);
-
-    // Only a window with a file in it has anything to be called. SDL copies the
-    // string, so the sentinel it wants is borrowed for the length of the call
-    // rather than carried around by the file, where it would be a path one byte
-    // longer than its length for the sake of one call at startup.
-    if (title) |named| {
-        const owned = try model.allocator.dupeZ(u8, named);
-        defer model.allocator.free(owned);
-        _ = c.SDL_SetWindowTitle(window, owned.ptr);
-    }
 
     if (!c.SDL_AddEventWatch(App(Component).redrawWhileResizing, &app)) {
         std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});
