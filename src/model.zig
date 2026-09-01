@@ -13,7 +13,9 @@
 const std = @import("std");
 
 const GlyphAtlas = @import("./glyph_atlas.zig").GlyphAtlas;
-const OpenFile = @import("./open_file.zig").OpenFile;
+const open_file = @import("./open_file.zig");
+const OpenFile = open_file.OpenFile;
+const Span = open_file.Span;
 const tools = @import("./tools.zig");
 const fff = @import("./fff.zig");
 const Effect = @import("./message.zig").Effect;
@@ -288,16 +290,25 @@ pub const Model = struct {
 
             .insert => |what| {
                 const file = self.column(what.column) orelse return;
-                _ = try file.insert(file.cursor, what.text);
-                file.cursor += what.text.len;
+                // Typing over a selection replaces it, which is the one thing
+                // every editor agrees on.
+                const at = try dropSelection(file);
+                _ = try file.insert(at, what.text);
+                file.cursor = at + what.text.len;
+                file.anchor = file.cursor;
                 file.follow_caret = true;
             },
             .backspace => |which| {
                 const file = self.column(which) orelse return;
-                const from = file.buffer.stepBack(file.cursor);
-                if (from == file.cursor) return;
-                _ = try file.delete(from, file.cursor - from);
-                file.cursor = from;
+                if (file.hasSelection()) {
+                    _ = try dropSelection(file);
+                } else {
+                    const from = file.buffer.stepBack(file.cursor);
+                    if (from == file.cursor) return;
+                    _ = try file.delete(from, file.cursor - from);
+                    file.cursor = from;
+                    file.anchor = from;
+                }
                 file.follow_caret = true;
             },
             .caret => |where| {
@@ -305,7 +316,20 @@ pub const Model = struct {
                 // Putting the caret in a column is choosing that column, which
                 // is why a press does not have to say both.
                 self.focus = where.column;
+                // A press that lands a caret is also the pointer taking hold:
+                // the drag that may follow belongs to this column wherever it
+                // wanders, and the release is what lets go. A drag says the
+                // same thing again, which changes nothing.
+                self.holding = where.column;
                 file.cursor = @min(where.at, file.buffer.byteLen());
+                if (!where.extend) file.anchor = file.cursor;
+            },
+            .selection => |what| {
+                const file = self.column(what.column) orelse return;
+                self.focus = what.column;
+                const end = file.buffer.byteLen();
+                file.anchor = @min(what.from, end);
+                file.cursor = @min(what.to, end);
             },
             .scroll => |where| {
                 const file = self.column(where.column) orelse return;
@@ -341,6 +365,20 @@ pub const Model = struct {
             .choose => try self.choose(),
         }
         self.changed();
+    }
+
+    /// Takes out whatever is selected and answers where the caret ends up.
+    ///
+    /// Nothing selected removes nothing and leaves the caret where it was, so
+    /// everything that edits can call this first and not ask.
+    fn dropSelection(file: *OpenFile) !usize {
+        const chosen = file.selected();
+        if (chosen.to == chosen.from) return file.cursor;
+
+        _ = try file.delete(chosen.from, chosen.to - chosen.from);
+        file.cursor = chosen.from;
+        file.anchor = chosen.from;
+        return chosen.from;
     }
 
     /// Says the model has moved on and the window has to be drawn again.
@@ -705,4 +743,92 @@ test "stripCarriageReturns handles a trailing carriage return" {
     const stripped = try stripCarriageReturns(allocator, text);
     defer allocator.free(stripped);
     try std.testing.expectEqualStrings("one\n\r", stripped);
+}
+
+/// A model with one file in one column, which is what the tests below all want
+/// and none of them varies. The io is never reached: nothing here reads or
+/// writes anything.
+fn oneOpenFile(allocator: std.mem.Allocator, text: []const u8) !Model {
+    var model: Model = .{ .allocator = allocator, .io = undefined };
+    errdefer model.deinit();
+
+    const file = try allocator.create(OpenFile);
+    file.* = OpenFile.init(allocator, text, null) catch |err| {
+        allocator.destroy(file);
+        return err;
+    };
+
+    try model.files.append(allocator, file);
+    try model.columns.append(allocator, file);
+    return model;
+}
+
+/// What the one file holds, which is the only thing these tests read back.
+fn whatIsIn(model: *Model) ![]const u8 {
+    const file = model.columns.items[0];
+    return file.buffer.slice(0, file.buffer.byteLen());
+}
+
+test "typing over a selection replaces it" {
+    var model = try oneOpenFile(std.testing.allocator, "one two three");
+    defer model.deinit();
+
+    try model.apply(.{ .selection = .{ .column = 0, .from = 4, .to = 7 } });
+    try model.apply(.{ .insert = .{ .column = 0, .text = "six" } });
+
+    try std.testing.expectEqualStrings("one six three", try whatIsIn(&model));
+
+    // The caret lands after what was typed, with nothing selected: a
+    // replacement is one edit, not a selection that survives it.
+    const file = model.columns.items[0];
+    try std.testing.expectEqual(@as(usize, 7), file.cursor);
+    try std.testing.expect(!file.hasSelection());
+}
+
+test "backspace over a selection takes the selection and no more" {
+    var model = try oneOpenFile(std.testing.allocator, "one two three");
+    defer model.deinit();
+
+    try model.apply(.{ .selection = .{ .column = 0, .from = 4, .to = 7 } });
+    try model.apply(.{ .backspace = 0 });
+
+    // The space before `two` is still there: backspacing a selection is not
+    // backspacing a selection and then a character.
+    try std.testing.expectEqualStrings("one  three", try whatIsIn(&model));
+    try std.testing.expectEqual(@as(usize, 4), model.columns.items[0].cursor);
+}
+
+test "backspace with no selection still takes the character before the caret" {
+    var model = try oneOpenFile(std.testing.allocator, "one two");
+    defer model.deinit();
+
+    try model.apply(.{ .caret = .{ .column = 0, .at = 3 } });
+    try model.apply(.{ .backspace = 0 });
+
+    try std.testing.expectEqualStrings("on two", try whatIsIn(&model));
+}
+
+test "a press collapses the selection and a shifted one extends it" {
+    var model = try oneOpenFile(std.testing.allocator, "one two three");
+    defer model.deinit();
+    const file = model.columns.items[0];
+
+    try model.apply(.{ .caret = .{ .column = 0, .at = 4 } });
+    try std.testing.expect(!file.hasSelection());
+
+    // Shifted: the far end stays at 4 and only this end moves.
+    try model.apply(.{ .caret = .{ .column = 0, .at = 7, .extend = true } });
+    try std.testing.expectEqual(Span{ .from = 4, .to = 7 }, file.selected());
+
+    // Unshifted: whatever was selected is let go of.
+    try model.apply(.{ .caret = .{ .column = 0, .at = 9 } });
+    try std.testing.expect(!file.hasSelection());
+}
+
+test "a selection past the end of the file is clamped to it" {
+    var model = try oneOpenFile(std.testing.allocator, "one");
+    defer model.deinit();
+
+    try model.apply(.{ .selection = .{ .column = 0, .from = 0, .to = 99 } });
+    try std.testing.expectEqual(Span{ .from = 0, .to = 3 }, model.columns.items[0].selected());
 }

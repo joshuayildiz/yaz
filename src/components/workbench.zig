@@ -83,8 +83,8 @@ const Views = struct {
 
     pub fn update(self: *Views, model: *const Model, message: Message) !Effect {
         switch (message) {
-            .press => |at| {
-                const which = self.over(at) orelse return .nothing;
+            .press => |what| {
+                const which = self.over(what.at) orelse return .nothing;
                 // Landing the caret or taking hold of the scrollbar both say
                 // which column they are in, and both mean that column now has
                 // the keyboard. A press that means neither -- an empty file --
@@ -95,10 +95,12 @@ const Views = struct {
                     else => asked,
                 };
             },
-            // Held, so a drag that wanders out of the column it began in stays
-            // with it. Only the pointer is caught that way: typing goes to the
-            // focused column even mid-drag.
-            .move => |at| return self.tell(model, model.holding orelse self.over(at) orelse return .nothing, message),
+            // Only while something is held. A drag that wanders out of the
+            // column it began in stays with it, and a pointer merely crossing
+            // the window reaches no column at all -- which is what stops a
+            // hover from dragging out a selection. Only the pointer is caught
+            // that way: typing goes to the focused column even mid-drag.
+            .move => return self.tell(model, model.holding orelse return .nothing, message),
             .release => return self.tell(model, model.holding orelse return .nothing, message),
             // Turns whatever it is under without deciding where typing lands.
             .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .nothing, message),

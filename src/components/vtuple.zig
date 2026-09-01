@@ -106,8 +106,8 @@ pub fn VTuple(comptime members: []const type) type {
 
         pub fn update(self: *Self, model: *const Model, message: Message) !Effect {
             switch (message) {
-                .press => |at| {
-                    const which = self.over(at) orelse return .nothing;
+                .press => |what| {
+                    const which = self.over(what.at) orelse return .nothing;
                     self.focus = which;
                     self.holding = which;
                     return self.tell(model, which, message);
@@ -264,7 +264,7 @@ test "a press moves the keyboard down the column and typing follows it" {
     column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
 
     _ = try column.update(&model, .{ .text = "a" });
-    _ = try column.update(&model, .{ .press = .{ 10, 50 } });
+    _ = try column.update(&model, .{ .press = .{ .at = .{ 10, 50 }, .extend = false } });
     _ = try column.update(&model, .{ .text = "b" });
 
     try std.testing.expectEqualStrings("hll", told.items);

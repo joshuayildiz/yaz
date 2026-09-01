@@ -107,7 +107,9 @@ pub const Tabs = struct {
 
     pub fn update(self: *Tabs, _: *const Model, message: Message) !Effect {
         const at = switch (message) {
-            .press => |where| where,
+            // A tab is chosen by where the press landed; shift means nothing
+            // to a bar.
+            .press => |what| what.at,
             else => return .nothing,
         };
 

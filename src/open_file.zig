@@ -11,6 +11,18 @@ const std = @import("std");
 
 const LineLayout = @import("./glyph_atlas.zig").LineLayout;
 
+/// A stretch of the file, in order. What a selection is once it has been asked
+/// for rather than stored: which end the caret is on stops mattering the moment
+/// anything wants to read it.
+pub const Span = struct {
+    from: usize,
+    to: usize,
+
+    pub fn empty(self: Span) bool {
+        return self.from == self.to;
+    }
+};
+
 /// What an edit did to the line index, so anything else keyed by line can be
 /// spliced rather than rebuilt. Both counts are of lines after `line`.
 pub const Edit = struct {
@@ -169,7 +181,10 @@ pub const Buffer = struct {
         return at;
     }
 
-    fn byteAt(self: *const Buffer, offset: usize) u8 {
+    /// One byte of the file, the gap counted as absent. Public because a
+    /// double-click reads its way outwards from where it landed, which is a
+    /// question about bytes rather than about lines.
+    pub fn byteAt(self: *const Buffer, offset: usize) u8 {
         std.debug.assert(offset < self.byteLen());
         const gap = self.gap_end - self.gap_start;
         return if (offset < self.gap_start) self.bytes[offset] else self.bytes[offset + gap];
@@ -189,7 +204,10 @@ pub const Buffer = struct {
     }
 
     /// `[from, to)` as one slice, copying it out when the gap divides it.
-    fn slice(self: *Buffer, from: usize, to: usize) ![]const u8 {
+    ///
+    /// The result borrows from the buffer, or from the one scratch buffer the
+    /// gap-straddling case shares, and is good until the next call.
+    pub fn slice(self: *Buffer, from: usize, to: usize) ![]const u8 {
         const gap = self.gap_end - self.gap_start;
         if (to <= self.gap_start) return self.bytes[from..to];
         if (from >= self.gap_start) return self.bytes[from + gap .. to + gap];
@@ -577,6 +595,15 @@ pub const OpenFile = struct {
     cursor: usize = 0,
     scroll: f32 = 0,
 
+    /// The other end of the selection. Equal to `cursor` when there is none: a
+    /// caret is a selection of nothing, so nothing has to ask which of two
+    /// states a file is in before reading it.
+    ///
+    /// Which end is which is not fixed. Dragging upwards leaves the anchor
+    /// after the cursor, which is why everything that reads a selection asks
+    /// for it in order rather than assuming one.
+    anchor: usize = 0,
+
     /// Set by an edit, acted on before the next frame is drawn: typing that
     /// has gone off screen brings the view back to it, and clicking reads the
     /// view where it is.
@@ -612,6 +639,20 @@ pub const OpenFile = struct {
         self.name.deinit(self.allocator);
         if (self.path) |path| self.allocator.free(path);
         self.buffer.deinit();
+    }
+
+    /// The selection in order, which is what every reader of one wants. `from`
+    /// equals `to` when nothing is selected, and both are then the caret.
+    pub fn selected(self: *const OpenFile) Span {
+        return .{
+            .from = @min(self.anchor, self.cursor),
+            .to = @max(self.anchor, self.cursor),
+        };
+    }
+
+    /// Whether there is a selection at all, as opposed to a bare caret.
+    pub fn hasSelection(self: *const OpenFile) bool {
+        return self.anchor != self.cursor;
     }
 
     pub fn insert(self: *OpenFile, at: usize, text: []const u8) !Edit {
@@ -762,4 +803,30 @@ test "deleting across lines collapses them onto the one the edit started in" {
 
     try std.testing.expectEqual(1, cache.items.len);
     try std.testing.expect(!cache.items[0].shaped);
+}
+
+test "a selection is answered in order, whichever end the caret is on" {
+    var file = try OpenFile.init(std.testing.allocator, "one two", null);
+    defer file.deinit();
+
+    // Dragged forwards: the anchor is before the caret.
+    file.anchor = 2;
+    file.cursor = 5;
+    try std.testing.expect(file.hasSelection());
+    try std.testing.expectEqual(Span{ .from = 2, .to = 5 }, file.selected());
+
+    // Dragged backwards over the same text: the same span.
+    file.anchor = 5;
+    file.cursor = 2;
+    try std.testing.expectEqual(Span{ .from = 2, .to = 5 }, file.selected());
+}
+
+test "a caret is a selection of nothing" {
+    var file = try OpenFile.init(std.testing.allocator, "one two", null);
+    defer file.deinit();
+
+    file.anchor = 3;
+    file.cursor = 3;
+    try std.testing.expect(!file.hasSelection());
+    try std.testing.expect(file.selected().empty());
 }

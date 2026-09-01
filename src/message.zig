@@ -46,7 +46,15 @@ pub const Effect = union(enum) {
     /// Put the caret at a byte offset, or the top of the view at a pixel. Both
     /// are worked out by the column, which is the only thing that knows where
     /// its lines are and how much room it has.
-    caret: struct { column: usize, at: usize },
+    /// `extend` leaves the far end of the selection where it is and moves only
+    /// this one, which is what a shifted press and a drag both do. Without it
+    /// the selection collapses to the caret.
+    caret: struct { column: usize, at: usize, extend: bool = false },
+
+    /// Both ends at once. What select-all has in common with the pointer's
+    /// gestures: they say where a selection is rather than moving one end of
+    /// it.
+    selection: struct { column: usize, from: usize, to: usize },
     /// `pending` is what is left of a gesture too small to have moved a whole
     /// pixel yet, carried in the effect rather than kept by whatever worked it
     /// out. A scroll that only moves the fraction changes nothing on screen.
@@ -97,6 +105,8 @@ pub const Message = union(enum) {
     split: u8,
     /// Take the file in front off the bar and out of memory: cmd+W.
     close,
+    /// Take the whole file: cmd+A.
+    select_all,
     /// Move a selection, not a caret: nothing in a file reads these yet.
     up,
     down,
@@ -106,7 +116,9 @@ pub const Message = union(enum) {
     /// Pixels to move a view by, positive downwards, and where the pointer was
     /// while it happened -- which is what decides whose view moves.
     wheel: struct { delta: f32, at: [2]f32 },
-    press: [2]f32,
+    /// `extend` is shift being held, which keeps the far end of the selection
+    /// where it is instead of starting a new one.
+    press: struct { at: [2]f32, extend: bool },
     move: [2]f32,
     release,
 
@@ -163,6 +175,7 @@ pub const Message = union(enum) {
                         // Plain `p` is a character, and arrives as text input.
                         null,
                     c.SDLK_W => if (commanded(from.key.mod)) .close else null,
+                    c.SDLK_A => if (commanded(from.key.mod)) .select_all else null,
                     else => null,
                 };
             },
@@ -188,8 +201,14 @@ pub const Message = union(enum) {
                 .at = .{ from.wheel.mouse_x * density, from.wheel.mouse_y * density },
             } },
 
+            // The modifier is asked for rather than read off the event: SDL puts
+            // one on a key but not on a button, and shift is the difference
+            // between starting a selection and extending the one already there.
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => if (from.button.button == c.SDL_BUTTON_LEFT)
-                .{ .press = .{ from.button.x * density, from.button.y * density } }
+                .{ .press = .{
+                    .at = .{ from.button.x * density, from.button.y * density },
+                    .extend = c.SDL_GetModState() & c.SDL_KMOD_SHIFT != 0,
+                } }
             else
                 null,
             c.SDL_EVENT_MOUSE_MOTION => .{ .move = .{ from.motion.x * density, from.motion.y * density } },

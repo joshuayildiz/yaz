@@ -17,7 +17,9 @@ const Key = painter_mod.Key;
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
 
-const OpenFile = @import("../open_file.zig").OpenFile;
+const open_file = @import("../open_file.zig");
+const OpenFile = open_file.OpenFile;
+const Span = open_file.Span;
 const drawLine = @import("../text.zig").draw;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
@@ -49,11 +51,21 @@ const bar_minimum = 24;
 /// the bar is down the left and the text starts after it.
 const text_margin: [2]f32 = .{ 5, 5 };
 
-/// What this view draws with. Glyphs sample the atlas; the caret and the
-/// scrollbar do not, and each sits a layer above what it has to cover.
-const glyph_key: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = config.text_colour };
-const caret_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.caret_colour };
-const bar_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.scrollbar_colour };
+/// How much of a selected newline shows, at a display scale of one. A line
+/// whose ending is in the selection would otherwise stop at its last glyph and
+/// read as though the break were left out.
+const newline_stub = 4;
+
+/// What this view draws with. Glyphs sample the atlas; the selection, the caret
+/// and the scrollbar do not, and each sits a layer above what it has to cover.
+///
+/// The selection is the one thing under the text. Within a layer a solid quad
+/// is drawn after a glyph, so being underneath is a layer of its own rather
+/// than an ordering.
+const select_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.selection_colour };
+const glyph_key: Key = .{ .layer = 1, .pipeline = .glyphs, .colour = config.text_colour };
+const caret_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.caret_colour };
+const bar_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = config.scrollbar_colour };
 
 /// One column: a file, and the room it has been given.
 ///
@@ -90,24 +102,42 @@ pub const TextView = struct {
             // only when nothing is over it, and there is no cursor movement to
             // give them to yet.
             .quit, .resized, .find, .tab, .split, .close, .up, .down, .cancel => return .nothing,
+            .select_all => return .{ .selection = .{
+                .column = self.which,
+                .from = 0,
+                .to = self.file.buffer.byteLen(),
+            } },
             .text => |typed| return .{ .insert = .{ .column = self.which, .text = typed } },
             .newline => return .{ .insert = .{ .column = self.which, .text = "\n" } },
             .backspace => return .{ .backspace = self.which },
             .wheel => |wheel| return self.scrollBy(model, wheel.delta),
-            .press => |at| {
+            .press => |what| {
                 // The scrollbar is asked first, so a press on it moves the view
                 // rather than the caret.
-                if (self.thumbGrab(model, at)) |grab| {
+                if (self.thumbGrab(model, what.at)) |grab| {
                     return .{ .grab = .{ .column = self.which, .at = grab } };
                 }
-                return self.caretAt(model, at);
+                // Answered whether it moved anything or not, unlike a drag: a
+                // press on the character the caret is already at still has a
+                // selection to collapse and a pointer to take hold of.
+                return self.caretAt(model, what.at, what.extend);
             },
             .move => |at| {
-                // The only reason motion is looked at at all: OPTIMIZATIONS.md 2
-                // has the loop ignoring it, and a redraw per motion event is
-                // what that buys.
-                const grab = self.file.drag orelse return .nothing;
-                return self.dragTo(model, at[1], grab);
+                // Reached only while the pointer is held, which is what stops a
+                // hover from laying down a selection. OPTIMIZATIONS.md 2 has
+                // the loop ignoring motion otherwise, and a redraw per motion
+                // event is what that buys.
+                if (self.file.drag) |grab| return self.dragTo(model, at[1], grab);
+
+                // Nothing on the scrollbar, so the pointer is on the text and
+                // dragging out a selection. Unchanged is answered as nothing,
+                // so wandering within one character costs no frame.
+                const asked = self.caretAt(model, at, true);
+                switch (asked) {
+                    .caret => |where| if (where.at == self.file.cursor) return .nothing,
+                    else => {},
+                }
+                return asked;
             },
             .release => return .{ .grab = .{ .column = self.which, .at = null } },
         }
@@ -249,6 +279,12 @@ pub const TextView = struct {
             std.debug.assert(entry.bytes == self.file.buffer.lineLength(index));
 
             const baseline = @round(self.rect.y + lineTop(index, top, self.file.scroll, model.atlas.line_height) + model.atlas.ascent);
+
+            // Under the glyphs, and added before them only because the loop is
+            // already here: the painter sorts by layer, not by arrival.
+            if (self.selectionOn(model, entry, index, x, baseline)) |band| {
+                try painter.add(select_key, band);
+            }
             try drawLine(painter, glyph_key, entry, .{ x, baseline });
 
             if (index == caret_line) caret = self.caretOn(model, entry, index, x, baseline);
@@ -275,6 +311,35 @@ pub const TextView = struct {
         ));
     }
 
+    /// What the selection covers of line `index`, or none when it covers none
+    /// of it. The line's layout must already be shaped.
+    ///
+    /// A selection that runs on past this line takes the line's ending with it,
+    /// and a stub past the last glyph is what says so -- without one, selecting
+    /// three whole lines would look like selecting three pieces of text.
+    fn selectionOn(
+        self: *const TextView,
+        model: *const Model,
+        entry: *const LineLayout,
+        index: usize,
+        x: f32,
+        baseline: f32,
+    ) ?Sprite {
+        const start = self.file.buffer.lineStart(index);
+        const band = bandOn(self.file.selected(), start, start + self.file.buffer.lineLength(index)) orelse
+            return null;
+
+        const left = @round(caretX(entry.carets.items, band.first));
+        var right = @round(caretX(entry.carets.items, band.last));
+        if (band.newline) right += @round(newline_stub * model.atlas.scale);
+        if (right <= left) return null;
+
+        return .solid(
+            .{ x + left, baseline - @round(model.atlas.ascent) },
+            .{ right - left, @round(model.atlas.line_height) },
+        );
+    }
+
     /// The caret's quad on `index`, whose layout must already be shaped.
     fn caretOn(
         self: *const TextView,
@@ -296,7 +361,7 @@ pub const TextView = struct {
     ///
     /// A click below the last line or right of a line's end lands on the nearest
     /// place the caret can go, which is what makes dragging past the end behave.
-    fn caretAt(self: *const TextView, model: *const Model, point: [2]f32) Effect {
+    fn caretAt(self: *const TextView, model: *const Model, point: [2]f32, extend: bool) Effect {
         // Nothing has been laid out, so there is nothing on screen to click.
         if (self.file.lines.items.len == 0) return .nothing;
 
@@ -318,10 +383,35 @@ pub const TextView = struct {
         }
 
         const to = self.file.buffer.lineStart(index) + caretOffset(entry.carets.items, point[0] - at[0]);
-        if (to == self.file.cursor) return .nothing;
-        return .{ .caret = .{ .column = self.which, .at = to } };
+        return .{ .caret = .{ .column = self.which, .at = to, .extend = extend } };
     }
 };
+
+/// What a selection covers of one line, as offsets within it.
+const Band = struct {
+    first: usize,
+    last: usize,
+    /// Whether the line's ending is inside the selection, which is what says
+    /// the selection carries on past the last glyph.
+    newline: bool,
+};
+
+/// What `span` covers of the line running `[start, end)`, where `end` is the
+/// last byte before the newline rather than the newline itself.
+///
+/// None when the line has none of it. A selection that reaches `end` and
+/// carries on has taken the ending with it, which the line after this one
+/// knows nothing about -- so it is answered here.
+fn bandOn(span: Span, start: usize, end: usize) ?Band {
+    if (span.empty()) return null;
+    if (span.to <= start or span.from > end) return null;
+
+    return .{
+        .first = @max(span.from, start) - start,
+        .last = @min(span.to, end) - start,
+        .newline = span.to > end,
+    };
+}
 
 /// Where line `index` sits, before rounding.
 ///
@@ -645,4 +735,57 @@ test {
     // build reaches them without `main` having to know they exist.
     _ = @import("../open_file.zig");
     _ = @import("../painter.zig");
+}
+
+// A file of three lines: "one\ntwo\nthree", so line 1 is `[4, 7)` and the
+// newline that ends it is byte 7.
+const line_start = 4;
+const line_end = 7;
+
+test "a line outside the selection has no band" {
+    try std.testing.expectEqual(@as(?Band, null), bandOn(.{ .from = 0, .to = 3 }, line_start, line_end));
+    try std.testing.expectEqual(@as(?Band, null), bandOn(.{ .from = 8, .to = 13 }, line_start, line_end));
+
+    // A caret is a selection of nothing, and nothing is not drawn.
+    try std.testing.expectEqual(@as(?Band, null), bandOn(.{ .from = 5, .to = 5 }, line_start, line_end));
+}
+
+test "a selection inside one line is that much of it" {
+    const band = bandOn(.{ .from = 5, .to = 6 }, line_start, line_end).?;
+    try std.testing.expectEqual(@as(usize, 1), band.first);
+    try std.testing.expectEqual(@as(usize, 2), band.last);
+    // It stops before the ending, so the ending is not in it.
+    try std.testing.expect(!band.newline);
+}
+
+test "a selection running past the line takes its ending with it" {
+    // Through to the line after, so this line is covered end to end and its
+    // newline is inside the selection.
+    const band = bandOn(.{ .from = 5, .to = 10 }, line_start, line_end).?;
+    try std.testing.expectEqual(@as(usize, 1), band.first);
+    try std.testing.expectEqual(@as(usize, 3), band.last);
+    try std.testing.expect(band.newline);
+}
+
+test "a selection reaching exactly the end of the line leaves it out" {
+    const band = bandOn(.{ .from = 4, .to = 7 }, line_start, line_end).?;
+    try std.testing.expectEqual(@as(usize, 0), band.first);
+    try std.testing.expectEqual(@as(usize, 3), band.last);
+    try std.testing.expect(!band.newline);
+}
+
+test "a selection of the ending alone is the stub and nothing else" {
+    // From the last byte of the line to the start of the next: no glyph of this
+    // line is in it, only the break after them.
+    const band = bandOn(.{ .from = 7, .to = 8 }, line_start, line_end).?;
+    try std.testing.expectEqual(@as(usize, 3), band.first);
+    try std.testing.expectEqual(@as(usize, 3), band.last);
+    try std.testing.expect(band.newline);
+}
+
+test "a line wholly inside a longer selection is covered end to end" {
+    const band = bandOn(.{ .from = 0, .to = 13 }, line_start, line_end).?;
+    try std.testing.expectEqual(@as(usize, 0), band.first);
+    try std.testing.expectEqual(@as(usize, 3), band.last);
+    try std.testing.expect(band.newline);
 }
