@@ -81,7 +81,9 @@ pub const Change = union(enum) {
     /// Nothing in the model moved, but the window has to be drawn again anyway
     /// -- which is only ever true of a resize, where what changed is the room
     /// rather than anything in it.
-    nothing_but_draw,
+    ///
+    /// The other half of `none`, and named to read as one beside it.
+    redraw,
 
     /// Put the window away.
     quit,

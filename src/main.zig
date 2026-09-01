@@ -76,7 +76,7 @@ fn App(comptime Component: type) type {
         fn update(self: *Self, message: Message) !void {
             switch (message) {
                 .quit => return self.change(.quit),
-                .resized => return self.change(.nothing_but_draw),
+                .resized => return self.change(.redraw),
                 // The window's, not a column's: which file was waiting for a
                 // name is the model's to remember.
                 .named => |path| return self.change(.{ .name_it = path }),

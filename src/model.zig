@@ -287,7 +287,7 @@ pub const Model = struct {
 
         switch (change) {
             .none => return .{ self, null },
-            .nothing_but_draw => {},
+            .redraw => {},
 
             .batch => |these| {
                 // Owned by the change and let go of here: whatever gathered it
