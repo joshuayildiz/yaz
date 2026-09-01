@@ -434,7 +434,6 @@ pub const Model = struct {
             },
 
             .focus => |which| self.focus = which,
-            .holding => |which| self.holding = which,
 
             .show => |nth| try self.showOnly(nth),
             .split => |nth| try self.split(nth),

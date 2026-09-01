@@ -136,10 +136,11 @@ pub const Change = union(enum) {
     /// out. A scroll that only moves the fraction changes nothing on screen.
     scroll: struct { column: usize, to: f32, pending: f32 = 0 },
 
-    /// Which column has the keyboard, and which has the pointer until the
-    /// release. Null lets go.
+    /// Which column has the keyboard. Which has the pointer is not said here:
+    /// a press says it by landing a caret or taking hold of a scrollbar, and
+    /// the release lets go, so there was never anything left for a change of
+    /// its own to do.
     focus: usize,
-    holding: ?usize,
 
     /// Where on the scrollbar's thumb a press took hold. Null lets go.
     grab: struct { column: usize, at: ?f32 },
