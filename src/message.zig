@@ -69,15 +69,21 @@ pub const Effect = union(enum) {
     /// it.
     selection: struct { column: usize, from: usize, to: usize },
 
-    /// The selection to the system clipboard, with and without taking it out of
-    /// the file, and what is on the clipboard into the file.
+    /// The selection to the system clipboard, and what is on the clipboard into
+    /// the file.
     ///
     /// Named by column and carrying nothing else: the text is in the file
     /// already, or on the clipboard already, and copying it into an effect
-    /// would be the one thing here that owned memory.
-    cut: usize,
+    /// would be one more thing that owned memory.
+    ///
+    /// There is no `cut`. Cutting is a `copy` and a `delete_selection`, which
+    /// is what a batch is for -- see `TextView.update`.
     copy: usize,
     paste: usize,
+
+    /// Take out what is selected, leaving the caret where the selection began.
+    /// Nothing selected takes nothing out.
+    delete_selection: usize,
 
     /// Write the nth column's file back to the path it was opened from.
     save: usize,

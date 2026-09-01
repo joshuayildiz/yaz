@@ -360,8 +360,7 @@ pub const Model = struct {
                 // The clipboard is not drawn, so nothing on screen moved.
                 return;
             },
-            .cut => |which| {
-                try self.copyOut(which);
+            .delete_selection => |which| {
                 const file = self.column(which) orelse return;
                 if (!file.hasSelection()) return;
                 _ = try dropSelection(file);
@@ -1368,4 +1367,33 @@ test "a batch inside a batch is walked and freed like any other" {
     }));
 
     try std.testing.expectEqualStrings("inout", try whatIsIn(&model));
+}
+
+test "deleting the selection takes it and leaves the caret where it began" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "one two three");
+    defer model.deinit();
+
+    try model.apply(.{ .selection = .{ .column = 0, .from = 4, .to = 8 } });
+    try model.apply(.{ .delete_selection = 0 });
+
+    try std.testing.expectEqualStrings("one three", try whatIsIn(&model));
+
+    const file = model.columns.items[0];
+    try std.testing.expectEqual(@as(usize, 4), file.cursor);
+    try std.testing.expect(!file.hasSelection());
+}
+
+test "deleting with nothing selected takes nothing" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "one two");
+    defer model.deinit();
+
+    try model.apply(.{ .caret = .{ .column = 0, .at = 3 } });
+    model.dirty = false;
+    try model.apply(.{ .delete_selection = 0 });
+
+    try std.testing.expectEqualStrings("one two", try whatIsIn(&model));
+    // Nothing moved, so nothing to draw.
+    try std.testing.expect(!model.dirty);
 }

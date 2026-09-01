@@ -874,8 +874,14 @@ without which three selected lines look like three selected pieces of text.
 
 **cmd+X**, **cmd+C** and **cmd+V** (ctrl elsewhere). The model makes the SDL
 calls: the effects name a column and carry nothing else, since the text is in the
-file already or on the clipboard already, and copying it into an effect would
-make it the one thing there that owned memory.
+file already or on the clipboard already, and copying it into an effect would be
+one more thing that owned memory.
+
+**There is no cut effect.** Cutting is a `copy` and a `delete_selection`, and
+cmd+X is a [batch](#layout) of the two — which is
+what a batch is for. An effect that copied *and* deleted would be a third thing
+named after what it is used for rather than after what it changes, and `apply`
+would have two changes inside one branch while claiming one message means one.
 
 Pasted text has its **line endings mended** first. Windows puts CRLF on the
 clipboard and SDL hands it over unchanged, and only `\n` starts a line here, so a

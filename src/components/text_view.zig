@@ -107,7 +107,13 @@ pub const TextView = struct {
             // not be the one this column is showing.
             .quit, .resized, .find, .show, .split, .close, .up, .down, .cancel, .named => return .none,
             .save => return .{ .save = self.which },
-            .cut => return .{ .cut = self.which },
+            // Said as the two things it is rather than as a third thing that
+            // does both. The list is copied out of this frame before it goes:
+            // see `Effect.gather`.
+            .cut => return Effect.gather(model.allocator, &.{
+                .{ .copy = self.which },
+                .{ .delete_selection = self.which },
+            }),
             .copy => return .{ .copy = self.which },
             .paste => return .{ .paste = self.which },
             .select_all => return .{ .selection = .{
