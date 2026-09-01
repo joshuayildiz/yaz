@@ -661,9 +661,9 @@ what it points at. That is fine for a caret, which is a line tall by
 construction, and impossible for a scrollbar, which is as tall as the window. A
 pipeline that samples nothing has no source rectangle to outgrow.
 
-The caret and the scrollbar share that pipeline and take a call each only because
-they are two colours. The alternative is a colour on every sprite — four more
-floats uploaded per glyph per frame to repeat one value.
+The selection band, the caret and the scrollbar share that pipeline and take a
+call each only because they are three colours. The alternative is a colour on
+every sprite — four more floats uploaded per glyph per frame to repeat one value.
 
 The vertex uniform holds what the whole frame shares, the viewport and the atlas
 size. The fragment stage has one of its own for the colour, because the atlas
@@ -671,8 +671,8 @@ stores coverage rather than colour: a glyph's bitmap says how much of each pixel
 is ink, and nothing about what ink is. That colour, the caret's and the
 background are the theme, and all three live in `config.zig`.
 
-Neither shader knows what a caret or a scrollbar is; they are quads with a
-colour, and the colour is the only thing the second pipeline is told.
+Neither shader knows what a selection, a caret or a scrollbar is; they are quads
+with a colour, and the colour is the only thing the second pipeline is told.
 
 The sprite array is copied to the GPU exactly as `glyph_atlas.zig` built it, so
 the Zig struct and the one declared in the shader have to agree byte for byte.
@@ -756,15 +756,93 @@ Return and backspace are not text and do not arrive as any, so they come from
 Backspace removes **a whole UTF-8 sequence rather than a byte** — one press
 takes off `é` or `漢` entire. Not yet a whole grapheme cluster, though: `e` plus
 a combining acute takes two presses. That needs Unicode tables, and is not worth
-the dependency until there is cursor movement to be wrong about.
+the dependency until there is cursor movement to be wrong about. With something
+selected it takes the selection instead, and no more than it.
 
-Two things are deliberately missing. The caret moves by typing and by clicking,
-and by nothing else: **there are no arrow keys yet.** And in-progress IME
-conversion — `SDL_EVENT_TEXT_EDITING`, the underlined preedit text a CJK input
-method shows before you commit it — is not drawn.
+Two things are deliberately missing. The caret moves by typing, by clicking and
+by what the clipboard does, and by nothing else: **there are no arrow keys yet.**
+And in-progress IME conversion — `SDL_EVENT_TEXT_EDITING`, the underlined preedit
+text a CJK input method shows before you commit it — is not drawn.
 
 A keystroke reshapes the one line it landed in. See the layout cache above for
 how the rest are spared.
+
+## Selecting
+
+A press puts **both ends of the selection where it landed**, and dragging moves
+the end under the pointer while the other stays. **Shift+click extends** what is
+there rather than starting again, and **cmd+A takes the whole file** (ctrl+A
+elsewhere). A file remembers its selection the way it remembers its caret and its
+scroll, so looking away from it and back leaves it as it was.
+
+The two ends are `cursor` and `anchor`, and **the two being equal is the whole of
+what "nothing is selected" means** — a caret is a selection of nothing, so
+nothing has to ask which of two states a file is in before reading it. Which end
+is which is not fixed either: dragging upwards leaves the anchor after the
+cursor, so everything that reads a selection asks for it in order.
+
+Motion reaches a column **only while the pointer is down**. A hover used to be
+routed to whatever column it crossed and dropped there; now that the same path
+would extend a selection, the routing is what stops it.
+
+### What a double-click takes
+
+Where it landed decides:
+
+- Past the last glyph on a line, **the line** — its ending included, so cutting
+  one takes the break with it rather than leaving a blank behind.
+- Beside a bracket — `()`, `[]` or `{}` — **what the bracket holds**, the
+  bracket itself left out. Nesting is counted and nothing else is: a bracket in a
+  string or a comment is a bracket here, which is the price of not knowing what
+  language the file is written in.
+- Otherwise **the word**. A word runs through letters, digits, underscores and
+  every byte above ASCII, so a word with an accent in it stays one word — the
+  same bargain backspace makes above, for the same reason.
+
+The character ahead of the caret is looked at before the one behind it, so a
+click landing between two things takes the one it is in front of, and a bracket
+beats a word when both are there. A double-click on none of the three — on a
+space — leaves the caret where the first of the two presses put it rather than
+reaching for something to select.
+
+### Drawing it
+
+The band under the text is **a layer of its own** rather than an ordering. Within
+a painter layer a solid quad is drawn after a glyph, so a highlight added at the
+text's own layer would cover the text; everything the view draws above the text
+moved up one to make room.
+
+A line whose ending is inside the selection gets **a stub past its last glyph**,
+without which three selected lines look like three selected pieces of text.
+
+### Cut, copy and paste
+
+**cmd+X**, **cmd+C** and **cmd+V** (ctrl elsewhere). The model makes the SDL
+calls: the effects name a column and carry nothing else, since the text is in the
+file already or on the clipboard already, and copying it into an effect would
+make it the one thing there that owned memory.
+
+Pasted text has its **line endings mended** first. Windows puts CRLF on the
+clipboard and SDL hands it over unchanged, and only `\n` starts a line here, so a
+`\r` left in would sit at the end of every pasted line as a glyph nobody typed
+and a column count nobody could explain. Reading a file strips CRLF on the way in
+for the same reason; a paste also takes a bare `\r`, which is how older Mac text
+ends its lines. Text that already ends its lines the right way is not copied to
+find that out.
+
+Copying nothing leaves the clipboard alone, so cutting an empty selection cannot
+throw away what somebody else put there. Copying does not ask for a frame either
+— the clipboard is not drawn.
+
+The letters are safe to bind because **SDL drops a keystroke whose text is a
+control character**, so ctrl+C does not also arrive as the 0x03 Windows makes of
+it and land in the file.
+
+`SDL_SetClipboardText` takes a C string, so a selection spanning a zero byte
+copies as far as the first one. One can only get in by opening a file that has
+one — it is valid UTF-8, so the check on the way in lets it through — and
+the platforms' own text formats are terminated the same way, so a byte-exact copy
+would only be faithful from one yaz window to another.
 
 ## The caret
 
