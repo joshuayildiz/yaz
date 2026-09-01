@@ -20,7 +20,9 @@ const tools = @import("./tools.zig");
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 const fff = @import("./fff.zig");
-const Change = @import("./message.zig").Change;
+const message = @import("./message.zig");
+const Change = message.Change;
+const Effect = message.Effect;
 
 /// The largest file yaz will open. What still costs per line of the file
 /// rather than per line on screen is the layout cache, which holds a 64-byte
@@ -92,11 +94,6 @@ pub const Model = struct {
     /// there is one. Nothing between here and there places, draws or measures.
     atlas: *GlyphAtlas = undefined,
 
-    /// The window, for the one thing that needs one from here: a save dialog is
-    /// modal to a window or it is loose on the desktop. Null in a model that
-    /// never had one, which is every test.
-    window: ?*c.SDL_Window = null,
-
     /// The file a save dialog was opened for, while it is open.
     ///
     /// The answer comes back on an event rather than from a call, so the focus
@@ -158,9 +155,8 @@ pub const Model = struct {
 
     /// The atlas, once there is a window to have made one. Called once, before
     /// anything is placed or drawn.
-    pub fn attach(self: *Model, atlas: *GlyphAtlas, window: *c.SDL_Window) void {
+    pub fn attach(self: *Model, atlas: *GlyphAtlas) void {
         self.atlas = atlas;
-        self.window = window;
     }
 
     /// Opens the library and starts indexing the directory yaz was run in.
@@ -271,14 +267,26 @@ pub const Model = struct {
         finding.found = found;
     }
 
+    /// What `update` answers with: the model as it now is, and whatever is left
+    /// for the runtime to go and do about the world outside it.
+    ///
+    /// The model comes back rather than being written through a pointer. Most
+    /// of what it holds is behind one -- a document is a `*OpenFile` and its
+    /// text is a gap buffer -- so this is value semantics over a handle rather
+    /// than over the state, and there is only ever one live copy. What it does
+    /// buy is that nothing can move the model except by being handed the result.
+    pub const Answer = struct { Model, ?Effect };
+
     /// The other half of `Change`: the one place anything here changes.
     ///
     /// Every branch is a change, so the frame is asked for once, here, rather
     /// than by each of them remembering to. `none` is the only thing that
     /// leaves the window as it was.
-    pub fn apply(self: *Model, change: Change) !void {
+    pub fn update(start: Model, change: Change) !Answer {
+        var self = start;
+
         switch (change) {
-            .none => return,
+            .none => return .{ self, null },
             .nothing_but_draw => {},
 
             .batch => |these| {
@@ -288,14 +296,34 @@ pub const Model = struct {
 
                 // Each asks for a frame if it needs one, so this must not ask
                 // again on the way out: a batch of nothing changed nothing.
-                for (these) |each| try self.apply(each);
-                return;
+                //
+                // What each of them leaves to be done is gathered rather than
+                // dropped: one message can end in a copy and a write both.
+                var asked: std.ArrayList(Effect) = .empty;
+                errdefer asked.deinit(self.allocator);
+
+                for (these) |each| {
+                    const next, const effect = try self.update(each);
+                    self = next;
+                    if (effect) |one| try asked.append(self.allocator, one);
+                }
+
+                if (asked.items.len == 0) {
+                    asked.deinit(self.allocator);
+                    return .{ self, null };
+                }
+                if (asked.items.len == 1) {
+                    const only = asked.items[0];
+                    asked.deinit(self.allocator);
+                    return .{ self, only };
+                }
+                return .{ self, .{ .batch = try asked.toOwnedSlice(self.allocator) } };
             },
 
             .quit => self.running = false,
 
             .insert => |what| {
-                const file = self.column(what.column) orelse return;
+                const file = self.column(what.column) orelse return .{ self, null };
                 // Typing over a selection replaces it, which is the one thing
                 // every editor agrees on.
                 const at = try dropSelection(file);
@@ -305,12 +333,12 @@ pub const Model = struct {
                 file.follow_caret = true;
             },
             .backspace => |which| {
-                const file = self.column(which) orelse return;
+                const file = self.column(which) orelse return .{ self, null };
                 if (file.hasSelection()) {
                     _ = try dropSelection(file);
                 } else {
                     const from = file.buffer.stepBack(file.cursor);
-                    if (from == file.cursor) return;
+                    if (from == file.cursor) return .{ self, null };
                     _ = try file.delete(from, file.cursor - from);
                     file.cursor = from;
                     file.anchor = from;
@@ -318,7 +346,7 @@ pub const Model = struct {
                 file.follow_caret = true;
             },
             .caret => |where| {
-                const file = self.column(where.column) orelse return;
+                const file = self.column(where.column) orelse return .{ self, null };
                 // Putting the caret in a column is choosing that column, which
                 // is why a press does not have to say both.
                 self.focus = where.column;
@@ -331,23 +359,23 @@ pub const Model = struct {
                 if (!where.extend) file.anchor = file.cursor;
             },
             .selection => |what| {
-                const file = self.column(what.column) orelse return;
+                const file = self.column(what.column) orelse return .{ self, null };
                 self.focus = what.column;
                 const end = file.buffer.byteLen();
                 file.anchor = @min(what.from, end);
                 file.cursor = @min(what.to, end);
             },
             .scroll => |where| {
-                const file = self.column(where.column) orelse return;
+                const file = self.column(where.column) orelse return .{ self, null };
                 file.pending = where.pending;
                 // The fraction moved and nothing else did, so there is nothing
                 // to draw: the window stays as it is until a whole pixel of it
                 // has been asked for.
-                if (file.scroll == where.to) return;
+                if (file.scroll == where.to) return .{ self, null };
                 file.scroll = where.to;
             },
             .grab => |where| {
-                const file = self.column(where.column) orelse return;
+                const file = self.column(where.column) orelse return .{ self, null };
                 self.focus = where.column;
                 // Held until the release, so a drag that wanders out of the
                 // column it began in stays with it.
@@ -355,41 +383,54 @@ pub const Model = struct {
                 file.drag = where.at;
             },
 
-            .copy => |which| {
-                try self.copyOut(which);
-                // The clipboard is not drawn, so nothing on screen moved.
-                return;
-            },
+            // Nothing here moves the model: the clipboard is not drawn, and
+            // what is on it is not the model's to know until it arrives as a
+            // change of its own.
+            .copy => |which| return .{ self, .{ .copy = which } },
+            .paste => |which| return .{ self, .{ .paste = which } },
             .delete_selection => |which| {
-                const file = self.column(which) orelse return;
-                if (!file.hasSelection()) return;
+                const file = self.column(which) orelse return .{ self, null };
+                if (!file.hasSelection()) return .{ self, null };
                 _ = try dropSelection(file);
                 file.follow_caret = true;
             },
-            .paste => |which| try self.pasteIn(which),
-            .name_it => |path| try self.nameAndSave(path),
             .save => |which| {
-                const file = self.column(which) orelse return;
-                if (file.path == null) {
-                    // Asked for rather than refused. The answer arrives later,
-                    // on an event, because the dialog does not block and its
-                    // callback is not promised a thread.
-                    self.naming = file;
-                    sdl.askWhereToSave(self.window);
-                    return;
-                }
-                // Nothing to write and nothing to say: the file on disk is
-                // already what is on screen.
-                if (!file.modified) return;
+                const file = self.column(which) orelse return .{ self, null };
 
-                // Reported rather than returned. A file that cannot be written
-                // -- read-only, no room, a directory gone -- is something to be
-                // told about, and the mark staying on its tab is the rest of
-                // the telling. An error here would take the window down.
-                self.writeOut(file) catch |err| {
-                    std.log.err("{s}: {s}", .{ file.path.?, @errorName(err) });
-                };
-                return;
+                if (file.path == null) {
+                    // Asked for rather than refused. Which file is waiting is
+                    // remembered here because the answer arrives whenever the
+                    // dialog is done with, long after this has returned.
+                    self.naming = file;
+                    return .{ self, .ask_name };
+                }
+
+                // Nothing to write and nothing to say: what is on disk is
+                // already what is on screen.
+                if (!file.modified) return .{ self, null };
+                return .{ self, .{ .save = which } };
+            },
+            .saved => |which| {
+                const file = self.column(which) orelse return .{ self, null };
+                file.modified = false;
+            },
+            .name_it => |path| {
+                const file = self.naming orelse return .{ self, null };
+                self.naming = null;
+
+                // Looked for among the open ones rather than trusted: the
+                // answer arrives whenever the dialog is done with, and cmd+W
+                // can have closed and freed the file in between.
+                if (self.indexOf(file) == null) return .{ self, null };
+
+                const owned = try self.allocator.dupe(u8, path);
+                if (file.path) |old| self.allocator.free(old);
+                file.path = owned;
+
+                // Written whether it was changed or not: being asked where to
+                // put a file is being asked to put it there.
+                const which = self.columnOf(file) orelse return .{ self, null };
+                return .{ self, .{ .save = which } };
             },
 
             .focus => |which| self.focus = which,
@@ -407,29 +448,9 @@ pub const Model = struct {
             .down => self.select(.down),
             .choose => try self.choose(),
         }
+
         self.changed();
-    }
-
-    /// Gives the file that asked for a name the one that came back, and writes
-    /// it there.
-    ///
-    /// The file is looked for among the open ones rather than trusted: the
-    /// answer arrives whenever the dialog is done with, and cmd+W can have
-    /// closed and freed the file in between.
-    fn nameAndSave(self: *Model, path: []const u8) !void {
-        const file = self.naming orelse return;
-        self.naming = null;
-        if (self.indexOf(file) == null) return;
-
-        const owned = try self.allocator.dupe(u8, path);
-        if (file.path) |old| self.allocator.free(old);
-        file.path = owned;
-
-        // Written whether it was changed or not: being asked where to put a
-        // file is being asked to put it there.
-        self.writeOut(file) catch |err| {
-            std.log.err("{s}: {s}", .{ path, @errorName(err) });
-        };
+        return .{ self, null };
     }
 
     /// Writes a file back to the path it was opened from.
@@ -442,7 +463,7 @@ pub const Model = struct {
     /// The temporary is beside the file rather than anywhere tidier because a
     /// rename is only atomic within one filesystem, and the directory the file
     /// is in is the one place guaranteed to be on the same one.
-    fn writeOut(self: *Model, file: *OpenFile) !void {
+    pub fn writeOut(self: *const Model, file: *OpenFile) !void {
         const path = file.path.?;
 
         // One slice of the whole file, which copies it when the gap divides it.
@@ -468,8 +489,13 @@ pub const Model = struct {
 
         try dir.writeFile(self.io, .{ .sub_path = partial, .data = restored orelse text });
         try dir.rename(partial, dir, name, self.io);
+    }
 
-        file.modified = false;
+    /// The file the nth column is showing. Public because performing an effect
+    /// needs it and performing one happens outside.
+    pub fn column(self: *const Model, which: usize) ?*OpenFile {
+        if (which >= self.columns.items.len) return null;
+        return self.columns.items[which];
     }
 
     /// Puts the selection on the system clipboard.
@@ -480,7 +506,7 @@ pub const Model = struct {
     /// SDL's clipboard is a C string either way, so a file holding a zero byte
     /// copies as far as the first one. Nothing here can do better without
     /// leaving the API SDL offers.
-    fn copyOut(self: *Model, which: usize) !void {
+    pub fn copyOut(self: *Model, which: usize) !void {
         const file = self.column(which) orelse return;
         const chosen = file.selected();
         if (chosen.empty()) return;
@@ -496,29 +522,24 @@ pub const Model = struct {
         }
     }
 
-    /// Puts what is on the system clipboard into the file, over the selection
-    /// if there is one.
-    fn pasteIn(self: *Model, which: usize) !void {
-        const file = self.column(which) orelse return;
-
+    /// What is on the system clipboard, with its line endings mended, or none
+    /// when there is nothing there. Caller owns the result.
+    ///
+    /// Reading it is the runtime's; typing it in is a `Change.insert` like any
+    /// other keystroke, which is why this hands the text back rather than
+    /// putting it anywhere.
+    pub fn clipboard(self: *const Model) !?[]u8 {
         // A copy SDL made and wants back. Empty rather than null when there is
         // nothing on the clipboard, which is not an error.
         const given = c.SDL_GetClipboardText();
-        if (given == null) return;
+        if (given == null) return null;
         defer c.SDL_free(given);
 
         const text = std.mem.span(given);
-        if (text.len == 0) return;
+        if (text.len == 0) return null;
 
-        const mended = try unixEndings(self.allocator, text);
-        defer if (mended) |owned| self.allocator.free(owned);
-        const putting = mended orelse text;
-
-        const at = try dropSelection(file);
-        _ = try file.insert(at, putting);
-        file.cursor = at + putting.len;
-        file.anchor = file.cursor;
-        file.follow_caret = true;
+        return try unixEndings(self.allocator, text) orelse
+            try self.allocator.dupe(u8, text);
     }
 
     /// Takes out whatever is selected and answers where the caret ends up.
@@ -538,12 +559,6 @@ pub const Model = struct {
     /// Says the model has moved on and the window has to be drawn again.
     fn changed(self: *Model) void {
         self.dirty = true;
-    }
-
-    /// The file the nth column is showing.
-    fn column(self: *const Model, which: usize) ?*OpenFile {
-        if (which >= self.columns.items.len) return null;
-        return self.columns.items[which];
     }
 
     /// The nth file on the bar, or none when the bar is shorter than that. A
@@ -1007,6 +1022,37 @@ test "a CR on its own is a line ending too" {
     try std.testing.expectEqualStrings("one\ntwo\nthree", mended);
 }
 
+/// Moves the model and puts it back down, which is what `App.change` does, and
+/// hands back whatever was left for the runtime to do. Most of the tests below
+/// have nothing left and ignore it.
+fn moved(model: *Model, change: Change) !?Effect {
+    const next, const effect = model.update(change) catch |err| return err;
+    model.* = next;
+    return effect;
+}
+
+/// As much of the runtime's half as a test can do. The clipboard and the dialog
+/// need a window; writing a file does not.
+fn performed(model: *Model, effect: Effect) !void {
+    switch (effect) {
+        .batch => |these| {
+            defer model.allocator.free(these);
+            for (these) |each| try performed(model, each);
+        },
+        .save => |which| {
+            const file = model.column(which).?;
+            try model.writeOut(file);
+            _ = try moved(model, .{ .saved = which });
+        },
+        else => unreachable,
+    }
+}
+
+/// Both halves, for the tests that want the whole round trip.
+fn moveAndPerform(model: *Model, change: Change) !void {
+    if (try moved(model, change)) |effect| try performed(model, effect);
+}
+
 /// A model with one file in one column, which is what the tests below all want
 /// and none of them varies. The io is never reached: nothing here reads or
 /// writes anything.
@@ -1035,8 +1081,8 @@ test "typing over a selection replaces it" {
     var model = try oneOpenFile(std.testing.allocator, "one two three");
     defer model.deinit();
 
-    try model.apply(.{ .selection = .{ .column = 0, .from = 4, .to = 7 } });
-    try model.apply(.{ .insert = .{ .column = 0, .text = "six" } });
+    _ = try moved(&model, .{ .selection = .{ .column = 0, .from = 4, .to = 7 } });
+    _ = try moved(&model, .{ .insert = .{ .column = 0, .text = "six" } });
 
     try std.testing.expectEqualStrings("one six three", try whatIsIn(&model));
 
@@ -1051,8 +1097,8 @@ test "backspace over a selection takes the selection and no more" {
     var model = try oneOpenFile(std.testing.allocator, "one two three");
     defer model.deinit();
 
-    try model.apply(.{ .selection = .{ .column = 0, .from = 4, .to = 7 } });
-    try model.apply(.{ .backspace = 0 });
+    _ = try moved(&model, .{ .selection = .{ .column = 0, .from = 4, .to = 7 } });
+    _ = try moved(&model, .{ .backspace = 0 });
 
     // The space before `two` is still there: backspacing a selection is not
     // backspacing a selection and then a character.
@@ -1064,8 +1110,8 @@ test "backspace with no selection still takes the character before the caret" {
     var model = try oneOpenFile(std.testing.allocator, "one two");
     defer model.deinit();
 
-    try model.apply(.{ .caret = .{ .column = 0, .at = 3 } });
-    try model.apply(.{ .backspace = 0 });
+    _ = try moved(&model, .{ .caret = .{ .column = 0, .at = 3 } });
+    _ = try moved(&model, .{ .backspace = 0 });
 
     try std.testing.expectEqualStrings("on two", try whatIsIn(&model));
 }
@@ -1075,15 +1121,15 @@ test "a press collapses the selection and a shifted one extends it" {
     defer model.deinit();
     const file = model.columns.items[0];
 
-    try model.apply(.{ .caret = .{ .column = 0, .at = 4 } });
+    _ = try moved(&model, .{ .caret = .{ .column = 0, .at = 4 } });
     try std.testing.expect(!file.hasSelection());
 
     // Shifted: the far end stays at 4 and only this end moves.
-    try model.apply(.{ .caret = .{ .column = 0, .at = 7, .extend = true } });
+    _ = try moved(&model, .{ .caret = .{ .column = 0, .at = 7, .extend = true } });
     try std.testing.expectEqual(Span{ .from = 4, .to = 7 }, file.selected());
 
     // Unshifted: whatever was selected is let go of.
-    try model.apply(.{ .caret = .{ .column = 0, .at = 9 } });
+    _ = try moved(&model, .{ .caret = .{ .column = 0, .at = 9 } });
     try std.testing.expect(!file.hasSelection());
 }
 
@@ -1091,7 +1137,7 @@ test "a selection past the end of the file is clamped to it" {
     var model = try oneOpenFile(std.testing.allocator, "one");
     defer model.deinit();
 
-    try model.apply(.{ .selection = .{ .column = 0, .from = 0, .to = 99 } });
+    _ = try moved(&model, .{ .selection = .{ .column = 0, .from = 0, .to = 99 } });
     try std.testing.expectEqual(Span{ .from = 0, .to = 3 }, model.columns.items[0].selected());
 }
 
@@ -1124,10 +1170,10 @@ test "saving writes the file back where it came from and clears the mark" {
     defer model.deinit();
     const file = model.columns.items[0];
 
-    try model.apply(.{ .insert = .{ .column = 0, .text = "kept\n" } });
+    _ = try moved(&model, .{ .insert = .{ .column = 0, .text = "kept\n" } });
     try std.testing.expect(file.modified);
 
-    try model.apply(.{ .save = 0 });
+    try moveAndPerform(&model, .{ .save = 0 });
     try std.testing.expect(!file.modified);
 
     const written = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 16));
@@ -1149,8 +1195,8 @@ test "a file that came in with carriage returns is written back with them" {
     const file = model.columns.items[0];
     file.crlf = true;
 
-    try model.apply(.{ .insert = .{ .column = 0, .text = "x" } });
-    try model.apply(.{ .save = 0 });
+    _ = try moved(&model, .{ .insert = .{ .column = 0, .text = "x" } });
+    try moveAndPerform(&model, .{ .save = 0 });
 
     const written = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 16));
     defer allocator.free(written);
@@ -1170,7 +1216,7 @@ test "saving a file nothing has changed writes nothing at all" {
     var model = try oneSavedFile(allocator, path, "as it was");
     defer model.deinit();
 
-    try model.apply(.{ .save = 0 });
+    try moveAndPerform(&model, .{ .save = 0 });
 
     // Not even created: a save that had nothing to do did nothing.
     try std.testing.expectError(
@@ -1190,8 +1236,8 @@ test "a save leaves nothing of its own behind" {
     var model = try oneSavedFile(allocator, path, "");
     defer model.deinit();
 
-    try model.apply(.{ .insert = .{ .column = 0, .text = "written" } });
-    try model.apply(.{ .save = 0 });
+    _ = try moved(&model, .{ .insert = .{ .column = 0, .text = "written" } });
+    try moveAndPerform(&model, .{ .save = 0 });
 
     // The temporary the write went through is renamed, not left beside it.
     var walker = try tmp.dir.openDir(std.testing.io, ".", .{ .iterate = true });
@@ -1221,11 +1267,11 @@ test "a file given a name is written under it and keeps it" {
     const file = model.columns.items[0];
     try std.testing.expect(file.path == null);
 
-    try model.apply(.{ .insert = .{ .column = 0, .text = "somewhere" } });
+    _ = try moved(&model, .{ .insert = .{ .column = 0, .text = "somewhere" } });
 
     // What the dialog's answer arriving looks like from here.
     model.naming = file;
-    try model.apply(.{ .name_it = path });
+    try moveAndPerform(&model, .{ .name_it = path });
 
     try std.testing.expectEqualStrings(path, file.path.?);
     try std.testing.expect(!file.modified);
@@ -1255,7 +1301,7 @@ test "a name that comes back for a file that has gone is dropped" {
     defer closed.deinit();
 
     model.naming = &closed;
-    try model.apply(.{ .name_it = path });
+    try moveAndPerform(&model, .{ .name_it = path });
 
     // Nothing written, and the file the window does have is untouched.
     try std.testing.expectError(
@@ -1282,10 +1328,10 @@ test "asking for a name a second time replaces the first" {
     const file = model.columns.items[0];
 
     model.naming = file;
-    try model.apply(.{ .name_it = first });
+    try moveAndPerform(&model, .{ .name_it = first });
 
     model.naming = file;
-    try model.apply(.{ .name_it = second });
+    try moveAndPerform(&model, .{ .name_it = second });
 
     // The old path is let go of rather than leaked, which the testing
     // allocator is what checks.
@@ -1297,7 +1343,7 @@ test "a batch applies each of its changes in order" {
     var model = try oneOpenFile(allocator, "");
     defer model.deinit();
 
-    try model.apply(try Change.gather(allocator, &.{
+    _ = try moved(&model, try Change.gather(allocator, &.{
         .{ .insert = .{ .column = 0, .text = "one" } },
         .{ .insert = .{ .column = 0, .text = " two" } },
     }));
@@ -1313,7 +1359,7 @@ test "a batch is let go of once it has been walked" {
     var model = try oneOpenFile(allocator, "abc");
     defer model.deinit();
 
-    try model.apply(try Change.gather(allocator, &.{
+    _ = try moved(&model, try Change.gather(allocator, &.{
         .{ .selection = .{ .column = 0, .from = 0, .to = 3 } },
         .{ .backspace = 0 },
     }));
@@ -1330,7 +1376,7 @@ test "a batch survives the frame it was built in" {
     // `&.{...}` alone cannot survive: the column is a runtime value, so the
     // list would be on this function's stack rather than anywhere lasting.
     const made = try builtElsewhere(allocator, 0);
-    try model.apply(made);
+    _ = try moved(&model, made);
 
     try std.testing.expectEqualStrings("kept", try whatIsIn(&model));
 }
@@ -1347,7 +1393,7 @@ test "a batch of nothing changes nothing and does not ask for a frame" {
     defer model.deinit();
 
     model.dirty = false;
-    try model.apply(try Change.gather(allocator, &.{ .none, .none }));
+    _ = try moved(&model, try Change.gather(allocator, &.{ .none, .none }));
 
     try std.testing.expect(!model.dirty);
     try std.testing.expectEqualStrings("as it was", try whatIsIn(&model));
@@ -1361,7 +1407,7 @@ test "a batch inside a batch is walked and freed like any other" {
     const inner = try Change.gather(allocator, &.{
         .{ .insert = .{ .column = 0, .text = "in" } },
     });
-    try model.apply(try Change.gather(allocator, &.{
+    _ = try moved(&model, try Change.gather(allocator, &.{
         inner,
         .{ .insert = .{ .column = 0, .text = "out" } },
     }));
@@ -1374,8 +1420,8 @@ test "deleting the selection takes it and leaves the caret where it began" {
     var model = try oneOpenFile(allocator, "one two three");
     defer model.deinit();
 
-    try model.apply(.{ .selection = .{ .column = 0, .from = 4, .to = 8 } });
-    try model.apply(.{ .delete_selection = 0 });
+    _ = try moved(&model, .{ .selection = .{ .column = 0, .from = 4, .to = 8 } });
+    _ = try moved(&model, .{ .delete_selection = 0 });
 
     try std.testing.expectEqualStrings("one three", try whatIsIn(&model));
 
@@ -1389,11 +1435,98 @@ test "deleting with nothing selected takes nothing" {
     var model = try oneOpenFile(allocator, "one two");
     defer model.deinit();
 
-    try model.apply(.{ .caret = .{ .column = 0, .at = 3 } });
+    _ = try moved(&model, .{ .caret = .{ .column = 0, .at = 3 } });
     model.dirty = false;
-    try model.apply(.{ .delete_selection = 0 });
+    _ = try moved(&model, .{ .delete_selection = 0 });
 
     try std.testing.expectEqualStrings("one two", try whatIsIn(&model));
     // Nothing moved, so nothing to draw.
     try std.testing.expect(!model.dirty);
+}
+
+test "update answers with the model and what is left to be done" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "one two");
+    defer model.deinit();
+
+    // A change the model can make itself leaves nothing for anyone else.
+    {
+        const next, const effect = try model.update(.{ .caret = .{ .column = 0, .at = 3 } });
+        model = next;
+        try std.testing.expect(effect == null);
+        try std.testing.expectEqual(@as(usize, 3), model.columns.items[0].cursor);
+    }
+
+    // One it cannot comes back as an effect, and moves nothing.
+    {
+        const next, const effect = try model.update(.{ .copy = 0 });
+        model = next;
+        try std.testing.expectEqual(@as(usize, 0), effect.?.copy);
+        try std.testing.expectEqualStrings("one two", try whatIsIn(&model));
+    }
+}
+
+test "a save with no name asks for one and remembers which file is waiting" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "");
+    defer model.deinit();
+
+    const asked = (try moved(&model, .{ .save = 0 })).?;
+    try std.testing.expectEqual(Effect.ask_name, asked);
+
+    // Remembered here because the answer arrives long after this returned.
+    try std.testing.expectEqual(model.columns.items[0], model.naming.?);
+}
+
+test "a save with nothing to write asks for nothing" {
+    const allocator = std.testing.allocator;
+    var model = try oneSavedFile(allocator, "unread.txt", "as it was");
+    defer model.deinit();
+
+    try std.testing.expect(try moved(&model, .{ .save = 0 }) == null);
+}
+
+test "being told a file was written clears the mark on its tab" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "");
+    defer model.deinit();
+
+    _ = try moved(&model, .{ .insert = .{ .column = 0, .text = "typed" } });
+    try std.testing.expect(model.columns.items[0].modified);
+
+    _ = try moved(&model, .{ .saved = 0 });
+    try std.testing.expect(!model.columns.items[0].modified);
+}
+
+test "a batch gathers what each of its changes left to be done" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "one two");
+    defer model.deinit();
+
+    // Two changes that each ask for something, so the answer is a batch of
+    // both rather than the last one to speak.
+    const asked = (try moved(&model, try Change.gather(allocator, &.{
+        .{ .selection = .{ .column = 0, .from = 0, .to = 3 } },
+        .{ .copy = 0 },
+        .{ .paste = 0 },
+    }))).?;
+    defer allocator.free(asked.batch);
+
+    try std.testing.expectEqual(@as(usize, 2), asked.batch.len);
+    try std.testing.expectEqual(@as(usize, 0), asked.batch[0].copy);
+    try std.testing.expectEqual(@as(usize, 0), asked.batch[1].paste);
+}
+
+test "a batch that asks for one thing answers with the thing, not a batch of one" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "one two");
+    defer model.deinit();
+
+    const asked = (try moved(&model, try Change.gather(allocator, &.{
+        .{ .selection = .{ .column = 0, .from = 0, .to = 3 } },
+        .{ .copy = 0 },
+    }))).?;
+
+    // No allocation to free: one effect travels as itself.
+    try std.testing.expectEqual(@as(usize, 0), asked.copy);
 }

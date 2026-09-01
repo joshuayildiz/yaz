@@ -5,6 +5,8 @@ const displayScale = @import("./renderer.zig").displayScale;
 const Model = @import("./model.zig").Model;
 const message_mod = @import("./message.zig");
 const Message = message_mod.Message;
+const Change = message_mod.Change;
+const Effect = message_mod.Effect;
 const Painter = @import("./painter.zig").Painter;
 const sdl = @import("./sdl.zig");
 const tools = @import("./tools.zig");
@@ -73,15 +75,82 @@ fn App(comptime Component: type) type {
         /// the frame drawn again.
         fn update(self: *Self, message: Message) !void {
             switch (message) {
-                .quit => return self.model.apply(.quit),
-                .resized => return self.model.apply(.nothing_but_draw),
+                .quit => return self.change(.quit),
+                .resized => return self.change(.nothing_but_draw),
                 // The window's, not a column's: which file was waiting for a
                 // name is the model's to remember.
-                .named => |path| return self.model.apply(.{ .name_it = path }),
+                .named => |path| return self.change(.{ .name_it = path }),
                 else => {},
             }
 
-            try self.model.apply(try self.component.update(self.model, message));
+            try self.change(try self.component.update(self.model, message));
+        }
+
+        /// Moves the model, and does whatever the move left to be done.
+        ///
+        /// The model comes back from `update` rather than being written
+        /// through, so this is the one place it is put down again. Nothing else
+        /// holds a copy: everything reads it through this same pointer.
+        fn change(self: *Self, what: Change) !void {
+            const next, const effect = try self.model.update(what);
+            self.model.* = next;
+
+            if (effect) |asked| try self.perform(asked);
+        }
+
+        /// The other half of `Change`'s other half: what the model asked for and
+        /// could not do itself.
+        ///
+        /// Everything here either ends in a file or on the clipboard, or comes
+        /// back round as another change. That is what keeps `Model.update` free
+        /// of SDL and of the filesystem, which is what lets it be tested
+        /// without either.
+        /// `anyerror` because this and `change` call each other -- an effect can
+        /// end in a change and a change can ask for another effect -- and two
+        /// inferred error sets that each depend on the other cannot be worked
+        /// out. Naming one of them breaks the loop.
+        fn perform(self: *Self, effect: Effect) anyerror!void {
+            switch (effect) {
+                .batch => |these| {
+                    defer self.model.allocator.free(these);
+                    for (these) |each| try self.perform(each);
+                },
+
+                // Reported rather than returned, all three of them. A clipboard
+                // that will not take text, a file that cannot be written --
+                // read-only, no room, a directory gone -- is something to be
+                // told about, and for a save the mark staying on its tab is the
+                // rest of the telling. An error here would take the window down
+                // over one file.
+                .copy => |which| self.model.copyOut(which) catch |err| {
+                    std.log.err("copy: {s}", .{@errorName(err)});
+                },
+
+                .paste => |which| {
+                    const text = self.model.clipboard() catch |err| {
+                        std.log.err("paste: {s}", .{@errorName(err)});
+                        return;
+                    } orelse return;
+                    defer self.model.allocator.free(text);
+
+                    // An ordinary insert from here on, which is what makes
+                    // pasting over a selection replace it without asking.
+                    try self.change(.{ .insert = .{ .column = which, .text = text } });
+                },
+
+                .save => |which| {
+                    const file = self.model.column(which) orelse return;
+                    self.model.writeOut(file) catch |err| {
+                        std.log.err("{s}: {s}", .{ file.path.?, @errorName(err) });
+                        return;
+                    };
+                    try self.change(.{ .saved = which });
+                },
+
+                // Modal to the window, and asynchronous: the answer arrives as
+                // an event, whenever whoever is looking at it decides.
+                .ask_name => sdl.askWhereToSave(self.renderer.window),
+            }
         }
 
         fn redraw(self: *Self) !void {
@@ -191,7 +260,7 @@ fn run(model: *Model, comptime Component: type, component: Component) !void {
 
     // The last thing the context was missing: the renderer owns the atlas, and
     // the renderer needs a window. Nothing has placed, drawn or measured yet.
-    model.attach(&app.renderer.atlas, window);
+    model.attach(&app.renderer.atlas);
 
     if (!c.SDL_AddEventWatch(App(Component).redrawWhileResizing, &app)) {
         std.log.err("SDL_AddEventWatch: {s}", .{sdl.lastError()});

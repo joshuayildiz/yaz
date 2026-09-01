@@ -15,6 +15,40 @@ const macos = builtin.target.os.tag == .macos;
 /// its own would be the only thing on the machine that did.
 const lines_per_notch = 3;
 
+/// What the runtime is asked to go and do, once the model has moved as far as
+/// it can on its own.
+///
+/// A `Change` is everything the model can do to itself; this is everything it
+/// cannot -- the clipboard, the filesystem, a dialog. `Model.update` answers
+/// with one rather than performing it, which is what keeps SDL and the
+/// filesystem out of every branch of it, and out of its tests.
+///
+/// Whatever doing one produces comes back in as a `Change`, like anything else
+/// that ever moves the model.
+pub const Effect = union(enum) {
+    /// The nth column's selection, to the system clipboard.
+    copy: usize,
+
+    /// The system clipboard, into the nth column over whatever is selected.
+    paste: usize,
+
+    /// The nth column's file, to the path it was opened from.
+    save: usize,
+
+    /// Where to put a file that has no name yet. Which file is waiting for the
+    /// answer is the model's to remember, so there is nothing to say here.
+    ask_name,
+
+    /// Several of these, in order. Owned the way `Change.batch` is, and freed
+    /// by whoever performs it.
+    batch: []const Effect,
+
+    /// Gathers effects into one, on the terms `Change.gather` sets out.
+    pub fn gather(allocator: std.mem.Allocator, these: []const Effect) !Effect {
+        return .{ .batch = try allocator.dupe(Effect, these) };
+    }
+};
+
 /// A change to the model, named by whichever component worked out that it
 /// should happen. What a change cannot do is reach outside the model; that is
 /// an `Effect`, and `Model.update` is where the two part company.
@@ -85,6 +119,10 @@ pub const Change = union(enum) {
     /// Take out what is selected, leaving the caret where the selection began.
     /// Nothing selected takes nothing out.
     delete_selection: usize,
+
+    /// The nth column's file has been written. Clears the mark on its tab, and
+    /// is what comes back from an `Effect.save` that worked.
+    saved: usize,
 
     /// Write the nth column's file back to the path it was opened from.
     save: usize,

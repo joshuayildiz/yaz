@@ -908,7 +908,9 @@ would only be faithful from one yaz window to another.
 ## Saving
 
 **cmd+S writes the focused column's file back** to the path it was opened from
-(ctrl+S elsewhere). A file nothing has changed is not written at all, so a save
+(ctrl+S elsewhere). The write itself is an `Effect`, so `update` decides *that*
+a file should be written and `App.perform` is what writes it; the `saved` change
+that comes back is what clears the mark on the tab. A file nothing has changed is not written at all, so a save
 with nothing to do does not so much as touch the file's timestamp.
 
 It goes through **a temporary beside the file and a rename over the top**, so a
@@ -1102,8 +1104,24 @@ vtable.
 
 **`update` is handed the model to read and nothing more.** Its signature says
 so — `*const Model` — and what it returns is a `Change`: the change it worked
-out should happen, named rather than made. `Model.apply` is the other half, and
+out should happen, named rather than made. `Model.update` is the other half, and
 it is the only place in the program where any of this moves.
+
+**`update` takes the model and answers with it**: `fn update(start: Model,
+change: Change) !struct { Model, ?Effect }`. The model comes back rather than
+being written through a pointer, and `App.change` is the one place it is put
+down again. Most of what a model holds is behind a pointer — a document is a
+`*OpenFile` and its text is a gap buffer — so this is value semantics over a
+handle rather than over the state, and there is only ever one live copy. What it
+buys is that nothing can move the model except by being handed the result.
+
+**An `Effect` is what the model could not do itself**: the clipboard, the
+filesystem, a dialog. `update` answers with one rather than performing it, and
+`App.perform` is what performs it — which is why no branch of `update` reaches
+for SDL or for a file, and why it can be tested without either. Whatever doing
+one produces comes back in as a `Change`: a paste reads the clipboard and then
+becomes an ordinary `insert`, and a write becomes a `saved` that clears the mark
+on the tab.
 
 That is what makes the redraw question answer itself. A change is a change to
 the model, so
