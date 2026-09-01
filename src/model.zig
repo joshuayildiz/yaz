@@ -149,31 +149,11 @@ pub const Model = struct {
     /// the end of the window, and only the thing holding the files knows that.
     running: bool = true,
 
-    /// Nothing is open yet and there is no atlas yet: the first needs the
-    /// command line to have been read, the second needs a window. Both arrive
-    /// through the two calls below, and nothing draws in between.
+    /// Nothing is open yet and there is no atlas yet: the first is `main`
+    /// reading the command line, the second needs a window. Both arrive from
+    /// outside, and nothing draws in between.
     pub fn init(process: std.process.Init) Model {
         return .{ .allocator = process.gpa, .io = process.io };
-    }
-
-    /// Every file named on the command line, in the order they were named, and
-    /// a blank one when none was. Never empty, so a window always has
-    /// something to show.
-    ///
-    /// Apart from `init` because the tool check comes between them: without the
-    /// library nothing but the healthcheck runs, and reading a file first would
-    /// report the wrong problem when the path is also bad.
-    pub fn openNamed(self: *Model, process: std.process.Init) !void {
-        var args = try std.process.Args.Iterator.initAllocator(process.minimal.args, self.allocator);
-        defer args.deinit();
-        _ = args.skip(); // The program itself.
-
-        // Read one at a time rather than gathering the paths first: the
-        // iterator owns what it returns until the next call, and `open` copies
-        // what it keeps.
-        while (args.next()) |named| _ = try self.open(named);
-
-        if (self.files.items.len == 0) _ = try self.blank();
     }
 
     /// The atlas, once there is a window to have made one. Called once, before
@@ -709,7 +689,10 @@ pub const Model = struct {
     ///
     /// Asking twice gives the same file back, which is what stops two columns
     /// showing two copies of one file that drift apart.
-    fn open(self: *Model, path: []const u8) !*OpenFile {
+    /// Opens a file, or hands back the one already open on that path. Public
+    /// for `main`, which opens what the command line named; the finder reaches
+    /// it through `choose`.
+    pub fn open(self: *Model, path: []const u8) !*OpenFile {
         if (self.opened(path)) |already| return already;
 
         const was = try self.read(path);
@@ -718,7 +701,10 @@ pub const Model = struct {
     }
 
     /// A file nobody named, which is what a window with nothing to show has.
-    fn blank(self: *Model) !*OpenFile {
+    /// A file with nothing in it and no name. Public for the same reason as
+    /// `open`: a window has to have something in it, and `main` is where that
+    /// is decided when the command line named nothing.
+    pub fn blank(self: *Model) !*OpenFile {
         return self.hold("", null, false);
     }
 

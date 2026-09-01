@@ -30,10 +30,18 @@ pub fn main(init: std.process.Init) !void {
         else => |other| return other,
     };
 
-    // Read out here rather than inside `run`, so a file that cannot be opened
-    // fails before a window has appeared and gone again. Nothing a component is
-    // built from needs a window.
-    try model.openNamed(init);
+    // Before `run` rather than inside it, so a file that cannot be opened fails
+    // before a window has appeared and gone again.
+    var named = try std.process.Args.Iterator.initAllocator(init.minimal.args, model.allocator);
+    defer named.deinit();
+    _ = named.skip(); // The program itself.
+
+    // One at a time rather than gathering the paths first: the iterator owns
+    // what it returns until the next call, and `open` copies what it keeps.
+    while (named.next()) |path| _ = try model.open(path);
+
+    // Never empty, so a window always has something to show.
+    if (model.files.items.len == 0) _ = try model.blank();
 
     // A column per file named, left to right in the order they were named.
     try model.columns.appendSlice(model.allocator, model.files.items);
