@@ -102,7 +102,10 @@ pub const TextView = struct {
             // The window's, or the finder's. Arrows and escape reach a column
             // only when nothing is over it, and there is no cursor movement to
             // give them to yet.
-            .quit, .resized, .find, .tab, .split, .close, .up, .down, .cancel => return .nothing,
+            // The window's own, and a name that came back from a save dialog,
+            // which the window deals with because the file it belongs to need
+            // not be the one this column is showing.
+            .quit, .resized, .find, .tab, .split, .close, .up, .down, .cancel, .named => return .nothing,
             .save => return .{ .save = self.which },
             .cut => return .{ .cut = self.which },
             .copy => return .{ .copy = self.which },

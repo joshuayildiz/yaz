@@ -12,6 +12,58 @@ pub const c = @cImport({
     @cInclude("SDL3/SDL.h");
 });
 
+/// The event a save dialog's answer comes back on. Zero until `registerEvents`
+/// has run, which is also how anything reading it knows there is one.
+///
+/// The dialog is asynchronous, and SDL says its callback "may be invoked from
+/// the same thread or from a different one, depending on the OS's constraints".
+/// So the callback does the one thing that is safe from anywhere -- push an
+/// event -- and the answer is read where every other event is read.
+pub var path_chosen: u32 = 0;
+
+/// Claims the event type above. After `SDL_Init`, and once.
+pub fn registerEvents() bool {
+    const first = c.SDL_RegisterEvents(1);
+    if (first == 0) return false;
+    path_chosen = first;
+    return true;
+}
+
+/// Opens a dialog asking where to put a file that has no name yet.
+///
+/// The answer arrives as a `path_chosen` event, or does not arrive: a dialog
+/// that was cancelled is not an answer, and leaves the file as it was.
+pub fn askWhereToSave(window: ?*c.SDL_Window) void {
+    c.SDL_ShowSaveFileDialog(chosePath, null, window, null, 0, null);
+}
+
+/// Lets go of the path a `path_chosen` event carries. Does nothing to any other
+/// event, and nothing the second time.
+pub fn releasePath(event: *c.SDL_Event) void {
+    if (path_chosen == 0 or event.type != path_chosen) return;
+    if (event.user.data1) |owned| c.SDL_free(owned);
+    event.user.data1 = null;
+}
+
+/// Runs on whichever thread the platform finished its dialog on, so it touches
+/// nothing but SDL.
+fn chosePath(_: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
+    // Null is a failure and a pointer to null is a cancel. Neither is worth an
+    // event: both leave the file exactly as it was.
+    if (filelist == null or filelist[0] == null) return;
+
+    // The list is freed as this returns and the event outlives it. Copied with
+    // SDL's allocator rather than the program's, which is not this thread's to
+    // reach.
+    const copy = c.SDL_strdup(filelist[0]);
+    if (copy == null) return;
+
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = path_chosen;
+    event.user.data1 = copy;
+    if (!c.SDL_PushEvent(&event)) c.SDL_free(copy);
+}
+
 /// SDL reports failures out of band; this is only meaningful right after one.
 pub fn lastError() []const u8 {
     return std.mem.span(c.SDL_GetError());

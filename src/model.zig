@@ -92,6 +92,18 @@ pub const Model = struct {
     /// there is one. Nothing between here and there places, draws or measures.
     atlas: *GlyphAtlas = undefined,
 
+    /// The window, for the one thing that needs one from here: a save dialog is
+    /// modal to a window or it is loose on the desktop. Null in a model that
+    /// never had one, which is every test.
+    window: ?*c.SDL_Window = null,
+
+    /// The file a save dialog was opened for, while it is open.
+    ///
+    /// The answer comes back on an event rather than from a call, so the focus
+    /// can have moved by the time it does -- and the file can have been closed,
+    /// which is why this is checked against the open files rather than trusted.
+    naming: ?*OpenFile = null,
+
     /// Every file this window has open, in the order they were opened, which is
     /// also the order the bar lists them in.
     ///
@@ -166,8 +178,9 @@ pub const Model = struct {
 
     /// The atlas, once there is a window to have made one. Called once, before
     /// anything is placed or drawn.
-    pub fn attach(self: *Model, atlas: *GlyphAtlas) void {
+    pub fn attach(self: *Model, atlas: *GlyphAtlas, window: *c.SDL_Window) void {
         self.atlas = atlas;
+        self.window = window;
     }
 
     /// Opens the library and starts indexing the directory yaz was run in.
@@ -364,10 +377,15 @@ pub const Model = struct {
                 file.follow_caret = true;
             },
             .paste => |which| try self.pasteIn(which),
+            .name_it => |path| try self.nameAndSave(path),
             .save => |which| {
                 const file = self.column(which) orelse return;
                 if (file.path == null) {
-                    std.log.err("this file has no name to be saved under", .{});
+                    // Asked for rather than refused. The answer arrives later,
+                    // on an event, because the dialog does not block and its
+                    // callback is not promised a thread.
+                    self.naming = file;
+                    sdl.askWhereToSave(self.window);
                     return;
                 }
                 // Nothing to write and nothing to say: the file on disk is
@@ -400,6 +418,28 @@ pub const Model = struct {
             .choose => try self.choose(),
         }
         self.changed();
+    }
+
+    /// Gives the file that asked for a name the one that came back, and writes
+    /// it there.
+    ///
+    /// The file is looked for among the open ones rather than trusted: the
+    /// answer arrives whenever the dialog is done with, and cmd+W can have
+    /// closed and freed the file in between.
+    fn nameAndSave(self: *Model, path: []const u8) !void {
+        const file = self.naming orelse return;
+        self.naming = null;
+        if (self.indexOf(file) == null) return;
+
+        const owned = try self.allocator.dupe(u8, path);
+        if (file.path) |old| self.allocator.free(old);
+        file.path = owned;
+
+        // Written whether it was changed or not: being asked where to put a
+        // file is being asked to put it there.
+        self.writeOut(file) catch |err| {
+            std.log.err("{s}: {s}", .{ path, @errorName(err) });
+        };
     }
 
     /// Writes a file back to the path it was opened from.
@@ -1168,4 +1208,90 @@ test "a save leaves nothing of its own behind" {
         seen += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), seen);
+}
+
+test "a file given a name is written under it and keeps it" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try under(allocator, &tmp, "named.txt");
+    defer allocator.free(path);
+
+    var model = try oneOpenFile(allocator, "");
+    defer model.deinit();
+    model.io = std.testing.io;
+
+    const file = model.columns.items[0];
+    try std.testing.expect(file.path == null);
+
+    try model.apply(.{ .insert = .{ .column = 0, .text = "somewhere" } });
+
+    // What the dialog's answer arriving looks like from here.
+    model.naming = file;
+    try model.apply(.{ .name_it = path });
+
+    try std.testing.expectEqualStrings(path, file.path.?);
+    try std.testing.expect(!file.modified);
+    // Asked and answered: nothing is still waiting for a name.
+    try std.testing.expect(model.naming == null);
+
+    const written = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 16));
+    defer allocator.free(written);
+    try std.testing.expectEqualStrings("somewhere", written);
+}
+
+test "a name that comes back for a file that has gone is dropped" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try under(allocator, &tmp, "gone.txt");
+    defer allocator.free(path);
+
+    var model = try oneOpenFile(allocator, "still here");
+    defer model.deinit();
+    model.io = std.testing.io;
+
+    // A file the model does not hold, standing in for one cmd+W closed and
+    // freed while the dialog was up.
+    var closed = try OpenFile.init(allocator, "", null);
+    defer closed.deinit();
+
+    model.naming = &closed;
+    try model.apply(.{ .name_it = path });
+
+    // Nothing written, and the file the window does have is untouched.
+    try std.testing.expectError(
+        error.FileNotFound,
+        std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 16)),
+    );
+    try std.testing.expect(model.columns.items[0].path == null);
+}
+
+test "asking for a name a second time replaces the first" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const first = try under(allocator, &tmp, "first.txt");
+    defer allocator.free(first);
+    const second = try under(allocator, &tmp, "second.txt");
+    defer allocator.free(second);
+
+    var model = try oneOpenFile(allocator, "text");
+    defer model.deinit();
+    model.io = std.testing.io;
+
+    const file = model.columns.items[0];
+
+    model.naming = file;
+    try model.apply(.{ .name_it = first });
+
+    model.naming = file;
+    try model.apply(.{ .name_it = second });
+
+    // The old path is let go of rather than leaked, which the testing
+    // allocator is what checks.
+    try std.testing.expectEqualStrings(second, file.path.?);
 }

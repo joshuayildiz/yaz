@@ -13,10 +13,9 @@ so a keystroke reshapes one line rather than the screen. The text comes out of a
 gap buffer, there is a caret, and you can type or click to move it. Files are
 opened by naming them on the command line or by picking them with cmd+P.
 
-**cmd+S writes the file back** to where it came from. A file with no name — the
-blank one `yaz` on its own opens — cannot be saved yet, and nothing asks on the
-way out, so closing a window still throws away whatever its tabs are still
-marked with.
+**cmd+S writes the file back** to where it came from, and asks where to put it
+when it has no name. Nothing asks on the way out, though, so closing a window
+still throws away whatever its tabs are still marked with.
 
 Built and run on Linux, Windows and macOS, from a Linux or macOS host. Windows
 binaries are cross-compiled.
@@ -872,8 +871,32 @@ directory that has gone leaves a line on stderr and the mark still on the tab;
 the window carries on. Returning the error instead would take the window down
 over a file that could not be written.
 
-A file with no name cannot be saved yet: `yaz` on its own opens a blank one, and
-cmd+S there says so and writes nothing.
+### A file with no name
+
+`yaz` on its own opens a blank file, and cmd+S on one **asks where to put it**
+with the system's own save dialog.
+
+The dialog does not block. SDL says its callback "may be invoked from the same
+thread or from a different one, depending on the OS's constraints", so the
+callback does the one thing that is safe from anywhere — copies the path and
+pushes an event — and the answer is read on the main thread where every other
+event is read. The event type is claimed from SDL's pool at startup, which is
+why it is a variable rather than a constant and why it is asked about before the
+switch that reads every other event.
+
+The path the event carries is owned; the message made from it only borrows one,
+the way a text event's characters are borrowed, and the loop lets go of it once
+it has been acted on.
+
+**Which file was waiting is the model's to remember**, not the message's. The
+answer can arrive whenever somebody gets round to giving it, by which time the
+focus can have moved — or cmd+W can have closed and freed the file that asked.
+So the file is looked for among the open ones before it is used, and a name that
+comes back for a file that has gone is dropped.
+
+Cancelling is not an answer: no event is pushed, and the file is left exactly as
+it was. A file that has just been given a name is written whether it was changed
+or not, since being asked where to put a file is being asked to put it there.
 
 ## The caret
 

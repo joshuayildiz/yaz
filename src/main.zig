@@ -86,6 +86,9 @@ fn App(comptime Component: type) type {
             switch (message) {
                 .quit => return self.model.apply(.quit),
                 .resized => return self.model.apply(.nothing_but_draw),
+                // The window's, not a column's: which file was waiting for a
+                // name is the model's to remember.
+                .named => |path| return self.model.apply(.{ .name_it = path }),
                 else => {},
             }
 
@@ -159,6 +162,14 @@ fn run(model: *Model, comptime Component: type, component: Component, title: ?[]
     // After `SDL_Init`, which is when the menu bar it takes this from is built.
     sdl.unbindCloseShortcut();
 
+    // After it too: the event type a save dialog answers on is claimed from
+    // SDL's pool. Without one there is no way to hear back, so a file with no
+    // name would ask and never learn the answer.
+    if (!sdl.registerEvents()) {
+        std.log.err("SDL_RegisterEvents: {s}", .{sdl.lastError()});
+        return error.SdlRegisterEvents;
+    }
+
     // The size is in window coordinates. Without `HIGH_PIXEL_DENSITY` the back
     // buffer is that size too and the finished frame is scaled up to the
     // display, which no amount of care in the text pipeline survives.
@@ -191,7 +202,7 @@ fn run(model: *Model, comptime Component: type, component: Component, title: ?[]
 
     // The last thing the context was missing: the renderer owns the atlas, and
     // the renderer needs a window. Nothing has placed, drawn or measured yet.
-    model.attach(&app.renderer.atlas);
+    model.attach(&app.renderer.atlas, window);
 
     // Only a window with a file in it has anything to be called. SDL copies the
     // string, so the sentinel it wants is borrowed for the length of the call
@@ -230,7 +241,15 @@ fn run(model: *Model, comptime Component: type, component: Component, title: ?[]
         while (true) {
             const density = c.SDL_GetWindowPixelDensity(window);
             const line_height = app.renderer.atlas.line_height;
-            if (Message.init(&event, density, line_height)) |what| try app.update(what);
+
+            // A save dialog's answer owns the path it carries, and the message
+            // made from it only borrows one. Let go of here, in a block of its
+            // own, because the poll below overwrites the event this is holding.
+            {
+                defer sdl.releasePath(&event);
+                if (Message.init(&event, density, line_height)) |what| try app.update(what);
+            }
+
             if (!c.SDL_PollEvent(&event)) break;
         }
     }

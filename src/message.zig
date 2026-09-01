@@ -3,7 +3,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const c = @import("./sdl.zig").c;
+const sdl = @import("./sdl.zig");
+const c = sdl.c;
 
 /// macOS is the one platform that reports a scroll as a distance. Everywhere
 /// else a wheel event is detents, and a detent is a number of lines.
@@ -68,6 +69,11 @@ pub const Effect = union(enum) {
 
     /// Write the nth column's file back to the path it was opened from.
     save: usize,
+
+    /// Give the file that asked for a name this one, and write it there. Which
+    /// file that is, the model knows; nothing else could, since the answer
+    /// arrives whenever the dialog is done with.
+    name_it: []const u8,
     /// `pending` is what is left of a gesture too small to have moved a whole
     /// pixel yet, carried in the effect rather than kept by whatever worked it
     /// out. A scroll that only moves the fraction changes nothing on screen.
@@ -126,6 +132,10 @@ pub const Message = union(enum) {
     paste,
     /// Write the focused file back to where it came from: cmd+S.
     save,
+    /// Where to put the file that had no name. The window's, not a column's:
+    /// the file that asked is remembered by the model, since the answer can
+    /// take as long as somebody takes to give it.
+    named: []const u8,
     /// Move a selection, not a caret: nothing in a file reads these yet.
     up,
     down,
@@ -181,6 +191,16 @@ pub const Message = union(enum) {
     /// `line_height` is how tall a line already is in them. Applying both here
     /// is what lets everything downstream speak in one unit.
     pub fn init(from: *const c.SDL_Event, density: f32, line_height: f32) ?Message {
+        // Asked before the switch because the type is claimed at runtime and
+        // cannot be one of its cases. The path is borrowed the way a text
+        // event's characters are: `run` lets go of it once this has been acted
+        // on.
+        if (sdl.path_chosen != 0 and from.type == sdl.path_chosen) {
+            const owned = from.user.data1 orelse return null;
+            const named: [*:0]const u8 = @ptrCast(owned);
+            return .{ .named = std.mem.span(named) };
+        }
+
         return switch (from.type) {
             c.SDL_EVENT_QUIT => .quit,
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => .resized,

@@ -24,9 +24,6 @@ What that used to mean was that the edit was unkeepable. It is now merely
 unasked-for: the mark on the tab says which files would go, and a save is one
 keystroke, so the loss is both visible and avoidable the whole time.
 
-A blank file has no name to be saved under either, so cmd+S there says so and
-writes nothing.
-
 **Left alone because** the answer is a prompt, and a prompt is a modal surface
 this has none of yet -- something to draw, something to give the keyboard to, and
 a third answer besides yes and no. The flag it would read is already right.
