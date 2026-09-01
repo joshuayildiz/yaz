@@ -483,39 +483,49 @@ composes into the same glyph as a precomposed `é`. None of those is what any
 character maps to; they exist only because `liga` and `ccmp` substituted them
 in.
 
-### Tabs
+### Indentation
 
-**A tab never reaches the shaper.** A line is shaped in the runs between its
-tabs, and the pen is moved by a fixed amount at each one. There is nothing to
-draw, so no glyph is asked for.
+**The whitespace a line begins with never reaches the shaper.** It is laid out a
+byte at a time before anything is shaped, and the rest of the line is shaped in
+the runs between its tabs. There is nothing to draw either way, so no glyph is
+asked for.
 
-That is because what a tab is worth is a decision rather than a metric. The font
-has an opinion about it and the opinion is useless: U+0009 is a control
-character, not something a text face is designed to set.
+That is because **what indentation is worth is a decision rather than a metric**.
+The font's answer is the wrong one twice over: its space is far too thin to line
+code up with, and for a tab it has no answer at all, U+0009 being a control
+character rather than something a text face is designed to set.
 
-The amount is **the width of `config.tab_stop`, which is `"0000"`** — four
-digits, measured through the shaper at the current display scale. Four because
-four is the indent. Digits rather than spaces because a proportional font's
-space is far too thin to indent with: in DejaVu Sans a space is about half the
-width of a digit, so four spaces come out narrower than one letter of the code
-they would be indenting. A digit is the one glyph in a text font that is
-reliably wide and the same width as its fellows, which is why it is what a tab
-is measured in.
+One step of indentation is **the width of `config.indent_stop`, which is
+`"0"`** — one digit, measured through the shaper at the current display scale.
+A digit because it is the one glyph in a text font that is reliably wide and the
+same width as its fellows. In DejaVu Sans a space is about half a digit, so four
+spaces come out narrower than one letter of the code they would be indenting.
 
-It is measured rather than derived so that it follows the font and the scale
-without anything having to remember to make it, and through the shaper rather
-than off the face so that it is the same arithmetic that lays out the text a tab
-is lining up against.
+**A leading space is worth one step and a tab is worth `config.tab_stops` of
+them**, which is four. The tab's width is derived from the step rather than
+measured on its own, so a tab and four leading spaces are the same distance by
+construction — a file that indents with both would come apart down the middle
+otherwise.
 
-Every tab is worth the same amount wherever it falls, rather than advancing to
-the next stop from the start of the line. Leading indentation is the case that
-matters and both rules agree on it; they differ only for a tab in the middle of
-a line, where stops would line a column up with the line above and this does
-not.
+The step is measured rather than derived so that it follows the font and the
+scale without anything having to remember to make it, and through the shaper
+rather than off the face so that it is the same arithmetic that lays out the
+text the indentation is lining up against.
 
-A tab gets **a caret boundary at each end**, so clicking in its left half puts
-the caret before it and its right half after, and one press of backspace takes
-the whole of it — it is one byte.
+**Only at the start of a line.** A space between words is a space, and widening
+those would be setting the text rather than indenting it. The run ends at the
+first byte that is neither a space nor a tab, so a line that is nothing but
+whitespace is all indentation.
+
+A tab past the indentation is still worth `tab_stops` steps: every tab is the
+same width wherever it falls, rather than advancing to the next stop from the
+start of the line. Leading indentation is the case that matters and both rules
+agree on it; they differ only for a tab in the middle of a line, where stops
+would line a column up with the line above and this does not.
+
+Every byte of indentation gets **a caret boundary of its own**, so clicking in
+the left half of one puts the caret before it and the right half after, and one
+press of backspace takes the whole of it — each is one byte.
 
 ### Direction
 
@@ -790,8 +800,8 @@ of the reason SDL is here.
 
 Return, backspace and **tab** are not text and do not arrive as any, so they come
 from `SDL_EVENT_KEY_DOWN` instead. SDL drops a keystroke whose text is a control
-character, and all three of them are one; a tab is 0x09. See [Tabs](#tabs) for
-what one is worth once it is in.
+character, and all three of them are one; a tab is 0x09. See
+[Indentation](#indentation) for what one is worth once it is in.
 
 The message for the key is `.tab`, and the one that shows the nth file on the
 bar — which used to have that name — is now `.show`, after the effect it has

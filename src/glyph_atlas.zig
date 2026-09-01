@@ -175,7 +175,9 @@ pub const GlyphAtlas = struct {
     ascent: f32,
     line_height: f32,
 
-    /// How far a tab advances the pen. Measured, not derived: see `measureTab`.
+    /// How far one step of indentation advances the pen, and how far a tab
+    /// does. Measured, not derived: see `measureIndent`.
+    indent_width: f32,
     tab_width: f32,
 
     /// What everything above was built at, so a move to a display of a
@@ -229,7 +231,8 @@ pub const GlyphAtlas = struct {
             .glyphs = glyphs,
             .ascent = fromFixed(face.*.size.*.metrics.ascender),
             .line_height = fromFixed(face.*.size.*.metrics.height),
-            .tab_width = measureTab(&shaper),
+            .indent_width = measureIndent(&shaper),
+            .tab_width = tabFrom(measureIndent(&shaper)),
             .scale = scale,
         };
     }
@@ -251,7 +254,8 @@ pub const GlyphAtlas = struct {
         self.shaper.setScale(scale);
         self.ascent = fromFixed(self.face.*.size.*.metrics.ascender);
         self.line_height = fromFixed(self.face.*.size.*.metrics.height);
-        self.tab_width = measureTab(&self.shaper);
+        self.indent_width = measureIndent(&self.shaper);
+        self.tab_width = tabFrom(self.indent_width);
         self.scale = scale;
 
         @memset(self.slots, no_slot);
@@ -286,12 +290,28 @@ pub const GlyphAtlas = struct {
         entry.sprites.clearRetainingCapacity();
         entry.carets.clearRetainingCapacity();
 
-        // The line is shaped in the runs between its tabs, so a tab never
-        // reaches the shaper. It is not a character the font has anything to
-        // say about -- what it is worth is a decision, not a metric -- and a
-        // run either side of one is a separate piece of text anyway.
         var pen: f32 = 0;
         var at: usize = 0;
+
+        // The indentation first, a byte at a time, because what it is worth is
+        // a decision rather than a metric: a space here is a digit wide and a
+        // tab is `tab_stops` of them. The font's own space is about half a
+        // digit, which is too thin to line code up with, and its answer for a
+        // tab is no answer at all.
+        //
+        // Only at the start of a line. A space between words is a space, and
+        // widening those would be setting the text rather than indenting it.
+        while (at < text.len) : (at += 1) {
+            const byte = text[at];
+            if (byte != ' ' and byte != '\t') break;
+
+            try entry.carets.append(self.allocator, .{ .offset = @intCast(at), .x = pen });
+            pen += if (byte == '\t') self.tab_width else self.indent_width;
+        }
+
+        // The rest is shaped in the runs between its tabs, so a tab never
+        // reaches the shaper either way, and a run on each side of one is a
+        // separate piece of text anyway.
         while (at < text.len) {
             const stop = std.mem.indexOfScalarPos(u8, text, at, '\t') orelse text.len;
             if (stop > at) pen = try self.shapeRun(text[at..stop], at, pen, entry);
@@ -735,17 +755,27 @@ test "shaping follows a change of scale" {
 /// What FreeType and HarfBuzz are both set to. Whole pixels, because that is the
 /// unit FreeType takes; the fraction of a *pen position* is a different question,
 /// and what the subpixel variants are for.
-/// How far a tab advances the pen: the width of `config.tab_stop`.
+/// How far one step of indentation advances the pen: the width of
+/// `config.indent_stop`.
 ///
 /// Measured through the shaper rather than taken off the face, so it is the
-/// same arithmetic that lays out the text a tab is lining up against, and it
-/// follows the font and the display scale without anything having to remember
-/// to make it.
-fn measureTab(shaper: *Shaper) f32 {
-    const shaped = shaper.shape(config.tab_stop);
+/// same arithmetic that lays out the text the indentation is lining up against,
+/// and it follows the font and the display scale without anything having to
+/// remember to make it.
+fn measureIndent(shaper: *Shaper) f32 {
+    const shaped = shaper.shape(config.indent_stop);
     var pen: f32 = 0;
     for (shaped.positions) |offset| pen += fromFixed(offset.x_advance);
     return pen;
+}
+
+/// How far a tab advances the pen, from one step of indentation.
+///
+/// Derived from the step rather than measured on its own, so that a tab and
+/// `config.tab_stops` leading spaces are the same distance by construction. A
+/// file that indents with both would come apart down the middle otherwise.
+fn tabFrom(indent: f32) f32 {
+    return indent * config.tab_stops;
 }
 
 fn pixelSize(scale: f32) u32 {
@@ -842,39 +872,56 @@ fn createAtlas(allocator: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUT
     return texture;
 }
 
-test "a tab is worth more than the spaces it would otherwise have been" {
+/// What `text` shapes to the width of, which is what the indent is measured
+/// against in the tests below.
+fn widthOf(shaper: *Shaper, text: []const u8) f32 {
+    var pen: f32 = 0;
+    for (shaper.shape(text).positions) |offset| pen += fromFixed(offset.x_advance);
+    return pen;
+}
+
+test "an indent step is worth more than the space it stands in for" {
     var shaper = try Shaper.init(1);
     defer shaper.deinit();
 
-    const tab = measureTab(&shaper);
+    // The whole reason indentation is not left to the font: a proportional
+    // space is about half a digit, so four of them are narrower than one
+    // letter of what they would be indenting.
+    const space = widthOf(&shaper, " ");
+    try std.testing.expect(space > 0);
+    try std.testing.expect(measureIndent(&shaper) > space * 1.5);
+}
 
-    // Four spaces: what a tab would be worth if it were spaces, and the whole
-    // reason it is not. A proportional font's space is about half a digit.
+test "an indent step is as wide as the stop it is measured from" {
+    var shaper = try Shaper.init(1);
+    defer shaper.deinit();
+
+    try std.testing.expectEqual(
+        widthOf(&shaper, config.indent_stop),
+        measureIndent(&shaper),
+    );
+}
+
+test "a tab is exactly as wide as the leading spaces it stands in for" {
+    var shaper = try Shaper.init(1);
+    defer shaper.deinit();
+
+    // Both sides are what `shapeLine` adds: a step per leading space, and one
+    // tab. They have to agree or a file indented with both comes apart.
+    const indent = measureIndent(&shaper);
+
     var spaces: f32 = 0;
-    for (shaper.shape("    ").positions) |offset| spaces += fromFixed(offset.x_advance);
+    for (0..config.tab_stops) |_| spaces += indent;
 
-    try std.testing.expect(spaces > 0);
-    try std.testing.expect(tab > spaces * 1.5);
+    try std.testing.expectEqual(spaces, tabFrom(indent));
 }
 
-test "a tab is as wide as the stop it is measured from" {
-    var shaper = try Shaper.init(1);
-    defer shaper.deinit();
-
-    const tab = measureTab(&shaper);
-
-    var stop: f32 = 0;
-    for (shaper.shape(config.tab_stop).positions) |offset| stop += fromFixed(offset.x_advance);
-
-    try std.testing.expectEqual(stop, tab);
-}
-
-test "a tab grows with the display scale, like everything else measured" {
+test "an indent step grows with the display scale, like everything else measured" {
     var one = try Shaper.init(1);
     defer one.deinit();
     var two = try Shaper.init(2);
     defer two.deinit();
 
     // Not exactly twice: the pixel size is rounded before the font is asked.
-    try std.testing.expect(measureTab(&two) > measureTab(&one) * 1.5);
+    try std.testing.expect(measureIndent(&two) > measureIndent(&one) * 1.5);
 }
