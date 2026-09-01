@@ -99,12 +99,6 @@ pub const Tabs = struct {
         self.rect = rect;
     }
 
-    /// The names go too, but they are not the bar's to drop: each belongs to
-    /// the file it names, and `OpenFile.invalidate` is what gives it up.
-    pub fn invalidate(self: *Tabs) void {
-        self.bullet.shaped = false;
-    }
-
     pub fn update(self: *Tabs, _: *const Model, message: Message) !Change {
         const at = switch (message) {
             // A tab is chosen by where the press landed; shift means nothing
@@ -135,7 +129,7 @@ pub const Tabs = struct {
         const inset = @round(across * model.atlas.scale);
         const gap = @round(beside * model.atlas.scale);
 
-        if (!self.bullet.shaped) try model.atlas.shapeLine(unsaved_mark, &self.bullet);
+        if (model.atlas.stale(&self.bullet)) try model.atlas.shapeLine(unsaved_mark, &self.bullet);
 
         // What the mark draws, not what it advances. A bullet carries wide side
         // bearings, and reserving them twice over would be paying for space
@@ -163,7 +157,7 @@ pub const Tabs = struct {
             defer which += 1;
 
             const name = &file.name;
-            if (!name.shaped) try model.atlas.shapeLine(std.fs.path.basename(path), name);
+            if (model.atlas.stale(name)) try model.atlas.shapeLine(std.fs.path.basename(path), name);
 
             const width = @round(advance(name) + 2 * (ink.wide + gap) + 2 * inset);
             self.rects.items[which] = .{

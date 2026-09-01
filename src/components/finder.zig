@@ -131,11 +131,6 @@ const Query = struct {
         self.rect = rect;
     }
 
-    pub fn invalidate(self: *Query) void {
-        self.layout.shaped = false;
-        self.count.shaped = false;
-    }
-
     pub fn update(_: *Query, _: *Model, _: Message) !Change {
         return .none;
     }
@@ -152,7 +147,7 @@ const Query = struct {
 
         // `shapeLine` marks what it shaped as done and nothing else clears it,
         // so the length of what was typed is what says the glyphs are stale.
-        if (!self.layout.shaped or self.typed != finding.typed.items.len) {
+        if (model.atlas.stale(&self.layout) or self.typed != finding.typed.items.len) {
             try model.atlas.shapeLine(finding.typed.items, &self.layout);
             self.typed = finding.typed.items.len;
         }
@@ -165,7 +160,7 @@ const Query = struct {
 
         const shown = finding.count();
         const total = finding.files;
-        if (!self.count.shaped or self.shown != shown or self.total != total) {
+        if (model.atlas.stale(&self.count) or self.shown != shown or self.total != total) {
             var buffer: [32]u8 = undefined;
             // Nothing typed, or everything matched: the total on its own, which
             // is what there is to search rather than what was found.
@@ -198,12 +193,17 @@ const Row = struct {
 const Results = struct {
     rows: [visible_rows]Row = @splat(.{}),
 
-    /// Which set of matches `rows` was shaped from. A search answers with a new
-    /// one every time, so its identity and its length together say whether
-    /// these glyphs are still the right ones.
+    /// Which set of matches `rows` was shaped from, and by which atlas. A
+    /// search answers with a new set every time, so its identity and its length
+    /// together say whether these glyphs are still the right ones -- and the
+    /// generation says whether they are still the right size.
+    ///
+    /// The rows are `LineLayout`s and carry their own stamp, but nothing would
+    /// look at it: this is the check that decides whether to shape them at all.
     listed: ?*anyopaque = null,
     count: usize = 0,
     top: usize = 0,
+    stamp: u32 = 0,
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
@@ -226,10 +226,6 @@ const Results = struct {
         self.rect = rect;
     }
 
-    pub fn invalidate(self: *Results) void {
-        self.listed = null;
-    }
-
     pub fn update(_: *Results, _: *Model, _: Message) !Change {
         return .none;
     }
@@ -238,7 +234,8 @@ const Results = struct {
     fn layOut(self: *Results, model: *const Model) !void {
         const finding = &(model.finding orelse return);
         const count = finding.count();
-        if (self.listed == finding.token() and self.count == count and self.top == finding.top) return;
+        if (self.listed == finding.token() and self.count == count and
+            self.top == finding.top and self.stamp == model.atlas.generation) return;
 
         for (&self.rows, 0..) |*row, index| {
             const path = finding.path(finding.top + index) orelse {
@@ -258,6 +255,7 @@ const Results = struct {
         self.listed = finding.token();
         self.count = count;
         self.top = finding.top;
+        self.stamp = model.atlas.generation;
     }
 
     pub fn draw(self: *Results, model: *const Model, painter: *Painter) !void {
@@ -322,10 +320,6 @@ pub const Finder = struct {
             .width = column,
             .height = @max(0, rect.y + rect.height - top),
         });
-    }
-
-    pub fn invalidate(self: *Finder) void {
-        self.panel.invalidate();
     }
 
     /// What a keystroke means while the panel is up. Nothing here changes

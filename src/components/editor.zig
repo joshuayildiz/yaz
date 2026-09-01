@@ -38,11 +38,6 @@ pub const Editor = struct {
         self.finder.place(model, rect);
     }
 
-    pub fn invalidate(self: *Editor) void {
-        self.workbench.invalidate();
-        self.finder.invalidate();
-    }
-
     pub fn draw(self: *Editor, model: *const Model, painter: *Painter) !void {
         try self.workbench.draw(model, painter);
         try self.finder.draw(model, painter);

@@ -757,14 +757,6 @@ pub const Model = struct {
         self.allocator.destroy(file);
     }
 
-    /// Every file gives up what it had shaped, for after the atlas is rebuilt
-    /// at a different scale. Asked of the context rather than of the components
-    /// because a file nothing is showing has a tab, and its name is glyphs of
-    /// the old size too.
-    pub fn invalidate(self: *Model) void {
-        for (self.files.items) |file| file.invalidate();
-    }
-
     fn hold(self: *Model, text: []const u8, path: ?[]const u8, crlf: bool) !*OpenFile {
         const file = try self.allocator.create(OpenFile);
         errdefer self.allocator.destroy(file);

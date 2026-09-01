@@ -1096,11 +1096,27 @@ the window itself — quit and resize — and hands everything else to the one
 component it was given. It asks no questions about what that component is.
 Nothing below takes an `SDL_Event`.
 
-Every component shares the same four: `place` to be given room, `update` to be
-told what happened, `draw` to add quads to a painter, and `invalidate` for the
-one thing none of them survives — the atlas rebuilt at a different scale. A
-parent calls them on its children, so the tree is the type system rather than a
-vtable.
+Every component shares the same three: `place` to be given room, `update` to be
+told what happened, and `draw` to add quads to a painter. A parent calls them on
+its children, so the tree is the type system rather than a vtable.
+
+There used to be a fourth. The atlas rebuilt at a different scale is the one
+thing no cached layout survives, and every component that held one had an
+`invalidate` to drop it — twelve of them, half being parents forwarding the call
+and two being empty because the interface demanded the method. **The atlas
+stamps its work instead.** It carries a `generation`, bumped on every rebuild;
+every `LineLayout` carries the generation it was shaped by; and a cache is worth
+drawing only if `atlas.stale(entry)` says no. Nobody is told anything, so
+nothing can be missed out of the telling — and a rescale no longer walks every
+line of every open file to set a flag on entries that will never be looked at.
+
+Zero is "never shaped", which is also how an edit says a line must be shaped
+again, and the generation counts past zero when it comes round rather than
+colliding with it.
+
+The one cache that is not a `LineLayout` is the finder's list of rows, which
+memoises on which set of matches it drew. That takes the generation as one more
+part of its key.
 
 **`update` is handed the model to read and nothing more.** Its signature says
 so — `*const Model` — and what it returns is a `Change`: the change it worked

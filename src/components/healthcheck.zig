@@ -162,14 +162,6 @@ pub const Healthcheck = struct {
         return .none;
     }
 
-    /// Every shaped piece goes, for after the atlas is rebuilt at a different
-    /// scale, for the reason `OpenFile.invalidate` gives.
-    pub fn invalidate(self: *Healthcheck) void {
-        var all: [piece_count]*Piece = undefined;
-        self.pieces(&all);
-        for (all) |target| target.layout.shaped = false;
-    }
-
     const piece_count = 4 + tools.Tool.all.len * 3;
 
     /// Every piece there is, so that shaping and dropping cannot disagree about
@@ -208,7 +200,7 @@ pub const Healthcheck = struct {
         var all: [piece_count]*Piece = undefined;
         self.pieces(&all);
         for (all) |target| {
-            if (!target.layout.shaped) try model.atlas.shapeLine(target.text, &target.layout);
+            if (model.atlas.stale(&target.layout)) try model.atlas.shapeLine(target.text, &target.layout);
         }
 
         const scale = model.atlas.scale;

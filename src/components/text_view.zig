@@ -295,7 +295,7 @@ pub const TextView = struct {
 
         const range = visibleLines(top, self.file.scroll, height, model.atlas.line_height, count);
         for (self.file.lines.items[range.first..range.last], range.first..) |*entry, index| {
-            if (!entry.shaped) try model.atlas.shapeLine(try self.file.buffer.lineSlice(index), entry);
+            if (model.atlas.stale(entry)) try model.atlas.shapeLine(try self.file.buffer.lineSlice(index), entry);
             std.debug.assert(entry.bytes == self.file.buffer.lineLength(index));
 
             const baseline = @round(self.rect.y + lineTop(index, top, self.file.scroll, model.atlas.line_height) + model.atlas.ascent);
@@ -316,7 +316,7 @@ pub const TextView = struct {
         // here, so where exactly it lands does not matter.
         if (caret == null) {
             const entry = &self.file.lines.items[caret_line];
-            if (!entry.shaped) try model.atlas.shapeLine(try self.file.buffer.lineSlice(caret_line), entry);
+            if (model.atlas.stale(entry)) try model.atlas.shapeLine(try self.file.buffer.lineSlice(caret_line), entry);
             std.debug.assert(entry.bytes == self.file.buffer.lineLength(caret_line));
 
             const off = self.rect.y + lineTop(caret_line, top, self.file.scroll, model.atlas.line_height) + model.atlas.ascent;
@@ -428,7 +428,7 @@ pub const TextView = struct {
             @min(self.file.buffer.lineCount() - 1, @as(usize, @intFromFloat(row)));
 
         const entry = &self.file.lines.items[index];
-        if (!entry.shaped) {
+        if (model.atlas.stale(entry)) {
             const text = self.file.buffer.lineSlice(index) catch return null;
             model.atlas.shapeLine(text, entry) catch return null;
         }

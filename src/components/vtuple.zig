@@ -96,10 +96,6 @@ pub fn VTuple(comptime members: []const type) type {
             }
         }
 
-        pub fn invalidate(self: *Self) void {
-            inline for (0..count) |i| self.items[i].invalidate();
-        }
-
         pub fn draw(self: *Self, model: *const Model, painter: *Painter) !void {
             inline for (0..count) |i| try self.items[i].draw(model, painter);
         }
@@ -149,7 +145,6 @@ fn Band(comptime tag: u8, comptime wants: ?f32) type {
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
         pub fn deinit(_: *Self, _: *Model) void {}
-        pub fn invalidate(_: *Self) void {}
         pub fn draw(_: *Self, _: *const Model, _: *Painter) !void {}
 
         pub fn height(_: *const Self, _: *const Model) ?f32 {

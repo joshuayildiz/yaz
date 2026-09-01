@@ -675,19 +675,6 @@ pub const OpenFile = struct {
         return edit;
     }
 
-    /// Drops every shaped line, for after the atlas is rebuilt at a different
-    /// scale. Nothing cached survives that: the positions are in pixels of the
-    /// old size, and scaling them is not the same answer, because hinting and
-    /// rounding do not distribute over a scale.
-    ///
-    /// The entries stay, so the cache is still one per line and in step with the
-    /// file. The name on its tab goes the same way, being glyphs of the old size
-    /// like any other.
-    pub fn invalidate(self: *OpenFile) void {
-        for (self.lines.items) |*entry| entry.shaped = false;
-        self.name.shaped = false;
-    }
-
     fn splice(self: *OpenFile, edit: Edit) !void {
         // Nothing has been laid out yet, so there is nothing to keep in step.
         if (self.lines.items.len == 0) return;
@@ -729,8 +716,18 @@ fn spliceLines(
     );
     for (cache.items[first..][0..added]) |*entry| entry.* = .{};
 
-    // The line the edit landed in kept its place and lost its text.
-    cache.items[line].shaped = false;
+    // The line the edit landed in kept its place and lost its text. Stamped
+    // zero rather than with a generation: no atlas has shaped what is there now.
+    cache.items[line].stamp = 0;
+}
+
+/// The atlas these test entries were shaped by. Any number but zero will do:
+/// what the tests are about is which entries keep their stamp and which lose it.
+const a_generation: u32 = 7;
+
+/// Whether an entry still says it was shaped by that atlas.
+fn stillShaped(entry: LineLayout) bool {
+    return entry.stamp == a_generation;
 }
 
 /// Four lines, each holding a sprite and a caret, so that dropping an entry
@@ -738,7 +735,7 @@ fn spliceLines(
 fn testCache(allocator: std.mem.Allocator) !std.ArrayList(LineLayout) {
     var cache: std.ArrayList(LineLayout) = .empty;
     for ([_]usize{ 10, 20, 30, 40 }) |bytes| {
-        var entry: LineLayout = .{ .bytes = bytes, .shaped = true };
+        var entry: LineLayout = .{ .bytes = bytes, .stamp = a_generation };
         try entry.sprites.append(allocator, .{ .dest = .{ 0, 0 }, .source = .{ 0, 0 }, .size = .{ 1, 1 } });
         try entry.carets.append(allocator, .{ .offset = 0, .x = 0 });
         try cache.append(allocator, entry);
@@ -763,7 +760,8 @@ test "an edit inside one line leaves every other line's layout alone" {
         cache.items[0].bytes, cache.items[1].bytes, cache.items[2].bytes, cache.items[3].bytes,
     });
     try std.testing.expectEqualSlices(bool, &.{ true, false, true, true }, &.{
-        cache.items[0].shaped, cache.items[1].shaped, cache.items[2].shaped, cache.items[3].shaped,
+        stillShaped(cache.items[0]), stillShaped(cache.items[1]),
+        stillShaped(cache.items[2]), stillShaped(cache.items[3]),
     });
 }
 
@@ -776,13 +774,13 @@ test "splitting a line shifts the ones below it without reshaping them" {
     try spliceLines(allocator, &cache, 1, 0, 1);
 
     try std.testing.expectEqual(5, cache.items.len);
-    try std.testing.expect(!cache.items[1].shaped);
-    try std.testing.expect(!cache.items[2].shaped);
+    try std.testing.expect(!stillShaped(cache.items[1]));
+    try std.testing.expect(!stillShaped(cache.items[2]));
     // Lines 2 and 3 are the same shaped lines, one index further down.
     try std.testing.expectEqual(30, cache.items[3].bytes);
-    try std.testing.expect(cache.items[3].shaped);
+    try std.testing.expect(stillShaped(cache.items[3]));
     try std.testing.expectEqual(40, cache.items[4].bytes);
-    try std.testing.expect(cache.items[4].shaped);
+    try std.testing.expect(stillShaped(cache.items[4]));
 }
 
 test "joining two lines drops one entry and reshapes the survivor" {
@@ -795,9 +793,9 @@ test "joining two lines drops one entry and reshapes the survivor" {
 
     try std.testing.expectEqual(3, cache.items.len);
     try std.testing.expectEqual(10, cache.items[0].bytes);
-    try std.testing.expect(!cache.items[1].shaped);
+    try std.testing.expect(!stillShaped(cache.items[1]));
     try std.testing.expectEqual(40, cache.items[2].bytes);
-    try std.testing.expect(cache.items[2].shaped);
+    try std.testing.expect(stillShaped(cache.items[2]));
 }
 
 test "deleting across lines collapses them onto the one the edit started in" {
@@ -808,7 +806,7 @@ test "deleting across lines collapses them onto the one the edit started in" {
     try spliceLines(allocator, &cache, 0, 3, 0);
 
     try std.testing.expectEqual(1, cache.items.len);
-    try std.testing.expect(!cache.items[0].shaped);
+    try std.testing.expect(!stillShaped(cache.items[0]));
 }
 
 test "a selection is answered in order, whichever end the caret is on" {

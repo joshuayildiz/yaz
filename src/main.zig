@@ -157,11 +157,11 @@ fn App(comptime Component: type) type {
             // Read rather than listened for: three window events can imply the
             // scale changed, and dragging to another display happens inside the
             // modal loop, where only the watch below runs.
+            // Nobody is told about it. Everything shaped carries the
+            // generation of the atlas that shaped it, so what was cached before
+            // a rebuild answers `stale` for itself, wherever it is kept.
             const scale = displayScale(self.renderer.window);
-            if (try self.renderer.atlas.setScale(scale)) {
-                self.model.invalidate();
-                self.component.invalidate();
-            }
+            try self.renderer.atlas.setScale(scale);
 
             // The window rather than the swapchain, which is not acquired until
             // `present`. The two can disagree for a frame mid-resize, which is

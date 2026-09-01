@@ -125,7 +125,13 @@ pub const LineLayout = struct {
     /// file would otherwise draw the wrong line rather than say so.
     bytes: usize = 0,
 
-    shaped: bool = false,
+    /// Which atlas shaped it. Glyphs are of one size and the atlas is rebuilt
+    /// at another whenever the display scale changes, so an entry is only worth
+    /// drawing if it was shaped by the atlas that is about to draw it.
+    ///
+    /// Zero is "never shaped", which no generation ever is. That is also how an
+    /// edit says a line has to be shaped again -- see `spliceLines`.
+    stamp: u32 = 0,
 
     pub fn deinit(self: *LineLayout, allocator: std.mem.Allocator) void {
         self.sprites.deinit(allocator);
@@ -184,6 +190,13 @@ pub const GlyphAtlas = struct {
     /// different density is a float compare rather than the right event.
     scale: f32,
 
+    /// Which rebuild this is. Stamped onto everything shaped, so a cache from
+    /// an earlier one answers for itself rather than having to be told.
+    ///
+    /// Counting from one leaves zero to mean "never shaped", and `nextGeneration`
+    /// is what keeps it that way when the count comes round.
+    generation: u32 = 1,
+
     const Placed = struct { x: u16, y: u16 };
 
     const Upload = struct {
@@ -237,16 +250,17 @@ pub const GlyphAtlas = struct {
         };
     }
 
-    /// Rebuilds the atlas at a new display scale, answering whether it had to.
-    /// A window dragged to a display of a different density lands here.
+    /// Rebuilds the atlas at a new display scale. A window dragged to a display
+    /// of a different density lands here.
     ///
     /// The texture survives, since its size does not depend on the scale; what
     /// a rebuild costs is the packing state and the metrics. The next layout
     /// refills it through the path a first redraw uses.
     ///
-    /// Callers holding a shaped line have to drop it. `TextView` does.
-    pub fn setScale(self: *GlyphAtlas, scale: f32) !bool {
-        if (scale == self.scale) return false;
+    /// Nobody has to be told. Everything shaped carries the generation it was
+    /// shaped by, so a cache from before this call answers `stale` for itself.
+    pub fn setScale(self: *GlyphAtlas, scale: f32) !void {
+        if (scale == self.scale) return;
 
         if (ft.FT_Set_Pixel_Sizes(self.face, 0, pixelSize(scale)) != 0) {
             return error.FreetypeSetPixelSizes;
@@ -257,6 +271,7 @@ pub const GlyphAtlas = struct {
         self.indent_width = measureIndent(&self.shaper);
         self.tab_width = tabFrom(self.indent_width);
         self.scale = scale;
+        self.generation = nextGeneration(self.generation);
 
         @memset(self.slots, no_slot);
         self.used = 0;
@@ -268,8 +283,6 @@ pub const GlyphAtlas = struct {
         // again. Uploading it would paint the old glyphs over the new ones.
         self.staging.clearRetainingCapacity();
         self.uploads.clearRetainingCapacity();
-
-        return true;
     }
 
     pub fn deinit(self: *GlyphAtlas) void {
@@ -329,7 +342,13 @@ pub const GlyphAtlas = struct {
         try entry.carets.append(self.allocator, .{ .offset = @intCast(text.len), .x = pen });
 
         entry.bytes = text.len;
-        entry.shaped = true;
+        entry.stamp = self.generation;
+    }
+
+    /// Whether `entry` was shaped by some earlier atlas, or never shaped at all.
+    /// Either way it has to be shaped again before it is worth drawing.
+    pub fn stale(self: *const GlyphAtlas, entry: *const LineLayout) bool {
+        return entry.stamp != self.generation;
     }
 
     /// One run of a line with no tab in it, laid out from `pen` and answering
@@ -755,6 +774,17 @@ test "shaping follows a change of scale" {
 /// What FreeType and HarfBuzz are both set to. Whole pixels, because that is the
 /// unit FreeType takes; the fraction of a *pen position* is a different question,
 /// and what the subpixel variants are for.
+/// The generation after `from`, which is never zero.
+///
+/// Zero means "never shaped". A stamp of zero looking fresh would draw an entry
+/// that holds no glyphs and no carets, against a line that has both -- an
+/// assertion in a debug build and a missing line in a release one. Coming round
+/// takes four billion rebuilds and is still cheaper to rule out than to reason
+/// about.
+fn nextGeneration(from: u32) u32 {
+    return if (from == std.math.maxInt(u32)) 1 else from + 1;
+}
+
 /// How far one step of indentation advances the pen: the width of
 /// `config.indent_stop`.
 ///
@@ -924,4 +954,16 @@ test "an indent step grows with the display scale, like everything else measured
 
     // Not exactly twice: the pixel size is rounded before the font is asked.
     try std.testing.expect(measureIndent(&two) > measureIndent(&one) * 1.5);
+}
+
+test "a generation never comes round to zero" {
+    try std.testing.expectEqual(@as(u32, 2), nextGeneration(1));
+    // Zero is "never shaped", so the count skips it rather than colliding with
+    // every entry nothing has ever laid out.
+    try std.testing.expectEqual(@as(u32, 1), nextGeneration(std.math.maxInt(u32)));
+}
+
+test "a line nobody has shaped is stamped with no generation at all" {
+    const entry: LineLayout = .{};
+    try std.testing.expectEqual(@as(u32, 0), entry.stamp);
 }

@@ -43,10 +43,6 @@ const Views = struct {
         self.rects.deinit(model.allocator);
     }
 
-    /// Nothing shaped is kept here: what a column draws belongs to its file,
-    /// and the context drops that for every file it holds.
-    pub fn invalidate(_: *Views) void {}
-
     /// Whatever it is given. How wide the columns are is a row's business; how
     /// tall they are is not, so it never asks for a height of its own.
     pub fn height(_: *const Views, _: *const Model) ?f32 {
@@ -146,10 +142,6 @@ pub const Workbench = struct {
 
     pub fn deinit(self: *Workbench, model: *Model) void {
         self.stack.deinit(model);
-    }
-
-    pub fn invalidate(self: *Workbench) void {
-        self.stack.invalidate();
     }
 
     pub fn place(self: *Workbench, model: *const Model, rect: Rect) void {
