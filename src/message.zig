@@ -21,7 +21,7 @@ const lines_per_notch = 3;
 /// A component cannot make the change itself -- `update` is handed the model to
 /// read and nothing more -- so this is the only way anything moves. `Model.apply`
 /// is the other half, and the two together are why nothing has to remember to
-/// say that it changed something: an effect is that, and `nothing` is its
+/// say that it changed something: an effect is that, and `none` is its
 /// absence.
 ///
 /// Nothing here owns memory. What used to be a path copied out of the finder's
@@ -29,7 +29,7 @@ const lines_per_notch = 3;
 /// look up for itself.
 pub const Effect = union(enum) {
     /// Nothing happened, or nothing that shows. The window does not draw again.
-    nothing,
+    none,
 
     /// Nothing in the model moved, but the window has to be drawn again anyway
     /// -- which is only ever true of a resize, where what changed is the room

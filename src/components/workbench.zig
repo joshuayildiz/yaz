@@ -84,14 +84,14 @@ const Views = struct {
     pub fn update(self: *Views, model: *const Model, message: Message) !Effect {
         switch (message) {
             .press => |what| {
-                const which = self.over(what.at) orelse return .nothing;
+                const which = self.over(what.at) orelse return .none;
                 // Landing the caret or taking hold of the scrollbar both say
                 // which column they are in, and both mean that column now has
                 // the keyboard. A press that means neither -- an empty file --
                 // still moves it.
                 const asked = try self.tell(model, which, message);
                 return switch (asked) {
-                    .nothing => .{ .focus = which },
+                    .none => .{ .focus = which },
                     else => asked,
                 };
             },
@@ -100,16 +100,16 @@ const Views = struct {
             // the window reaches no column at all -- which is what stops a
             // hover from dragging out a selection. Only the pointer is caught
             // that way: typing goes to the focused column even mid-drag.
-            .move => return self.tell(model, model.holding orelse return .nothing, message),
-            .release => return self.tell(model, model.holding orelse return .nothing, message),
+            .move => return self.tell(model, model.holding orelse return .none, message),
+            .release => return self.tell(model, model.holding orelse return .none, message),
             // Turns whatever it is under without deciding where typing lands.
-            .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .nothing, message),
+            .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .none, message),
             else => return self.tell(model, model.focus, message),
         }
     }
 
     fn tell(self: *const Views, model: *const Model, which: usize, message: Message) !Effect {
-        if (which >= model.columns.items.len or which >= self.rects.items.len) return .nothing;
+        if (which >= model.columns.items.len or which >= self.rects.items.len) return .none;
         const column: TextView = .init(which, model.columns.items[which], self.rects.items[which]);
         return column.update(model, message);
     }

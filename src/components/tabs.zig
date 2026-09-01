@@ -110,7 +110,7 @@ pub const Tabs = struct {
             // A tab is chosen by where the press landed; shift means nothing
             // to a bar.
             .press => |what| what.at,
-            else => return .nothing,
+            else => return .none,
         };
 
         for (self.rects.items, 0..) |rect, which| {
@@ -120,7 +120,7 @@ pub const Tabs = struct {
             // sits on the bar.
             return .{ .show = which };
         }
-        return .nothing;
+        return .none;
     }
 
     pub fn draw(self: *Tabs, model: *const Model, painter: *Painter) !void {

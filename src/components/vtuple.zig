@@ -107,18 +107,18 @@ pub fn VTuple(comptime members: []const type) type {
         pub fn update(self: *Self, model: *const Model, message: Message) !Effect {
             switch (message) {
                 .press => |what| {
-                    const which = self.over(what.at) orelse return .nothing;
+                    const which = self.over(what.at) orelse return .none;
                     self.focus = which;
                     self.holding = which;
                     return self.tell(model, which, message);
                 },
-                .move => |at| return self.tell(model, self.holding orelse self.over(at) orelse return .nothing, message),
+                .move => |at| return self.tell(model, self.holding orelse self.over(at) orelse return .none, message),
                 .release => {
-                    const which = self.holding orelse return .nothing;
+                    const which = self.holding orelse return .none;
                     self.holding = null;
                     return self.tell(model, which, message);
                 },
-                .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .nothing, message),
+                .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .none, message),
                 else => return self.tell(model, self.focus, message),
             }
         }
@@ -162,7 +162,7 @@ fn Band(comptime tag: u8, comptime wants: ?f32) type {
 
         pub fn update(self: *Self, model: *const Model, _: Message) !Effect {
             try self.told.append(model.allocator, tag);
-            return .nothing;
+            return .none;
         }
     };
 }

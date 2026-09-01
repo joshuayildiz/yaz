@@ -274,11 +274,11 @@ pub const Model = struct {
     /// The other half of `Effect`: the one place anything here changes.
     ///
     /// Every branch is a change, so the frame is asked for once, here, rather
-    /// than by each of them remembering to. `nothing` is the only thing that
+    /// than by each of them remembering to. `none` is the only thing that
     /// leaves the window as it was.
     pub fn apply(self: *Model, effect: Effect) !void {
         switch (effect) {
-            .nothing => return,
+            .none => return,
             .nothing_but_draw => {},
 
             .quit => self.running = false,

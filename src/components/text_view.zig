@@ -105,7 +105,7 @@ pub const TextView = struct {
             // The window's own, and a name that came back from a save dialog,
             // which the window deals with because the file it belongs to need
             // not be the one this column is showing.
-            .quit, .resized, .find, .show, .split, .close, .up, .down, .cancel, .named => return .nothing,
+            .quit, .resized, .find, .show, .split, .close, .up, .down, .cancel, .named => return .none,
             .save => return .{ .save = self.which },
             .cut => return .{ .cut = self.which },
             .copy => return .{ .copy = self.which },
@@ -148,7 +148,7 @@ pub const TextView = struct {
                 // so wandering within one character costs no frame.
                 const asked = self.caretAt(model, at, true);
                 switch (asked) {
-                    .caret => |where| if (where.at == self.file.cursor) return .nothing,
+                    .caret => |where| if (where.at == self.file.cursor) return .none,
                     else => {},
                 }
                 return asked;
@@ -207,7 +207,7 @@ pub const TextView = struct {
 
     /// Drags the thumb so that the point `grab` down it sits at `y`.
     fn dragTo(self: *const TextView, model: *const Model, y: f32, grab: f32) Effect {
-        if (self.rect.height <= 0) return .nothing;
+        if (self.rect.height <= 0) return .none;
         const count: f32 = @floatFromInt(self.file.buffer.lineCount());
         // The inverse of the thumb, whose top is `scroll * height / content`.
         const content = self.origin(model)[1] - self.rect.y + count * model.atlas.line_height;
@@ -241,7 +241,7 @@ pub const TextView = struct {
     /// this is the only thing that knows both.
     fn scrollTo(self: *const TextView, model: *const Model, to: f32, pending: f32) Effect {
         const clamped = @min(self.furthest(model), @max(0, to));
-        if (clamped == self.file.scroll and pending == self.file.pending) return .nothing;
+        if (clamped == self.file.scroll and pending == self.file.pending) return .none;
         return .{ .scroll = .{ .column = self.which, .to = clamped, .pending = pending } };
     }
 
@@ -376,7 +376,7 @@ pub const TextView = struct {
     /// A click below the last line or right of a line's end lands on the nearest
     /// place the caret can go, which is what makes dragging past the end behave.
     fn caretAt(self: *const TextView, model: *const Model, point: [2]f32, extend: bool) Effect {
-        const where = self.landing(model, point) orelse return .nothing;
+        const where = self.landing(model, point) orelse return .none;
         return .{ .caret = .{ .column = self.which, .at = where.offset, .extend = extend } };
     }
 
@@ -388,13 +388,13 @@ pub const TextView = struct {
     /// caret the first of the two presses put there rather than reaching for
     /// something to select.
     fn chooseAt(self: *const TextView, model: *const Model, point: [2]f32) Effect {
-        const where = self.landing(model, point) orelse return .nothing;
+        const where = self.landing(model, point) orelse return .none;
         const buffer = &self.file.buffer;
 
         if (where.past_end) return self.take(wholeLine(buffer, where.index));
         if (bracketAround(buffer, where.offset)) |inside| return self.take(inside);
         if (wordAround(buffer, where.offset)) |word| return self.take(word);
-        return .nothing;
+        return .none;
     }
 
     /// Both ends at once, which is what every double-click asks for.

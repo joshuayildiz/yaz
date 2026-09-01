@@ -137,7 +137,7 @@ const Query = struct {
     }
 
     pub fn update(_: *Query, _: *Model, _: Message) !Effect {
-        return .nothing;
+        return .none;
     }
 
     pub fn draw(self: *Query, model: *const Model, painter: *Painter) !void {
@@ -231,7 +231,7 @@ const Results = struct {
     }
 
     pub fn update(_: *Results, _: *Model, _: Message) !Effect {
-        return .nothing;
+        return .none;
     }
 
     /// Shapes the rows on screen, and only those.
@@ -341,7 +341,7 @@ pub const Finder = struct {
             .down => .down,
             .text => |what| .{ .query = what },
             .backspace => .rub,
-            else => .nothing,
+            else => .none,
         };
     }
 

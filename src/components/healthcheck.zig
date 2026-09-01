@@ -159,7 +159,7 @@ pub const Healthcheck = struct {
         _ = self;
         _ = message;
         _ = model.atlas;
-        return .nothing;
+        return .none;
     }
 
     /// Every shaped piece goes, for after the atlas is rebuilt at a different

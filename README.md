@@ -1101,7 +1101,7 @@ it is the only place in the program where any of this moves.
 
 That is what makes the redraw question answer itself. An effect is a change, so
 the frame is asked for once, in `apply`, rather than by every component
-remembering to say it changed something; `nothing` is the absence of a change
+remembering to say it changed something; `none` is the absence of a change
 and leaves the window alone. There is no damage tracking — the whole window is
 redrawn — but presenting blocks on the swapchain, so the question worth asking
 is only ever *whether* to draw.
