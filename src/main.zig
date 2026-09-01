@@ -62,7 +62,7 @@ fn App(comptime Component: type) type {
         component: Component,
 
         fn deinit(self: *Self) void {
-            self.component.deinit(self.model);
+            self.component.deinit(self.model.allocator);
             self.painter.deinit();
             self.renderer.deinit();
         }

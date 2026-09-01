@@ -105,9 +105,9 @@ const Query = struct {
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    pub fn deinit(self: *Query, model: *Model) void {
-        self.layout.deinit(model.allocator);
-        self.count.deinit(model.allocator);
+    pub fn deinit(self: *Query, allocator: std.mem.Allocator) void {
+        self.layout.deinit(allocator);
+        self.count.deinit(allocator);
     }
 
     /// One line of text and the air round it, plus the gap that separates this
@@ -207,8 +207,8 @@ const Results = struct {
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    pub fn deinit(self: *Results, model: *Model) void {
-        for (&self.rows) |*row| row.deinit(model.allocator);
+    pub fn deinit(self: *Results, allocator: std.mem.Allocator) void {
+        for (&self.rows) |*row| row.deinit(allocator);
     }
 
     /// As many rows as there are, and nothing at all when there are none: an
@@ -302,8 +302,8 @@ pub const Finder = struct {
     panel: Panel = .init(.{ .{}, .{} }),
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    pub fn deinit(self: *Finder, model: *Model) void {
-        self.panel.deinit(model);
+    pub fn deinit(self: *Finder, allocator: std.mem.Allocator) void {
+        self.panel.deinit(allocator);
     }
 
     /// A measure down the middle, hanging a short way from the top of the

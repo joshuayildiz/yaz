@@ -83,9 +83,9 @@ pub const Tabs = struct {
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    pub fn deinit(self: *Tabs, model: *Model) void {
-        self.rects.deinit(model.allocator);
-        self.bullet.deinit(model.allocator);
+    pub fn deinit(self: *Tabs, allocator: std.mem.Allocator) void {
+        self.rects.deinit(allocator);
+        self.bullet.deinit(allocator);
     }
 
     /// Nothing at all when no file has been named: a strip with no tabs on it

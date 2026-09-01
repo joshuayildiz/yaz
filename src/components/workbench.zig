@@ -39,8 +39,8 @@ const Views = struct {
 
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    pub fn deinit(self: *Views, model: *Model) void {
-        self.rects.deinit(model.allocator);
+    pub fn deinit(self: *Views, allocator: std.mem.Allocator) void {
+        self.rects.deinit(allocator);
     }
 
     /// Whatever it is given. How wide the columns are is a row's business; how
@@ -140,8 +140,8 @@ pub const Workbench = struct {
         break :stack built;
     },
 
-    pub fn deinit(self: *Workbench, model: *Model) void {
-        self.stack.deinit(model);
+    pub fn deinit(self: *Workbench, allocator: std.mem.Allocator) void {
+        self.stack.deinit(allocator);
     }
 
     pub fn place(self: *Workbench, model: *const Model, rect: Rect) void {

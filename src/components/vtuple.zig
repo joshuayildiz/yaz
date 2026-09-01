@@ -51,8 +51,8 @@ pub fn VTuple(comptime members: []const type) type {
             return .{ .items = items };
         }
 
-        pub fn deinit(self: *Self, model: *Model) void {
-            inline for (0..count) |i| self.items[i].deinit(model);
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            inline for (0..count) |i| self.items[i].deinit(allocator);
         }
 
         /// Hands the keyboard to `T`, for whoever knows something the column
@@ -144,7 +144,7 @@ fn Band(comptime tag: u8, comptime wants: ?f32) type {
         told: *std.ArrayList(u8),
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-        pub fn deinit(_: *Self, _: *Model) void {}
+        pub fn deinit(_: *Self, _: std.mem.Allocator) void {}
         pub fn draw(_: *Self, _: *const Model, _: *Painter) !void {}
 
         pub fn height(_: *const Self, _: *const Model) ?f32 {

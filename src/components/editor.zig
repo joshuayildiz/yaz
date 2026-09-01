@@ -9,6 +9,8 @@
 //! surfaces, not a page that replaced one, and the code either side of them is
 //! at full contrast.
 
+const std = @import("std");
+
 const Model = @import("../model.zig").Model;
 
 const message_mod = @import("../message.zig");
@@ -26,9 +28,9 @@ pub const Editor = struct {
     workbench: Workbench = .{},
     finder: Finder = .{},
 
-    pub fn deinit(self: *Editor, model: *Model) void {
-        self.workbench.deinit(model);
-        self.finder.deinit(model);
+    pub fn deinit(self: *Editor, allocator: std.mem.Allocator) void {
+        self.workbench.deinit(allocator);
+        self.finder.deinit(allocator);
     }
 
     /// Both get the whole window. The workbench divides it; the finder lies

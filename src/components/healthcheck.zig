@@ -135,16 +135,16 @@ pub const Healthcheck = struct {
         return .{ .text = try allocator.dupe(u8, text), .colour = colour };
     }
 
-    pub fn deinit(self: *Healthcheck, model: *Model) void {
-        self.heading.deinit(model.allocator);
+    pub fn deinit(self: *Healthcheck, allocator: std.mem.Allocator) void {
+        self.heading.deinit(allocator);
         for (&self.rows) |*row| {
-            row.name.deinit(model.allocator);
-            row.status.deinit(model.allocator);
-            row.where.deinit(model.allocator);
+            row.name.deinit(allocator);
+            row.status.deinit(allocator);
+            row.where.deinit(allocator);
         }
-        self.run.deinit(model.allocator);
-        self.command.deinit(model.allocator);
-        self.tail.deinit(model.allocator);
+        self.run.deinit(allocator);
+        self.command.deinit(allocator);
+        self.tail.deinit(allocator);
     }
 
     pub fn place(self: *Healthcheck, model: *const Model, rect: Rect) void {
