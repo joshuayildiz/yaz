@@ -23,7 +23,7 @@ const std = @import("std");
 const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Effect = message_mod.Effect;
+const Change = message_mod.Change;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const model_mod = @import("../model.zig");
@@ -136,7 +136,7 @@ const Query = struct {
         self.count.shaped = false;
     }
 
-    pub fn update(_: *Query, _: *Model, _: Message) !Effect {
+    pub fn update(_: *Query, _: *Model, _: Message) !Change {
         return .none;
     }
 
@@ -230,7 +230,7 @@ const Results = struct {
         self.listed = null;
     }
 
-    pub fn update(_: *Results, _: *Model, _: Message) !Effect {
+    pub fn update(_: *Results, _: *Model, _: Message) !Change {
         return .none;
     }
 
@@ -333,7 +333,7 @@ pub const Finder = struct {
     ///
     /// Nothing it answers with owns memory either -- return is `choose`, and
     /// which file that is is the model's to look up.
-    pub fn update(_: *Finder, _: *const Model, message: Message) !Effect {
+    pub fn update(_: *Finder, _: *const Model, message: Message) !Change {
         return switch (message) {
             .cancel, .find => .dismiss,
             .newline => .choose,

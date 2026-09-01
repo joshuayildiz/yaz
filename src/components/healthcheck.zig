@@ -12,7 +12,7 @@ const std = @import("std");
 const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Effect = message_mod.Effect;
+const Change = message_mod.Change;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Model = @import("../model.zig").Model;
@@ -155,7 +155,7 @@ pub const Healthcheck = struct {
     /// Nothing here reacts to anything. Quit and resize belong to the window and
     /// have been dealt with above; every other message is for an editor that is
     /// not running.
-    pub fn update(self: *Healthcheck, model: *Model, message: Message) !Effect {
+    pub fn update(self: *Healthcheck, model: *Model, message: Message) !Change {
         _ = self;
         _ = message;
         _ = model.atlas;

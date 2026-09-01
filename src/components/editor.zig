@@ -13,7 +13,7 @@ const Model = @import("../model.zig").Model;
 
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Effect = message_mod.Effect;
+const Change = message_mod.Change;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -52,7 +52,7 @@ pub const Editor = struct {
     /// belongs to neither: it is the keystroke that decides which of them there
     /// is. Pressed while the panel is up it reaches the panel, which asks to be
     /// put away, exactly as escape does.
-    pub fn update(self: *Editor, model: *const Model, message: Message) !Effect {
+    pub fn update(self: *Editor, model: *const Model, message: Message) !Change {
         if (model.finding != null) return self.finder.update(model, message);
 
         switch (message) {

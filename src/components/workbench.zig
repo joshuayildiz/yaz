@@ -18,7 +18,7 @@ const OpenFile = @import("../open_file.zig").OpenFile;
 
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Effect = message_mod.Effect;
+const Change = message_mod.Change;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -81,7 +81,7 @@ const Views = struct {
         }
     }
 
-    pub fn update(self: *Views, model: *const Model, message: Message) !Effect {
+    pub fn update(self: *Views, model: *const Model, message: Message) !Change {
         switch (message) {
             .press => |what| {
                 const which = self.over(what.at) orelse return .none;
@@ -108,7 +108,7 @@ const Views = struct {
         }
     }
 
-    fn tell(self: *const Views, model: *const Model, which: usize, message: Message) !Effect {
+    fn tell(self: *const Views, model: *const Model, which: usize, message: Message) !Change {
         if (which >= model.columns.items.len or which >= self.rects.items.len) return .none;
         const column: TextView = .init(which, model.columns.items[which], self.rects.items[which]);
         return column.update(model, message);
@@ -166,7 +166,7 @@ pub const Workbench = struct {
     /// A tab is named by its place on the bar rather than by its path, so
     /// nothing here has to copy a string out of the model to say which file it
     /// means.
-    pub fn update(self: *Workbench, model: *const Model, message: Message) !Effect {
+    pub fn update(self: *Workbench, model: *const Model, message: Message) !Change {
         switch (message) {
             .show => |which| return .{ .show = which },
             .split => |which| return .{ .split = which },

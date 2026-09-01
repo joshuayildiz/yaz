@@ -15,7 +15,7 @@ const std = @import("std");
 
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Effect = message_mod.Effect;
+const Change = message_mod.Change;
 
 const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
 const Model = @import("../model.zig").Model;
@@ -104,7 +104,7 @@ pub fn VTuple(comptime members: []const type) type {
             inline for (0..count) |i| try self.items[i].draw(model, painter);
         }
 
-        pub fn update(self: *Self, model: *const Model, message: Message) !Effect {
+        pub fn update(self: *Self, model: *const Model, message: Message) !Change {
             switch (message) {
                 .press => |what| {
                     const which = self.over(what.at) orelse return .none;
@@ -132,7 +132,7 @@ pub fn VTuple(comptime members: []const type) type {
             return null;
         }
 
-        fn tell(self: *Self, model: *const Model, which: usize, message: Message) !Effect {
+        fn tell(self: *Self, model: *const Model, which: usize, message: Message) !Change {
             inline for (0..count) |i| {
                 if (which == i) return self.items[i].update(model, message);
             }
@@ -160,7 +160,7 @@ fn Band(comptime tag: u8, comptime wants: ?f32) type {
             self.rect = rect;
         }
 
-        pub fn update(self: *Self, model: *const Model, _: Message) !Effect {
+        pub fn update(self: *Self, model: *const Model, _: Message) !Change {
             try self.told.append(model.allocator, tag);
             return .none;
         }

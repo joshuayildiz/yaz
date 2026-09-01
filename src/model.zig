@@ -20,7 +20,7 @@ const tools = @import("./tools.zig");
 const sdl = @import("./sdl.zig");
 const c = sdl.c;
 const fff = @import("./fff.zig");
-const Effect = @import("./message.zig").Effect;
+const Change = @import("./message.zig").Change;
 
 /// The largest file yaz will open. What still costs per line of the file
 /// rather than per line on screen is the layout cache, which holds a 64-byte
@@ -271,18 +271,18 @@ pub const Model = struct {
         finding.found = found;
     }
 
-    /// The other half of `Effect`: the one place anything here changes.
+    /// The other half of `Change`: the one place anything here changes.
     ///
     /// Every branch is a change, so the frame is asked for once, here, rather
     /// than by each of them remembering to. `none` is the only thing that
     /// leaves the window as it was.
-    pub fn apply(self: *Model, effect: Effect) !void {
-        switch (effect) {
+    pub fn apply(self: *Model, change: Change) !void {
+        switch (change) {
             .none => return,
             .nothing_but_draw => {},
 
             .batch => |these| {
-                // Owned by the effect and let go of here: whatever gathered it
+                // Owned by the change and let go of here: whatever gathered it
                 // handed it over, and this is where it stops.
                 defer self.allocator.free(these);
 
@@ -1292,12 +1292,12 @@ test "asking for a name a second time replaces the first" {
     try std.testing.expectEqualStrings(second, file.path.?);
 }
 
-test "a batch applies each of its effects in order" {
+test "a batch applies each of its changes in order" {
     const allocator = std.testing.allocator;
     var model = try oneOpenFile(allocator, "");
     defer model.deinit();
 
-    try model.apply(try Effect.gather(allocator, &.{
+    try model.apply(try Change.gather(allocator, &.{
         .{ .insert = .{ .column = 0, .text = "one" } },
         .{ .insert = .{ .column = 0, .text = " two" } },
     }));
@@ -1313,7 +1313,7 @@ test "a batch is let go of once it has been walked" {
     var model = try oneOpenFile(allocator, "abc");
     defer model.deinit();
 
-    try model.apply(try Effect.gather(allocator, &.{
+    try model.apply(try Change.gather(allocator, &.{
         .{ .selection = .{ .column = 0, .from = 0, .to = 3 } },
         .{ .backspace = 0 },
     }));
@@ -1335,8 +1335,8 @@ test "a batch survives the frame it was built in" {
     try std.testing.expectEqualStrings("kept", try whatIsIn(&model));
 }
 
-fn builtElsewhere(allocator: std.mem.Allocator, column: usize) !Effect {
-    return Effect.gather(allocator, &.{
+fn builtElsewhere(allocator: std.mem.Allocator, column: usize) !Change {
+    return Change.gather(allocator, &.{
         .{ .insert = .{ .column = column, .text = "kept" } },
     });
 }
@@ -1347,7 +1347,7 @@ test "a batch of nothing changes nothing and does not ask for a frame" {
     defer model.deinit();
 
     model.dirty = false;
-    try model.apply(try Effect.gather(allocator, &.{ .none, .none }));
+    try model.apply(try Change.gather(allocator, &.{ .none, .none }));
 
     try std.testing.expect(!model.dirty);
     try std.testing.expectEqualStrings("as it was", try whatIsIn(&model));
@@ -1358,10 +1358,10 @@ test "a batch inside a batch is walked and freed like any other" {
     var model = try oneOpenFile(allocator, "");
     defer model.deinit();
 
-    const inner = try Effect.gather(allocator, &.{
+    const inner = try Change.gather(allocator, &.{
         .{ .insert = .{ .column = 0, .text = "in" } },
     });
-    try model.apply(try Effect.gather(allocator, &.{
+    try model.apply(try Change.gather(allocator, &.{
         inner,
         .{ .insert = .{ .column = 0, .text = "out" } },
     }));

@@ -9,7 +9,7 @@
 //! read off the model as it draws, so the bar cannot disagree with what is
 //! there.
 //!
-//! A press answers `Effect.show` and the tab's place on the bar, which is what
+//! A press answers `Change.show` and the tab's place on the bar, which is what
 //! cmd+N means as well, so a tab reached either way says the same thing: show
 //! this and put the rest away. Nothing here has to name a file to say it.
 
@@ -18,7 +18,7 @@ const std = @import("std");
 const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Effect = message_mod.Effect;
+const Change = message_mod.Change;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Model = @import("../model.zig").Model;
@@ -105,7 +105,7 @@ pub const Tabs = struct {
         self.bullet.shaped = false;
     }
 
-    pub fn update(self: *Tabs, _: *const Model, message: Message) !Effect {
+    pub fn update(self: *Tabs, _: *const Model, message: Message) !Change {
         const at = switch (message) {
             // A tab is chosen by where the press landed; shift means nothing
             // to a bar.

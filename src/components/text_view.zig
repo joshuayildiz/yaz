@@ -11,7 +11,7 @@ const std = @import("std");
 const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Effect = message_mod.Effect;
+const Change = message_mod.Change;
 const painter_mod = @import("../painter.zig");
 const Key = painter_mod.Key;
 const Painter = painter_mod.Painter;
@@ -97,7 +97,7 @@ pub const TextView = struct {
     /// Nothing here changes anything: a click becomes the byte offset it lands
     /// on and a wheel becomes the pixel to scroll to, because working those out
     /// needs the layout and the room, which only this has.
-    pub fn update(self: *const TextView, model: *const Model, message: Message) !Effect {
+    pub fn update(self: *const TextView, model: *const Model, message: Message) !Change {
         switch (message) {
             // The window's, or the finder's. Arrows and escape reach a column
             // only when nothing is over it, and there is no cursor movement to
@@ -109,8 +109,8 @@ pub const TextView = struct {
             .save => return .{ .save = self.which },
             // Said as the two things it is rather than as a third thing that
             // does both. The list is copied out of this frame before it goes:
-            // see `Effect.gather`.
-            .cut => return Effect.gather(model.allocator, &.{
+            // see `Change.gather`.
+            .cut => return Change.gather(model.allocator, &.{
                 .{ .copy = self.which },
                 .{ .delete_selection = self.which },
             }),
@@ -179,9 +179,9 @@ pub const TextView = struct {
     }
 
     /// Moves the view by `pixels`, keeping the offset a whole number of them.
-    /// What is left over rides along in the effect rather than being written
+    /// What is left over rides along in the change rather than being written
     /// down here, and waits for the next one instead of rounding away.
-    fn scrollBy(self: *const TextView, model: *const Model, pixels: f32) Effect {
+    fn scrollBy(self: *const TextView, model: *const Model, pixels: f32) Change {
         const gathered = self.file.pending + pixels;
         const whole = @trunc(gathered);
         return self.scrollTo(model, self.file.scroll + whole, gathered - whole);
@@ -212,7 +212,7 @@ pub const TextView = struct {
     }
 
     /// Drags the thumb so that the point `grab` down it sits at `y`.
-    fn dragTo(self: *const TextView, model: *const Model, y: f32, grab: f32) Effect {
+    fn dragTo(self: *const TextView, model: *const Model, y: f32, grab: f32) Change {
         if (self.rect.height <= 0) return .none;
         const count: f32 = @floatFromInt(self.file.buffer.lineCount());
         // The inverse of the thumb, whose top is `scroll * height / content`.
@@ -245,7 +245,7 @@ pub const TextView = struct {
     /// Clamped here rather than where it is stored: how far a file can be
     /// scrolled depends on its line count and on the room this column has, and
     /// this is the only thing that knows both.
-    fn scrollTo(self: *const TextView, model: *const Model, to: f32, pending: f32) Effect {
+    fn scrollTo(self: *const TextView, model: *const Model, to: f32, pending: f32) Change {
         const clamped = @min(self.furthest(model), @max(0, to));
         if (clamped == self.file.scroll and pending == self.file.pending) return .none;
         return .{ .scroll = .{ .column = self.which, .to = clamped, .pending = pending } };
@@ -381,7 +381,7 @@ pub const TextView = struct {
     ///
     /// A click below the last line or right of a line's end lands on the nearest
     /// place the caret can go, which is what makes dragging past the end behave.
-    fn caretAt(self: *const TextView, model: *const Model, point: [2]f32, extend: bool) Effect {
+    fn caretAt(self: *const TextView, model: *const Model, point: [2]f32, extend: bool) Change {
         const where = self.landing(model, point) orelse return .none;
         return .{ .caret = .{ .column = self.which, .at = where.offset, .extend = extend } };
     }
@@ -393,7 +393,7 @@ pub const TextView = struct {
     /// A click that lands on none of those -- on a space, say -- leaves the
     /// caret the first of the two presses put there rather than reaching for
     /// something to select.
-    fn chooseAt(self: *const TextView, model: *const Model, point: [2]f32) Effect {
+    fn chooseAt(self: *const TextView, model: *const Model, point: [2]f32) Change {
         const where = self.landing(model, point) orelse return .none;
         const buffer = &self.file.buffer;
 
@@ -404,7 +404,7 @@ pub const TextView = struct {
     }
 
     /// Both ends at once, which is what every double-click asks for.
-    fn take(self: *const TextView, span: Span) Effect {
+    fn take(self: *const TextView, span: Span) Change {
         return .{ .selection = .{ .column = self.which, .from = span.from, .to = span.to } };
     }
 

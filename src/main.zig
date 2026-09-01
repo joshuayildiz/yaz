@@ -68,7 +68,7 @@ fn App(comptime Component: type) type {
         /// Two events belong to the window itself and the rest belong to what
         /// is in it. What changed is not answered here; it is asked for
         /// afterwards, through `Model.dirty`.
-        /// One message in, one effect out, one change made. Quit is the
+        /// One message in, one change out, one thing moved. Quit is the
         /// window's own; a resize changes nothing in the model and only wants
         /// the frame drawn again.
         fn update(self: *Self, message: Message) !void {

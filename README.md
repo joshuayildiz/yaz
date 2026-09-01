@@ -805,7 +805,7 @@ character, and all three of them are one; a tab is 0x09. See
 [Indentation](#indentation) for what one is worth once it is in.
 
 The message for the key is `.tab`, and the one that shows the nth file on the
-bar — which used to have that name — is now `.show`, after the effect it has
+bar — which used to have that name — is now `.show`, after the change it has
 always produced.
 
 Backspace removes **a whole UTF-8 sequence rather than a byte** — one press
@@ -873,13 +873,13 @@ without which three selected lines look like three selected pieces of text.
 ### Cut, copy and paste
 
 **cmd+X**, **cmd+C** and **cmd+V** (ctrl elsewhere). The model makes the SDL
-calls: the effects name a column and carry nothing else, since the text is in the
-file already or on the clipboard already, and copying it into an effect would be
+calls: the changes name a column and carry nothing else, since the text is in the
+file already or on the clipboard already, and copying it into a change would be
 one more thing that owned memory.
 
-**There is no cut effect.** Cutting is a `copy` and a `delete_selection`, and
+**There is no cut change.** Cutting is a `copy` and a `delete_selection`, and
 cmd+X is a [batch](#layout) of the two — which is
-what a batch is for. An effect that copied *and* deleted would be a third thing
+what a batch is for. A change that copied *and* deleted would be a third thing
 named after what it is used for rather than after what it changes, and `apply`
 would have two changes inside one branch while claiming one message means one.
 
@@ -1101,22 +1101,23 @@ parent calls them on its children, so the tree is the type system rather than a
 vtable.
 
 **`update` is handed the model to read and nothing more.** Its signature says
-so — `*const Model` — and what it returns is an `Effect`: the change it worked
+so — `*const Model` — and what it returns is a `Change`: the change it worked
 out should happen, named rather than made. `Model.apply` is the other half, and
 it is the only place in the program where any of this moves.
 
-That is what makes the redraw question answer itself. An effect is a change, so
+That is what makes the redraw question answer itself. A change is a change to
+the model, so
 the frame is asked for once, in `apply`, rather than by every component
 remembering to say it changed something; `none` is the absence of a change
 and leaves the window alone.
 
 **`batch` is one message meaning several changes**, walked in order. It is the
-one effect that owns anything, and it cannot avoid it: a union may not hold an
-array of itself, so several effects can only travel as a slice, and a slice of a
+one change that owns anything, and it cannot avoid it: a union may not hold an
+array of itself, so several changes can only travel as a slice, and a slice of a
 list written at the point of return is on a stack frame that has gone by the
 time `apply` reads it. That compiles, warns about nothing, and reads rubbish
-— effects carry runtime values like a column index, so there is nothing
-comptime enough to be placed somewhere lasting. `Effect.gather` copies the list
+— changes carry runtime values like a column index, so there is nothing
+comptime enough to be placed somewhere lasting. `Change.gather` copies the list
 into the model's allocator and `apply` frees it once it has walked it, so a
 batch is handed over rather than lent, and building one by hand is the mistake
 `gather` exists to stop. A batch of nothing asks for no frame, and a batch
@@ -1127,7 +1128,7 @@ is only ever *whether* to draw.
 The one seam is `place`. Fitting a file to the room a column has — clamping a
 scroll to a shorter column, bringing the caret back on screen after typing —
 needs a height that nothing knew when the keystroke arrived, so layout is
-allowed to write that much back. Everything else goes through an effect.
+allowed to write that much back. Everything else goes through a change.
 
 **A window is one component, and that component is the whole of what is on
 screen.** With the library missing it is a `Healthcheck` and nothing else is
@@ -1145,13 +1146,13 @@ That is why the finder can be two small surfaces with the code still at full
 contrast either side of them — the file underneath is genuinely still being
 drawn — and why a click cannot reach a column the panel is covering.
 
-**An `Effect` owns no memory.** A tab is named by where it sits on the bar and
+**A `Change` owns no memory.** A tab is named by where it sits on the bar and
 a match by the fact that it is the selected one, so nothing here is a path that
 somebody has to free — which is the whole of what the finder and the workbench
 have to say to each other. The finder knows a file was picked and nothing about
 columns; `apply` knows what a picked file means and nothing about panels.
 
-Some effects carry what only the component could work out. A click becomes the
+Some changes carry what only the component could work out. A click becomes the
 byte offset it landed on, a wheel becomes the whole pixel to scroll to and the
 fraction left over, because resolving either needs the layout and the room.
 
@@ -1174,7 +1175,7 @@ typed into rather than with the bar holding it.
 
 `Tabs` lays its own tabs out rather than dividing the bar evenly, because a row
 of equal shares is the wrong shape for a row of words: each tab is as wide as
-the name in it. It answers a press with `Effect.show` and the tab's place on the
+the name in it. It answers a press with `Change.show` and the tab's place on the
 bar, which is exactly what the digit binding means, so a tab reached either way
 says the same thing and neither has to name a file.
 
