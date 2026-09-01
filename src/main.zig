@@ -229,7 +229,8 @@ fn run(model: *Model, comptime Component: type, component: Component, title: ?[]
         // swapchain, so each redundant one costs real latency, not just work.
         while (true) {
             const density = c.SDL_GetWindowPixelDensity(window);
-            if (Message.init(&event, density)) |what| try app.update(what);
+            const line_height = app.renderer.atlas.line_height;
+            if (Message.init(&event, density, line_height)) |what| try app.update(what);
             if (!c.SDL_PollEvent(&event)) break;
         }
     }

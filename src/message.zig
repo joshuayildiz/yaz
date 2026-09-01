@@ -1,8 +1,18 @@
 //! What happened, in the program's own words rather than SDL's.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const c = @import("./sdl.zig").c;
+
+/// macOS is the one platform that reports a scroll as a distance. Everywhere
+/// else a wheel event is detents, and a detent is a number of lines.
+const macos = builtin.target.os.tag == .macos;
+
+/// How far one detent goes. Three is what Windows scrolls by default, and what
+/// the desktops elsewhere settled on; a wheel that moved by some distance of
+/// its own would be the only thing on the machine that did.
+const lines_per_notch = 3;
 
 /// A change to the model, named by whichever component worked out that it
 /// should happen.
@@ -110,9 +120,10 @@ pub const Message = union(enum) {
 
     /// Null for what nothing here acts on, which is most of what SDL sends.
     ///
-    /// `density` is how many pixels a window coordinate is worth. Applying it
-    /// here is what lets everything downstream speak in one unit.
-    pub fn init(from: *const c.SDL_Event, density: f32) ?Message {
+    /// `density` is how many pixels a window coordinate is worth, and
+    /// `line_height` is how tall a line already is in them. Applying both here
+    /// is what lets everything downstream speak in one unit.
+    pub fn init(from: *const c.SDL_Event, density: f32, line_height: f32) ?Message {
         return switch (from.type) {
             c.SDL_EVENT_QUIT => .quit,
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => .resized,
@@ -156,14 +167,24 @@ pub const Message = union(enum) {
                 };
             },
 
-            // A precise device is reported in tenths of a point, so ten times
-            // the delta is how far a finger moved. A notched wheel reports whole
-            // lines instead and nothing tells the two apart -- macOS registers
-            // one mouse and gives it no name -- so everything is read as points.
+            // What the delta counts is the platform's business. macOS reports a
+            // precise device in tenths of a point, so ten times it is how far a
+            // finger moved; everywhere else it is detents, and a detent is
+            // `lines_per_notch` lines. Reading detents as points was ten pixels
+            // a notch on Windows -- two thirds of a line, whatever the display
+            // scale, against the three lines every other window there moves.
+            //
+            // A line is measured in pixels already, so only the point path
+            // wants the density. A Windows touchpad sends a fraction of a
+            // detent and gets that fraction of the lines.
+            //
             // Negated because SDL counts a wheel positive away from the reader,
             // which is towards the start of the file.
             c.SDL_EVENT_MOUSE_WHEEL => .{ .wheel = .{
-                .delta = -from.wheel.y * 10 * density,
+                .delta = if (macos)
+                    -from.wheel.y * 10 * density
+                else
+                    -from.wheel.y * lines_per_notch * line_height,
                 .at = .{ from.wheel.mouse_x * density, from.wheel.mouse_y * density },
             } },
 
@@ -184,6 +205,10 @@ pub const Message = union(enum) {
     }
 };
 
+/// A line to measure the tests in. The bindings do not care what it is; the
+/// wheel counts its notches in it.
+const a_line: f32 = 15;
+
 /// A key going down, as SDL reports one. The scancode is the key's place on the
 /// keyboard and the keycode is what it would type; the bindings below care about
 /// one or the other, never both.
@@ -198,25 +223,25 @@ fn pressed(scancode: c_uint, keycode: u32, mod: u16) c.SDL_Event {
 
 test "a digit on its own is a character, not a binding" {
     const message = pressed(c.SDL_SCANCODE_1, c.SDLK_1, 0);
-    try std.testing.expectEqual(@as(?Message, null), Message.init(&message, 1));
+    try std.testing.expectEqual(@as(?Message, null), Message.init(&message, 1, a_line));
 }
 
 test "cmd and a digit reach that tab, counted from zero" {
     const first = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LGUI);
-    try std.testing.expectEqual(@as(u8, 0), Message.init(&first, 1).?.tab);
+    try std.testing.expectEqual(@as(u8, 0), Message.init(&first, 1, a_line).?.tab);
 
     const ninth = pressed(c.SDL_SCANCODE_9, c.SDLK_9, c.SDL_KMOD_LGUI);
-    try std.testing.expectEqual(@as(u8, 8), Message.init(&ninth, 1).?.tab);
+    try std.testing.expectEqual(@as(u8, 8), Message.init(&ninth, 1, a_line).?.tab);
 }
 
 test "ctrl does what cmd does, on any platform" {
     const message = pressed(c.SDL_SCANCODE_3, c.SDLK_3, c.SDL_KMOD_LCTRL);
-    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1).?.tab);
+    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).?.tab);
 }
 
 test "adding alt splits that tab instead of showing it" {
     const message = pressed(c.SDL_SCANCODE_3, c.SDLK_3, c.SDL_KMOD_LGUI | c.SDL_KMOD_LALT);
-    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1).?.split);
+    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).?.split);
 }
 
 test "the keycode a modifier produces is not what a digit is read from" {
@@ -224,17 +249,56 @@ test "the keycode a modifier produces is not what a digit is read from" {
     // else again elsewhere. The scancode is the key under the finger either way,
     // and is what these bindings are read from.
     const message = pressed(c.SDL_SCANCODE_3, c.SDLK_HASH, c.SDL_KMOD_LGUI | c.SDL_KMOD_LALT);
-    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1).?.split);
+    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).?.split);
 }
 
 test "the letters are read from the keycode, which is where they are" {
     const find = pressed(c.SDL_SCANCODE_P, c.SDLK_P, c.SDL_KMOD_LGUI);
-    try std.testing.expectEqual(Message.find, Message.init(&find, 1).?);
+    try std.testing.expectEqual(Message.find, Message.init(&find, 1, a_line).?);
 
     const shut = pressed(c.SDL_SCANCODE_W, c.SDLK_W, c.SDL_KMOD_LGUI);
-    try std.testing.expectEqual(Message.close, Message.init(&shut, 1).?);
+    try std.testing.expectEqual(Message.close, Message.init(&shut, 1, a_line).?);
 
     // Without the modifier they are characters, and arrive as text input.
     const typed = pressed(c.SDL_SCANCODE_P, c.SDLK_P, 0);
-    try std.testing.expectEqual(@as(?Message, null), Message.init(&typed, 1));
+    try std.testing.expectEqual(@as(?Message, null), Message.init(&typed, 1, a_line));
+}
+
+/// A wheel turning, as SDL reports one. `y` counts away from the reader.
+fn turned(y: f32) c.SDL_Event {
+    var message: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    message.type = c.SDL_EVENT_MOUSE_WHEEL;
+    message.wheel.y = y;
+    return message;
+}
+
+test "a notch is a number of lines, not a distance of its own" {
+    // macOS reads the same delta as tenths of a point, and nothing in the event
+    // says which of the two sent it.
+    if (macos) return error.SkipZigTest;
+
+    // Towards the reader is down the file, which is where the scroll grows.
+    const down = Message.init(&turned(-1), 1, a_line).?;
+    try std.testing.expectEqual(@as(f32, lines_per_notch * a_line), down.wheel.delta);
+
+    const up = Message.init(&turned(1), 1, a_line).?;
+    try std.testing.expectEqual(@as(f32, -lines_per_notch * a_line), up.wheel.delta);
+}
+
+test "a notch is the same number of lines on a display of any scale" {
+    if (macos) return error.SkipZigTest;
+
+    // The density is what the pointer is reported in, not the wheel: a line is
+    // already as tall as the display made it.
+    const dense = Message.init(&turned(-1), 2, a_line * 2).?;
+    try std.testing.expectEqual(@as(f32, lines_per_notch * a_line * 2), dense.wheel.delta);
+}
+
+test "a touchpad's fraction of a notch moves that fraction of the lines" {
+    // Windows sends a precision touchpad's scroll as part of a detent rather
+    // than as a distance, so proportion is all it takes to stay smooth.
+    if (macos) return error.SkipZigTest;
+
+    const nudged = Message.init(&turned(-0.25), 1, a_line).?;
+    try std.testing.expectEqual(@as(f32, lines_per_notch * a_line / 4), nudged.wheel.delta);
 }
