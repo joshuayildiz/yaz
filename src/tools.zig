@@ -83,16 +83,18 @@ const pinned: Pins = switch (builtin.target.os.tag) {
         } },
         else => @compileError("no pinned fff for this macOS architecture"),
     },
-    // musl rather than gnu: the same library then runs whatever libc the
-    // machine has, which is the point of installing one ourselves.
+    // gnu rather than musl. The musl asset is not static -- it is linked
+    // against musl's own `libc.so`, which a glibc machine does not have, and
+    // `dlopen` resolves that name to /lib/<triple>/libc.so, a linker script,
+    // and fails with "invalid ELF header". The gnu asset asks for libc.so.6.
     .linux => switch (builtin.target.cpu.arch) {
         .x86_64 => .{ .fff = .{
-            .url = fff_base ++ "c-lib-x86_64-unknown-linux-musl.so",
-            .sha256 = digestOf("7f4335963f629ec00ac2e4764d16f82d48b973e136afb0102bd22f1e0bd7ac62"),
+            .url = fff_base ++ "c-lib-x86_64-unknown-linux-gnu.so",
+            .sha256 = digestOf("c2d5b0acd0c86a412fa4c71ef32e0931c84a1f6022858a9b1bde49fba62ec940"),
         } },
         .aarch64 => .{ .fff = .{
-            .url = fff_base ++ "c-lib-aarch64-unknown-linux-musl.so",
-            .sha256 = digestOf("2d49d947478494b559493eb01d1e0d6be08e6d74ed7361487a79524592af30f2"),
+            .url = fff_base ++ "c-lib-aarch64-unknown-linux-gnu.so",
+            .sha256 = digestOf("707c0f2f4e09f79592f4c6f347bc43ccc65c11a543c3ca7bce78502249cb8d0f"),
         } },
         else => @compileError("no pinned fff for this Linux architecture"),
     },
