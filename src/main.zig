@@ -325,7 +325,10 @@ fn run(model: *Model, comptime Component: type, component: Component) !void {
             // own, because the poll below overwrites the event this is holding.
             {
                 defer sdl.releasePath(&event);
-                if (Message.init(&event, density, line_height)) |what| try app.update(what);
+                // `.none` is most of what SDL sends; the loop drops it rather
+                // than waking a frame for it.
+                const what = Message.init(&event, density, line_height);
+                if (what != .none) try app.update(what);
             }
 
             if (!c.SDL_PollEvent(&event)) break;

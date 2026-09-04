@@ -209,6 +209,12 @@ pub const Change = union(enum) {
 /// one has to know what a display scale is, and nothing that handles one has to
 /// know what SDL calls things.
 pub const Message = union(enum) {
+    /// Nothing here acts on, which is most of what SDL sends: a key with no
+    /// binding, an exposure the resize watch has already drawn, an event of a
+    /// kind yaz does not read. Named rather than left as a null so `init` says
+    /// what it means and hands back a message like any other; the loop drops it.
+    none,
+
     quit,
     resized,
 
@@ -301,18 +307,18 @@ pub const Message = union(enum) {
         return if (mod & c.SDL_KMOD_SHIFT != 0) .split else .show;
     }
 
-    /// Null for what nothing here acts on, which is most of what SDL sends.
+    /// `.none` for what nothing here acts on, which is most of what SDL sends.
     ///
     /// `density` is how many pixels a window coordinate is worth, and
     /// `line_height` is how tall a line already is in them. Applying both here
     /// is what lets everything downstream speak in one unit.
-    pub fn init(from: *const c.SDL_Event, density: f32, line_height: f32) ?Message {
+    pub fn init(from: *const c.SDL_Event, density: f32, line_height: f32) Message {
         // Asked before the switch because the type is claimed at runtime and
         // cannot be one of its cases. The path is borrowed the way a text
         // event's characters are: `run` lets go of it once this has been acted
         // on.
         if (sdl.path_chosen != 0 and from.type == sdl.path_chosen) {
-            const owned = from.user.data1 orelse return null;
+            const owned = from.user.data1 orelse return .none;
             const named: [*:0]const u8 = @ptrCast(owned);
             return .{ .named = std.mem.span(named) };
         }
@@ -356,18 +362,18 @@ pub const Message = union(enum) {
                         .find
                     else
                         // Plain `p` is a character, and arrives as text input.
-                        null,
-                    c.SDLK_W => if (commanded(from.key.mod)) .close else null,
-                    c.SDLK_B => if (commanded(from.key.mod)) .toggle_tree else null,
-                    c.SDLK_A => if (commanded(from.key.mod)) .select_all else null,
+                        .none,
+                    c.SDLK_W => if (commanded(from.key.mod)) .close else .none,
+                    c.SDLK_B => if (commanded(from.key.mod)) .toggle_tree else .none,
+                    c.SDLK_A => if (commanded(from.key.mod)) .select_all else .none,
                     // The letters are safe to bind: SDL drops a keystroke whose
                     // text is a control character, so ctrl+C does not also
                     // arrive as the 0x03 Windows makes of it.
-                    c.SDLK_X => if (commanded(from.key.mod)) .cut else null,
-                    c.SDLK_C => if (commanded(from.key.mod)) .copy else null,
-                    c.SDLK_V => if (commanded(from.key.mod)) .paste else null,
-                    c.SDLK_S => if (commanded(from.key.mod)) .save else null,
-                    else => null,
+                    c.SDLK_X => if (commanded(from.key.mod)) .cut else .none,
+                    c.SDLK_C => if (commanded(from.key.mod)) .copy else .none,
+                    c.SDLK_V => if (commanded(from.key.mod)) .paste else .none,
+                    c.SDLK_S => if (commanded(from.key.mod)) .save else .none,
+                    else => .none,
                 };
             },
 
@@ -404,17 +410,17 @@ pub const Message = union(enum) {
                 // Button 3 is acme's look: a search, not a caret, so it says
                 // where it fell and lets the column work out the rest.
                 c.SDL_BUTTON_RIGHT => .{ .look = .{ from.button.x * density, from.button.y * density } },
-                else => null,
+                else => .none,
             },
             c.SDL_EVENT_MOUSE_MOTION => .{ .move = .{ from.motion.x * density, from.motion.y * density } },
             c.SDL_EVENT_MOUSE_BUTTON_UP => if (from.button.button == c.SDL_BUTTON_LEFT)
                 .release
             else
-                null,
+                .none,
 
             // Exposure belongs to the resize watch, which has already drawn by
             // the time the message arrives here; acting on it would draw twice.
-            else => null,
+            else => .none,
         };
     }
 };
@@ -446,25 +452,25 @@ fn pressed(scancode: c_uint, keycode: u32, mod: u16) c.SDL_Event {
 
 test "a digit on its own is a character, not a binding" {
     const message = pressed(c.SDL_SCANCODE_1, c.SDLK_1, 0);
-    try std.testing.expectEqual(@as(?Message, null), Message.init(&message, 1, a_line));
+    try std.testing.expectEqual(Message.none, Message.init(&message, 1, a_line));
 }
 
 test "the platform's modifier and a digit reach that tab, counted from zero" {
     const first = pressed(c.SDL_SCANCODE_1, c.SDLK_1, shows);
-    try std.testing.expectEqual(@as(u8, 0), Message.init(&first, 1, a_line).?.show);
+    try std.testing.expectEqual(@as(u8, 0), Message.init(&first, 1, a_line).show);
 
     const ninth = pressed(c.SDL_SCANCODE_9, c.SDLK_9, shows);
-    try std.testing.expectEqual(@as(u8, 8), Message.init(&ninth, 1, a_line).?.show);
+    try std.testing.expectEqual(@as(u8, 8), Message.init(&ninth, 1, a_line).show);
 }
 
 test "the second modifier splits that tab instead of showing it" {
     const message = pressed(c.SDL_SCANCODE_3, c.SDLK_3, splits);
-    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).?.split);
+    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).split);
 }
 
 test "ctrl still does what cmd does for the letters, on any platform" {
     const shut = pressed(c.SDL_SCANCODE_W, c.SDLK_W, c.SDL_KMOD_LCTRL);
-    try std.testing.expectEqual(Message.close, Message.init(&shut, 1, a_line).?);
+    try std.testing.expectEqual(Message.close, Message.init(&shut, 1, a_line));
 }
 
 test "off macOS the digits are alt's, and ctrl has no answer for them" {
@@ -472,11 +478,11 @@ test "off macOS the digits are alt's, and ctrl has no answer for them" {
 
     // What used to show a tab.
     const with_ctrl = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LCTRL);
-    try std.testing.expectEqual(@as(?Message, null), Message.init(&with_ctrl, 1, a_line));
+    try std.testing.expectEqual(Message.none, Message.init(&with_ctrl, 1, a_line));
 
     // And what used to split one.
     const with_both = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LCTRL | c.SDL_KMOD_LALT);
-    try std.testing.expectEqual(@as(?Message, null), Message.init(&with_both, 1, a_line));
+    try std.testing.expectEqual(Message.none, Message.init(&with_both, 1, a_line));
 }
 
 test "on macOS the command key is still what the digits answer to" {
@@ -484,10 +490,10 @@ test "on macOS the command key is still what the digits answer to" {
 
     // Alt on its own is the binding everywhere else, and nothing here.
     const alone = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LALT);
-    try std.testing.expectEqual(@as(?Message, null), Message.init(&alone, 1, a_line));
+    try std.testing.expectEqual(Message.none, Message.init(&alone, 1, a_line));
 
     const commanded_digit = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LCTRL);
-    try std.testing.expectEqual(@as(u8, 0), Message.init(&commanded_digit, 1, a_line).?.show);
+    try std.testing.expectEqual(@as(u8, 0), Message.init(&commanded_digit, 1, a_line).show);
 }
 
 test "the keycode a modifier produces is not what a digit is read from" {
@@ -495,19 +501,19 @@ test "the keycode a modifier produces is not what a digit is read from" {
     // else again elsewhere. The scancode is the key under the finger either way,
     // and is what these bindings are read from.
     const message = pressed(c.SDL_SCANCODE_3, c.SDLK_HASH, splits);
-    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).?.split);
+    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).split);
 }
 
 test "the letters are read from the keycode, which is where they are" {
     const find = pressed(c.SDL_SCANCODE_P, c.SDLK_P, c.SDL_KMOD_LGUI);
-    try std.testing.expectEqual(Message.find, Message.init(&find, 1, a_line).?);
+    try std.testing.expectEqual(Message.find, Message.init(&find, 1, a_line));
 
     const shut = pressed(c.SDL_SCANCODE_W, c.SDLK_W, c.SDL_KMOD_LGUI);
-    try std.testing.expectEqual(Message.close, Message.init(&shut, 1, a_line).?);
+    try std.testing.expectEqual(Message.close, Message.init(&shut, 1, a_line));
 
     // Without the modifier they are characters, and arrive as text input.
     const typed = pressed(c.SDL_SCANCODE_P, c.SDLK_P, 0);
-    try std.testing.expectEqual(@as(?Message, null), Message.init(&typed, 1, a_line));
+    try std.testing.expectEqual(Message.none, Message.init(&typed, 1, a_line));
 }
 
 /// A wheel turning, as SDL reports one. `y` counts away from the reader.
@@ -524,10 +530,10 @@ test "a notch is a number of lines, not a distance of its own" {
     if (macos) return error.SkipZigTest;
 
     // Towards the reader is down the file, which is where the scroll grows.
-    const down = Message.init(&turned(-1), 1, a_line).?;
+    const down = Message.init(&turned(-1), 1, a_line);
     try std.testing.expectEqual(@as(f32, lines_per_notch * a_line), down.wheel.delta);
 
-    const up = Message.init(&turned(1), 1, a_line).?;
+    const up = Message.init(&turned(1), 1, a_line);
     try std.testing.expectEqual(@as(f32, -lines_per_notch * a_line), up.wheel.delta);
 }
 
@@ -536,7 +542,7 @@ test "a notch is the same number of lines on a display of any scale" {
 
     // The density is what the pointer is reported in, not the wheel: a line is
     // already as tall as the display made it.
-    const dense = Message.init(&turned(-1), 2, a_line * 2).?;
+    const dense = Message.init(&turned(-1), 2, a_line * 2);
     try std.testing.expectEqual(@as(f32, lines_per_notch * a_line * 2), dense.wheel.delta);
 }
 
@@ -545,7 +551,7 @@ test "a touchpad's fraction of a notch moves that fraction of the lines" {
     // than as a distance, so proportion is all it takes to stay smooth.
     if (macos) return error.SkipZigTest;
 
-    const nudged = Message.init(&turned(-0.25), 1, a_line).?;
+    const nudged = Message.init(&turned(-0.25), 1, a_line);
     try std.testing.expectEqual(@as(f32, lines_per_notch * a_line / 4), nudged.wheel.delta);
 }
 
@@ -553,11 +559,11 @@ test "the tab key is a message of its own, not text" {
     // SDL drops a keystroke whose text is a control character and a tab is one,
     // so it arrives as a key or it does not arrive.
     const message = pressed(c.SDL_SCANCODE_TAB, c.SDLK_TAB, 0);
-    try std.testing.expectEqual(Message.tab, Message.init(&message, 1, a_line).?);
+    try std.testing.expectEqual(Message.tab, Message.init(&message, 1, a_line));
 }
 
 test "a modifier does not turn the tab key into something else" {
     // Nothing is bound to it yet, but it must not fall through to the digits.
     const message = pressed(c.SDL_SCANCODE_TAB, c.SDLK_TAB, c.SDL_KMOD_LCTRL);
-    try std.testing.expectEqual(Message.tab, Message.init(&message, 1, a_line).?);
+    try std.testing.expectEqual(Message.tab, Message.init(&message, 1, a_line));
 }

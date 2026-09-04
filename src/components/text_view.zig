@@ -105,7 +105,9 @@ pub const TextView = struct {
             // The window's own, and a name that came back from a save dialog,
             // which the window deals with because the file it belongs to need
             // not be the one this column is showing.
-            .quit, .resized, .find, .show, .split, .close, .up, .down, .cancel, .named => return .none,
+            // `.none` is dropped by the loop before it reaches here; the case
+            // is what keeps this switch total.
+            .none, .quit, .resized, .find, .show, .split, .close, .up, .down, .cancel, .named => return .none,
             // The sidebar's, and dealt with above a column: the tree is beside
             // the files, not in one.
             .toggle_tree, .disk_changed => return .none,
