@@ -115,6 +115,7 @@ pub fn VTuple(comptime members: []const type) type {
                     return self.tell(model, which, message);
                 },
                 .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .none, message),
+                .look => |at| return self.tell(model, self.over(at) orelse return .none, message),
                 else => return self.tell(model, self.focus, message),
             }
         }

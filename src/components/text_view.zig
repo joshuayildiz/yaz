@@ -106,6 +106,9 @@ pub const TextView = struct {
             // which the window deals with because the file it belongs to need
             // not be the one this column is showing.
             .quit, .resized, .find, .show, .split, .close, .up, .down, .cancel, .named => return .none,
+            // The sidebar's, and dealt with above a column: the tree is beside
+            // the files, not in one.
+            .toggle_tree, .disk_changed => return .none,
             .save => return .{ .save = self.which },
             // Said as the two things it is rather than as a third thing that
             // does both. The list is copied out of this frame before it goes:
@@ -160,6 +163,7 @@ pub const TextView = struct {
                 return asked;
             },
             .release => return .{ .grab = .{ .column = self.which, .at = null } },
+            .look => |at| return self.lookAt(model, at),
         }
     }
 
@@ -408,6 +412,27 @@ pub const TextView = struct {
         return .{ .selection = .{ .column = self.which, .from = span.from, .to = span.to } };
     }
 
+    /// Acme's look, on button 3: the next place the clicked word appears, or the
+    /// text already selected when the click fell inside it. Selecting the match
+    /// it finds is what makes looking again from there step on to the next one.
+    ///
+    /// The search runs forward from the end of what was selected and wraps
+    /// through the start of the file, so a word with one occurrence is found
+    /// again where it is, and the view is brought to wherever it lands.
+    fn lookAt(self: *const TextView, model: *const Model, point: [2]f32) Change {
+        const where = self.landing(model, point) orelse return .none;
+        const buffer = &self.file.buffer;
+
+        // Inside the selection: look for that, so a second look steps on. On a
+        // word otherwise, which is also what the first look on fresh text takes.
+        const chosen = self.file.selected();
+        const inside = !chosen.empty() and where.offset >= chosen.from and where.offset <= chosen.to;
+        const target = if (inside) chosen else wordAround(buffer, where.offset) orelse return .none;
+
+        const found = searchFrom(buffer, target, target.to) orelse return .none;
+        return .{ .selection = .{ .column = self.which, .from = found.from, .to = found.to, .follow = true } };
+    }
+
     /// Where a point falls: which line, how far into the file, and whether it
     /// landed past the last glyph on that line -- which is what makes clicking
     /// out to the right mean the line rather than a place in it.
@@ -592,6 +617,43 @@ fn wordAround(buffer: *const Buffer, offset: usize) ?Span {
     while (to < end and inWord(buffer.byteAt(to))) to += 1;
     while (from > 0 and inWord(buffer.byteAt(from - 1))) from -= 1;
     return .{ .from = from, .to = to };
+}
+
+/// The next run of bytes equal to the ones in `target`, beginning at or after
+/// `from` and wrapping once through the start of the file.
+///
+/// None only when the file is shorter than the target, which cannot happen for
+/// a target that is itself a span of the file -- so a look always lands, if
+/// only back on what it looked for. The target is offsets rather than bytes so
+/// nothing has to be copied out to search: a slice would be borrowed from the
+/// buffer and gone by the next call into it.
+fn searchFrom(buffer: *const Buffer, target: Span, from: usize) ?Span {
+    const len = target.to - target.from;
+    if (len == 0) return null;
+
+    const total = buffer.byteLen();
+    if (len > total) return null;
+
+    // The target could begin anywhere in `0..=last`. Those starts are walked
+    // from `from` on and wrapped to zero, so the match after the selection is
+    // the one found first and the one before it is found last.
+    const last = total - len;
+    var at: usize = if (from <= last) from else 0;
+    var remaining = last + 1;
+    while (remaining > 0) : (remaining -= 1) {
+        if (matchesAt(buffer, target, at)) return .{ .from = at, .to = at + len };
+        at = if (at == last) 0 else at + 1;
+    }
+    return null;
+}
+
+/// Whether the bytes at `at` are the ones the target span holds.
+fn matchesAt(buffer: *const Buffer, target: Span, at: usize) bool {
+    var i: usize = 0;
+    while (i < target.to - target.from) : (i += 1) {
+        if (buffer.byteAt(at + i) != buffer.byteAt(target.from + i)) return false;
+    }
+    return true;
 }
 
 /// What a selection covers of one line, as offsets within it.
@@ -1018,6 +1080,34 @@ test "a word runs through digits and underscores and stops at punctuation" {
     defer buffer.deinit();
 
     try std.testing.expectEqual(Span{ .from = 2, .to = 12 }, wordAround(&buffer, 6).?);
+}
+
+test "a look finds the next occurrence of the target and wraps" {
+    var buffer = textOf("one two one two");
+    defer buffer.deinit();
+
+    // The first `one` is bytes 0..3. Looking from its end finds the second.
+    try std.testing.expectEqual(Span{ .from = 8, .to = 11 }, searchFrom(&buffer, .{ .from = 0, .to = 3 }, 3).?);
+
+    // Looking on from the second wraps round to the first.
+    try std.testing.expectEqual(Span{ .from = 0, .to = 3 }, searchFrom(&buffer, .{ .from = 8, .to = 11 }, 11).?);
+}
+
+test "a look for a word that appears once lands back on it" {
+    var buffer = textOf("alpha beta gamma");
+    defer buffer.deinit();
+
+    // `beta` is bytes 6..10, and there is nowhere else for it to go.
+    try std.testing.expectEqual(Span{ .from = 6, .to = 10 }, searchFrom(&buffer, .{ .from = 6, .to = 10 }, 10).?);
+}
+
+test "a look matches the exact bytes, not whole words" {
+    var buffer = textOf("in int in");
+    defer buffer.deinit();
+
+    // Looking for `in` from the end of the first lands on the `in` inside
+    // `int`: the search is over bytes, and knows nothing of word boundaries.
+    try std.testing.expectEqual(Span{ .from = 3, .to = 5 }, searchFrom(&buffer, .{ .from = 0, .to = 2 }, 2).?);
 }
 
 test "a double-click on nothing takes nothing" {

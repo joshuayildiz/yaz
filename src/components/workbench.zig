@@ -100,6 +100,9 @@ const Views = struct {
             .release => return self.tell(model, model.holding orelse return .none, message),
             // Turns whatever it is under without deciding where typing lands.
             .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .none, message),
+            // The column it falls in, not the focused one: a look in a split
+            // searches what it was aimed at.
+            .look => |at| return self.tell(model, self.over(at) orelse return .none, message),
             else => return self.tell(model, model.focus, message),
         }
     }

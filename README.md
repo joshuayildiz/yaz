@@ -138,13 +138,16 @@ or to an empty file when there is none, which is where a window with no file
 named starts. It closes what that column has, so a file sitting in another column
 is reached with the digit binding or a press before it can be closed.
 
-**With nothing left on the bar, cmd+W closes the window.** That is also how a
-window that was never given a file ends, so `yaz` on its own is not a thing you
-have to reach for the mouse to be rid of.
+**The last file does not close the window; it empties it.** Closing it falls
+back to a blank, the same blank a window opened with no file starts on, so cmd+W
+on your last file leaves you somewhere to type rather than gone. **Closing that
+blank in turn is the way out** — an empty window, closed, ends — which is also
+how a window that was never given a file ends, so `yaz` on its own is not a thing
+you have to reach for the mouse to be rid of.
 
 **Nothing asks on the way out**, so closing a file with a mark on its tab throws
-the edit away — and the last cmd+W throws away every file still open. cmd+S
-first is the whole of the answer to that for now.
+the edit away — and cmd+W on the last one throws away whatever it held before it
+falls back to the blank. cmd+S first is the whole of the answer to that for now.
 
 A tab carries a **mark to the left of its name when the file has been changed and
 not saved**. A save clears it, and a save that failed does not — which is half of
@@ -223,13 +226,48 @@ the watcher, and it is the reason for the whole arrangement.
 
 Returning on a file that is **already open focuses that view** rather than
 opening a second copy of it. Otherwise the focused view is pointed at the new
-file, and the one it was showing is **kept rather than thrown away** — its
-buffer, its line index, every line already shaped, and where the caret and the
-scroll were.
+file.
+
+**A file opened this way is a scratch preview.** It takes one tab, and the next
+file opened takes that same tab rather than a new one, so browsing through files
+leaves a single tab behind rather than a row of them. Its name on the tab
+**leans**, so a loaned tab is told from a kept one at a glance — the font ships
+upright with no italic of its own, so the slant is synthesised, the outline put
+through a shear as it is rasterised. The preview is **kept — its tab becomes its
+own, and its name straightens — the moment it is edited or its tab is
+double-clicked**; after that the next file opened lands beside it, not over it. A
+file the command line named, or one already kept, is never a preview.
+
+A view that is kept is **kept whole rather than thrown away** — its buffer, its
+line index, every line already shaped, and where the caret and the scroll were.
+A scratch preview cannot have any of that to lose: editing is the very thing that
+would keep it, so the one that is replaced is always the one nothing was done to.
 
 So a file is read from disk once per session. Coming back to one is 95µs and
 reshapes nothing, against 1.2ms and a full re-read the first time. Nothing is
 written to disk; it all lasts as long as the window.
+
+## Browsing the tree
+
+**cmd+B** (ctrl+B elsewhere; either works on any platform) opens a sidebar down
+the left with the tree in it, and closes it again. When it is open it takes a
+strip off the left and the files take what is left; when it is closed the files
+have the whole window. Click a folder to open or close it, click a file to open
+it in the column with the keyboard — the same rule cmd+P follows, so an already
+open file is focused rather than opened twice.
+
+It draws from the same index the finder does, so it honours `.gitignore` and
+costs no separate walk of the disk. The listing is the whole of what the index
+holds, folded into a hierarchy: folders before files, each in name order. A
+folder with no files under it is not in the index and so not shown. The rows are
+folded and shaped only when the listing or the open folders change — scrolling
+moves the same rows, and a redraw shapes nothing it has shaped before.
+
+**It stays live while it is open.** A file created, changed or removed on disk
+shows up without a keystroke: the library's watcher wakes the window, and the
+tree is re-read. That watch runs only while the panel is open — a closed tree is
+not worth waking the window for — so the idle cost of a window whose sidebar is
+shut is nothing.
 
 ## Platform notes
 
@@ -872,6 +910,26 @@ click landing between two things takes the one it is in front of, and a bracket
 beats a word when both are there. A double-click on none of the three — on a
 space — leaves the caret where the first of the two presses put it rather than
 reaching for something to select.
+
+### Looking a word up
+
+**Right-click a word to jump to where it next appears**, the way acme's button 3
+does. The click takes the word under it — the same word a double-click would —
+and selects the next place those bytes occur, **wrapping past the end of the file
+back to the start**. A word that occurs only once is found again where it is, so
+the click always lands somewhere.
+
+Because the found text is left selected, **right-clicking it again steps on to
+the one after**: a look with the click inside the current selection searches for
+that selection rather than for a fresh word, so the same right-click walks every
+occurrence in turn. The view is brought to whatever is found, since it can be
+anywhere in the file — the one thing a selection does that dragging one out must
+not.
+
+The match is over bytes, not whole words: looking for `in` will stop on the `in`
+inside `int`. It knows nothing of word boundaries once it has the word to look
+for, which is the same bargain the rest of the editor makes about not knowing the
+language.
 
 ### Drawing it
 

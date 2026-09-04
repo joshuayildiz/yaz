@@ -81,6 +81,51 @@ pub const Finding = struct {
     }
 };
 
+/// The sidebar tree, whether it is open or not.
+///
+/// It holds a listing of its own rather than reading the finder's: the finder
+/// answers a query, best first and cut to a screenful, which is the wrong shape
+/// for a tree. This is the whole of what the index holds, sorted by path, and
+/// the folders the reader has opened over it.
+pub const Sidebar = struct {
+    /// Whether the panel is on screen. Closed to begin with: a window opens on
+    /// its files.
+    open: bool = false,
+
+    /// Every indexed file, relative to the root, sorted by path. Owned here: the
+    /// listing it was read from is let go of at once, so the tree does not
+    /// depend on the library holding it.
+    paths: std.ArrayList([]const u8) = .empty,
+
+    /// The folders the reader has opened. A folder not in here is closed. Keys
+    /// are owned, since the path they came from is a row that is rebuilt.
+    expanded: std.StringHashMapUnmanaged(void) = .empty,
+
+    /// How far the list is scrolled, in pixels. The view clamps it, since only
+    /// the view knows how many rows there are and how tall it is.
+    scroll: f32 = 0,
+
+    /// Bumped whenever `paths` or `expanded` changes, so the view knows the rows
+    /// it folded and shaped are stale without comparing them.
+    revision: u32 = 0,
+
+    /// Lets go of the listing, keeping the folders the reader opened: closing
+    /// the panel need not forget which folders were open, and re-reading the
+    /// tree must not leak the last read.
+    fn clearPaths(self: *Sidebar, allocator: std.mem.Allocator) void {
+        for (self.paths.items) |path| allocator.free(path);
+        self.paths.clearRetainingCapacity();
+    }
+
+    fn deinit(self: *Sidebar, allocator: std.mem.Allocator) void {
+        self.clearPaths(allocator);
+        self.paths.deinit(allocator);
+        var keys = self.expanded.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+        self.expanded.deinit(allocator);
+    }
+};
+
 pub const Model = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -124,6 +169,17 @@ pub const Model = struct {
     focus: usize = 0,
     holding: ?usize = null,
 
+    /// The scratch preview, while there is one. A file opened from the finder or
+    /// the tree lands here rather than on a tab of its own: the next file opened
+    /// takes its place, so browsing does not leave a trail of tabs behind. It is
+    /// promoted -- this goes null, the tab becomes its own -- the moment the file
+    /// is edited or its tab is double-clicked.
+    ///
+    /// A pointer, so `close` can clear it and nothing is left pointing at a freed
+    /// file. Null is the common case: nothing typed on the command line is a
+    /// preview, and an edited one is not one any more.
+    preview: ?*OpenFile = null,
+
     /// The library, and the index it keeps of the directory yaz was run in.
     /// Opened once, at startup, which is also where it was settled that it
     /// loads. Null only in a window that has no finder -- the healthcheck.
@@ -132,6 +188,14 @@ pub const Model = struct {
 
     /// The finder, while it is open.
     finding: ?Finding = null,
+
+    /// The sidebar tree: open or not, and the listing behind it.
+    sidebar: Sidebar = .{},
+
+    /// The subscription that keeps the tree live, while there is one. Held so it
+    /// can be let go when the panel closes: a watch on a tree nobody is looking
+    /// at is wakeups for nothing.
+    watch_id: ?u64 = null,
 
     /// Whether anything above has changed since the last frame was drawn.
     ///
@@ -364,6 +428,9 @@ pub const Model = struct {
                 const end = file.buffer.byteLen();
                 file.anchor = @min(what.from, end);
                 file.cursor = @min(what.to, end);
+                // A look can land the selection anywhere; bringing the view to
+                // it is the rest of jumping there. A drag leaves this alone.
+                if (what.follow) file.follow_caret = true;
             },
             .scroll => |where| {
                 const file = self.column(where.column) orelse return .{ self, null };
@@ -437,6 +504,7 @@ pub const Model = struct {
 
             .show => |nth| try self.showOnly(nth),
             .split => |nth| try self.split(nth),
+            .pin => |nth| self.pin(nth),
             .close => try self.shut(),
 
             .find => try self.find(),
@@ -446,6 +514,39 @@ pub const Model = struct {
             .up => self.select(.up),
             .down => self.select(.down),
             .choose => try self.choose(),
+
+            // Opening reads the tree and asks for a watch; closing lets both go.
+            // Both are a change either way, so the frame is asked for below.
+            .toggle_tree => {
+                self.sidebar.open = !self.sidebar.open;
+                if (self.sidebar.open) {
+                    try self.refreshTree();
+                    self.changed();
+                    return .{ self, if (self.watch_id == null) .watch else null };
+                }
+                self.sidebar.clearPaths(self.allocator);
+                self.changed();
+                return .{ self, if (self.watch_id != null) .unwatch else null };
+            },
+            // A change on disk while nobody is looking is nothing to redraw for:
+            // the tree is re-read when it is opened again.
+            .refresh_tree => {
+                if (!self.sidebar.open) return .{ self, null };
+                try self.refreshTree();
+            },
+            .toggle_dir => |path| try self.toggleDir(path),
+            .open_file => |path| try self.openInFocus(path),
+            .scroll_tree => |to| {
+                if (self.sidebar.scroll == to) return .{ self, null };
+                self.sidebar.scroll = to;
+            },
+        }
+
+        // A scratch preview that has been edited is a file the reader means to
+        // keep. Read once, here, rather than in every branch that can edit:
+        // being changed is exactly what the mark on its tab already says.
+        if (self.preview) |file| {
+            if (file.modified) self.preview = null;
         }
 
         self.changed();
@@ -613,14 +714,26 @@ pub const Model = struct {
     }
 
     /// Takes the file the focused column is showing out of the window and out
-    /// of memory, and puts something else in the column. With nothing left on
-    /// the bar the window goes too.
+    /// of memory, and puts something else in the column.
     ///
     /// The column takes the first file nothing else is showing, so closing
-    /// walks back through what is open; when there is nothing left it goes
-    /// empty, which is where a window with no file named starts.
+    /// walks back through what is open; when the last file goes the column falls
+    /// back to a blank, which is where a window with no file named starts. So
+    /// the window does not close on its last file -- it empties.
+    ///
+    /// The one thing that does close it is closing that blank in turn: an empty
+    /// window, closed, is the way out. cmd+W on a window that was never given a
+    /// file is the same keystroke and means the same thing.
     fn shut(self: *Model) !void {
         const closing = self.showing() orelse return;
+
+        // The last thing in the window is a blank: closing it is closing the
+        // window. Closing the last *named* file falls through instead, to the
+        // blank it leaves behind.
+        if (self.files.items.len == 1 and closing.path == null) {
+            self.running = false;
+            return;
+        }
 
         // One fewer column to split into. The last one stays, because
         // something has to be there to type into.
@@ -639,13 +752,6 @@ pub const Model = struct {
         }
 
         self.close(closing);
-
-        // Nothing open is nothing to come back to. It is also where a window
-        // that was never given a file starts, so cmd+W on one of those is a way
-        // out rather than a keystroke that does nothing.
-        for (self.files.items) |file| {
-            if (file.path != null) break;
-        } else self.running = false;
     }
 
     /// Opens what the finder has selected, in the column with the keyboard, and
@@ -661,15 +767,122 @@ pub const Model = struct {
         defer self.allocator.free(path);
         self.stopFinding();
 
+        try self.openInFocus(path);
+    }
+
+    /// Opens `path` in the column with the keyboard, or moves to it when it is
+    /// already on screen. What the finder does with what it chose, and what the
+    /// tree does with what was clicked.
+    ///
+    /// A file opened this way is a scratch preview: the file the focused column
+    /// was showing is kept as a tab, unless it was itself the preview, in which
+    /// case it is closed and the new file takes the tab it had. So opening one
+    /// file after another leaves one tab, not a row of them, until one is kept.
+    fn openInFocus(self: *Model, path: []const u8) !void {
+        // Asked before opening, since opening it is what would put it there:
+        // reopening a file that is already a tab is not the same as browsing to
+        // a new one, and does not turn a kept tab back into a preview.
+        const fresh = self.opened(path) == null;
         const wanted = try self.open(path);
+
+        // Already on screen: move to it and leave the scratch tab as it is.
         if (self.columnOf(wanted)) |which| {
             self.focus = which;
-        } else if (self.focus < self.columns.items.len) {
+            return;
+        }
+
+        // What the focused column is about to stop showing. It is off screen
+        // once the new file is in, since a file is in at most one column.
+        const leaving = self.column(self.focus);
+
+        if (self.focus < self.columns.items.len) {
             self.columns.items[self.focus] = wanted;
         } else {
             try self.columns.append(self.allocator, wanted);
             self.focus = self.columns.items.len - 1;
         }
+
+        // The scratch tab the column just left is done: the new file takes it.
+        // `close` clears `preview` as it frees, so nothing points at it after.
+        if (leaving) |gone| {
+            if (gone == self.preview) self.close(gone);
+        }
+
+        // A freshly opened file is the new scratch preview. A reopened one is a
+        // tab the reader already meant to keep, so it is not.
+        if (fresh) self.preview = wanted;
+    }
+
+    /// Promotes the nth tab out of being the scratch preview, so the next file
+    /// opened does not replace it. What double-clicking a tab asks for, and what
+    /// editing a previewed file does on its own.
+    fn pin(self: *Model, which: usize) void {
+        const file = self.tab(which) orelse return;
+        if (self.preview == file) self.preview = null;
+    }
+
+    /// Re-reads the whole tree into `sidebar.paths`, sorted by path. What every
+    /// change on disk comes back to, and what opening the panel does first.
+    ///
+    /// The listing is let go of at once: the paths are copied out, so the tree
+    /// does not hold the library's answer for as long as it is on screen.
+    fn refreshTree(self: *Model) !void {
+        const index = self.index orelse return;
+
+        var listed = try index.enumerate();
+        defer listed.deinit();
+
+        self.sidebar.clearPaths(self.allocator);
+        try self.sidebar.paths.ensureTotalCapacity(self.allocator, listed.count);
+
+        var nth: u32 = 0;
+        while (nth < listed.count) : (nth += 1) {
+            const path = listed.path(nth) orelse continue;
+            const owned = try self.allocator.dupe(u8, path);
+            errdefer self.allocator.free(owned);
+            try self.sidebar.paths.append(self.allocator, owned);
+        }
+
+        std.mem.sort([]const u8, self.sidebar.paths.items, {}, lessPath);
+        self.sidebar.revision +%= 1;
+    }
+
+    /// Opens a folder that is closed, or closes one that is open. The key is
+    /// copied on the way in, since the path it came from is a row the next
+    /// rebuild throws away.
+    fn toggleDir(self: *Model, path: []const u8) !void {
+        if (self.sidebar.expanded.fetchRemove(path)) |gone| {
+            self.allocator.free(gone.key);
+        } else {
+            const key = try self.allocator.dupe(u8, path);
+            errdefer self.allocator.free(key);
+            try self.sidebar.expanded.put(self.allocator, key, {});
+        }
+        self.sidebar.revision +%= 1;
+    }
+
+    /// Subscribes to changes under the root, so the tree stays live while it is
+    /// open. Reported rather than returned: a watch that will not start is a
+    /// tree that does not update on its own, not a window that cannot go up.
+    ///
+    /// The effect half of `Change.toggle_tree`. Performed outside the model
+    /// because the callback it registers pushes an SDL event.
+    pub fn watchTree(self: *Model) void {
+        const index = self.index orelse return;
+        if (self.watch_id != null) return;
+        self.watch_id = index.watch(onDiskChange, null) catch |err| {
+            std.log.err("sidebar watch: {s}", .{@errorName(err)});
+            return;
+        };
+    }
+
+    /// Lets the subscription go. A no-op when there is none, so it is safe to
+    /// call on the way out whether the tree was ever opened or not.
+    pub fn unwatchTree(self: *Model) void {
+        const index = self.index orelse return;
+        const id = self.watch_id orelse return;
+        index.unwatch(id);
+        self.watch_id = null;
     }
 
     /// What the column with the keyboard is showing, or none before there is a
@@ -699,6 +912,8 @@ pub const Model = struct {
 
     pub fn deinit(self: *Model) void {
         self.stopFinding();
+        self.unwatchTree();
+        self.sidebar.deinit(self.allocator);
         if (self.index) |*indexed| indexed.close();
         if (self.library) |*loaded| loaded.close();
         self.columns.deinit(self.allocator);
@@ -750,6 +965,9 @@ pub const Model = struct {
     /// Out of the window and out of memory. Closing is the one thing that means
     /// a file is finished with.
     fn close(self: *Model, file: *OpenFile) void {
+        // Nothing may point at it once it is freed, and the scratch preview is
+        // the one thing besides a column that might.
+        if (self.preview == file) self.preview = null;
         const which = self.indexOf(file) orelse return;
         _ = self.files.orderedRemove(which);
         file.deinit();
@@ -801,6 +1019,24 @@ pub const Model = struct {
         return stripCarriageReturns(allocator, contents);
     }
 };
+
+/// Orders two paths for the tree's listing. Bytewise, which puts a folder's
+/// files in the order they read and is what the view folds a hierarchy out of.
+fn lessPath(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
+/// What the library's watcher calls when the tree changes, on a thread of its
+/// own. So it touches nothing but what is safe from anywhere: it wakes the
+/// window, and lets the batch go.
+///
+/// Which paths changed is not read. The library has already folded them into
+/// its index by the time this runs, and the tree re-reads that whole rather
+/// than acting on one path, so the batch is freed unlooked-at.
+fn onDiskChange(_: u64, batch: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    sdl.pushTreeChanged();
+    if (batch) |owned| fff.freeWatchEvents(owned);
+}
 
 /// An offset rather than a yes or no, because the offset is the part a caller
 /// can act on.
@@ -1520,4 +1756,138 @@ test "a batch that asks for one thing answers with the thing, not a batch of one
 
     // No allocation to free: one effect travels as itself.
     try std.testing.expectEqual(@as(usize, 0), asked.copy);
+}
+
+test "closing the last file leaves a blank rather than closing the window" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "text");
+    defer model.deinit();
+
+    // A named file, so it is a file rather than the blank a fresh window has.
+    model.columns.items[0].path = try allocator.dupe(u8, "a.txt");
+
+    _ = try moved(&model, .close);
+
+    // Still up, now showing a single blank where the file was.
+    try std.testing.expect(model.running);
+    try std.testing.expectEqual(@as(usize, 1), model.files.items.len);
+    try std.testing.expectEqual(@as(usize, 1), model.columns.items.len);
+    try std.testing.expect(model.showing().?.path == null);
+}
+
+test "closing the blank a last file left behind closes the window" {
+    const allocator = std.testing.allocator;
+    var model = try oneOpenFile(allocator, "text");
+    defer model.deinit();
+
+    model.columns.items[0].path = try allocator.dupe(u8, "a.txt");
+
+    // The last file goes to a blank, and the window stays up.
+    _ = try moved(&model, .close);
+    try std.testing.expect(model.running);
+
+    // Closing that blank in turn is the way out.
+    _ = try moved(&model, .close);
+    try std.testing.expect(!model.running);
+}
+
+test "closing a window that never had a file named closes it" {
+    const allocator = std.testing.allocator;
+    // A blank, which is what a window opened with no path shows.
+    var model = try oneOpenFile(allocator, "");
+    defer model.deinit();
+
+    _ = try moved(&model, .close);
+    try std.testing.expect(!model.running);
+}
+
+/// A window on a blank, with an io to open files by. The names below do not
+/// exist, so opening one is an empty file with that path -- which is all these
+/// tests read of it.
+fn browsing(allocator: std.mem.Allocator) !Model {
+    var model = try oneOpenFile(allocator, "");
+    errdefer model.deinit();
+    model.io = std.testing.io;
+    return model;
+}
+
+/// Whether a file with `path` is still open.
+fn isOpen(model: *const Model, path: []const u8) bool {
+    for (model.files.items) |file| {
+        const named = file.path orelse continue;
+        if (std.mem.eql(u8, named, path)) return true;
+    }
+    return false;
+}
+
+test "opening one file after another replaces the scratch preview" {
+    const allocator = std.testing.allocator;
+    var model = try browsing(allocator);
+    defer model.deinit();
+
+    _ = try moved(&model, .{ .open_file = "scratch-a.zzz" });
+    // The file just opened is the preview, and it is what the column shows.
+    try std.testing.expect(model.preview == model.showing().?);
+    try std.testing.expect(isOpen(&model, "scratch-a.zzz"));
+
+    _ = try moved(&model, .{ .open_file = "scratch-b.zzz" });
+    // The second takes the first's place: the first is gone, not left on a tab.
+    try std.testing.expectEqualStrings("scratch-b.zzz", model.showing().?.path.?);
+    try std.testing.expect(!isOpen(&model, "scratch-a.zzz"));
+    try std.testing.expect(model.preview == model.showing().?);
+}
+
+test "editing a previewed file keeps it, so the next opens beside it" {
+    const allocator = std.testing.allocator;
+    var model = try browsing(allocator);
+    defer model.deinit();
+
+    _ = try moved(&model, .{ .open_file = "scratch-a.zzz" });
+    try std.testing.expect(model.preview != null);
+
+    // A keystroke is what promotes it: the mark on its tab is the same fact.
+    _ = try moved(&model, .{ .insert = .{ .column = 0, .text = "x" } });
+    try std.testing.expect(model.preview == null);
+
+    _ = try moved(&model, .{ .open_file = "scratch-b.zzz" });
+    // Both are open now: the edited one was kept.
+    try std.testing.expect(isOpen(&model, "scratch-a.zzz"));
+    try std.testing.expect(isOpen(&model, "scratch-b.zzz"));
+}
+
+test "double-clicking a tab keeps it out of being replaced" {
+    const allocator = std.testing.allocator;
+    var model = try browsing(allocator);
+    defer model.deinit();
+
+    _ = try moved(&model, .{ .open_file = "scratch-a.zzz" });
+    try std.testing.expect(model.preview != null);
+
+    // The blank has no tab, so the opened file is the first and only one on the
+    // bar. Pinning it is what a double-click asks for.
+    _ = try moved(&model, .{ .pin = 0 });
+    try std.testing.expect(model.preview == null);
+
+    _ = try moved(&model, .{ .open_file = "scratch-b.zzz" });
+    try std.testing.expect(isOpen(&model, "scratch-a.zzz"));
+    try std.testing.expect(isOpen(&model, "scratch-b.zzz"));
+}
+
+test "reopening a kept file does not turn it back into a preview" {
+    const allocator = std.testing.allocator;
+    var model = try browsing(allocator);
+    defer model.deinit();
+
+    // Keep a.zzz, then browse to a preview b.zzz beside it.
+    _ = try moved(&model, .{ .open_file = "scratch-a.zzz" });
+    _ = try moved(&model, .{ .pin = 0 });
+    _ = try moved(&model, .{ .open_file = "scratch-b.zzz" });
+    try std.testing.expect(model.preview == model.showing().?);
+
+    // Coming back to the kept file focuses it and leaves nothing a preview, so
+    // the scratch b.zzz it displaced is gone rather than kept.
+    _ = try moved(&model, .{ .open_file = "scratch-a.zzz" });
+    try std.testing.expectEqualStrings("scratch-a.zzz", model.showing().?.path.?);
+    try std.testing.expect(model.preview == null);
+    try std.testing.expect(!isOpen(&model, "scratch-b.zzz"));
 }

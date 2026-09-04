@@ -39,6 +39,13 @@ pub const Effect = union(enum) {
     /// answer is the model's to remember, so there is nothing to say here.
     ask_name,
 
+    /// Start or stop the filesystem watch that keeps the sidebar tree live.
+    /// Gated on the sidebar being open, so a closed tree wakes the window for
+    /// nothing -- which is the whole of why these are effects and not just a
+    /// flag flipped in the model.
+    watch,
+    unwatch,
+
     /// Several of these, in order. Owned the way `Change.batch` is, and freed
     /// by whoever performs it.
     batch: []const Effect,
@@ -104,7 +111,11 @@ pub const Change = union(enum) {
     /// Both ends at once. What select-all has in common with the pointer's
     /// gestures: they say where a selection is rather than moving one end of
     /// it.
-    selection: struct { column: usize, from: usize, to: usize },
+    ///
+    /// `follow` brings the view to the selection, the way an edit does. A drag
+    /// must not, or dragging out a selection would jerk the view about; a look
+    /// must, since what it found can be anywhere in the file.
+    selection: struct { column: usize, from: usize, to: usize, follow: bool = false },
 
     /// The selection to the system clipboard, and what is on the clipboard into
     /// the file.
@@ -153,6 +164,11 @@ pub const Change = union(enum) {
     split: usize,
     close,
 
+    /// Keep the nth tab: promote it out of being the scratch preview, so the
+    /// next file opened does not replace it. What a double-click on a tab asks
+    /// for.
+    pin: usize,
+
     /// Open the finder, put it away, and what happens while it is up.
     find,
     dismiss,
@@ -162,6 +178,19 @@ pub const Change = union(enum) {
     down,
     /// Open what the finder has selected, in the column with the keyboard.
     choose,
+
+    /// Open or close the sidebar, and what happens while it is open.
+    ///
+    /// `refresh_tree` is what a change on disk comes back as: the listing is
+    /// re-read and the view rebuilt. `toggle_dir` opens or closes one folder,
+    /// `open_file` opens one file in the column with the keyboard, and
+    /// `scroll_tree` moves the list. The paths are borrowed from the view's own
+    /// rows, which outlive the call, so nothing here owns memory.
+    toggle_tree,
+    refresh_tree,
+    toggle_dir: []const u8,
+    open_file: []const u8,
+    scroll_tree: f32,
 
     /// Gathers changes into one, copying the list somewhere that outlives the
     /// call. `Model.apply` frees it.
@@ -187,6 +216,11 @@ pub const Message = union(enum) {
 
     /// Show the file finder.
     find,
+    /// Open or close the sidebar tree: cmd+B.
+    toggle_tree,
+    /// The tree the sidebar shows changed on disk. Pushed from the library's
+    /// watcher, so it wakes the window rather than being a keystroke.
+    disk_changed,
     /// Show the nth file open in the window, counted from zero: cmd+1 to cmd+9.
     /// Named for what it asks for rather than for the strip it is asked from,
     /// which leaves `tab` to mean the key of that name.
@@ -226,6 +260,11 @@ pub const Message = union(enum) {
     press: struct { at: [2]f32, extend: bool, clicks: u8 },
     move: [2]f32,
     release,
+
+    /// Button 3, and where it fell: acme's "look". The word it lands on is what
+    /// gets searched for, so a column can jump to the next place that word
+    /// appears rather than putting a caret down.
+    look: [2]f32,
 
     /// Whether a key was pressed with the modifier that means "this is a
     /// command". Cmd on macOS, Ctrl elsewhere -- either is accepted everywhere,
@@ -276,6 +315,11 @@ pub const Message = union(enum) {
             return .{ .named = std.mem.span(named) };
         }
 
+        // Carries nothing: which paths changed is the library's to have already
+        // folded into its index, and the tree re-reads that whole rather than
+        // acting on one path.
+        if (sdl.tree_changed != 0 and from.type == sdl.tree_changed) return .disk_changed;
+
         return switch (from.type) {
             c.SDL_EVENT_QUIT => .quit,
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => .resized,
@@ -312,6 +356,7 @@ pub const Message = union(enum) {
                         // Plain `p` is a character, and arrives as text input.
                         null,
                     c.SDLK_W => if (commanded(from.key.mod)) .close else null,
+                    c.SDLK_B => if (commanded(from.key.mod)) .toggle_tree else null,
                     c.SDLK_A => if (commanded(from.key.mod)) .select_all else null,
                     // The letters are safe to bind: SDL drops a keystroke whose
                     // text is a control character, so ctrl+C does not also
@@ -348,14 +393,17 @@ pub const Message = union(enum) {
             // The modifier is asked for rather than read off the event: SDL puts
             // one on a key but not on a button, and shift is the difference
             // between starting a selection and extending the one already there.
-            c.SDL_EVENT_MOUSE_BUTTON_DOWN => if (from.button.button == c.SDL_BUTTON_LEFT)
-                .{ .press = .{
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => switch (from.button.button) {
+                c.SDL_BUTTON_LEFT => .{ .press = .{
                     .at = .{ from.button.x * density, from.button.y * density },
                     .extend = c.SDL_GetModState() & c.SDL_KMOD_SHIFT != 0,
                     .clicks = from.button.clicks,
-                } }
-            else
-                null,
+                } },
+                // Button 3 is acme's look: a search, not a caret, so it says
+                // where it fell and lets the column work out the rest.
+                c.SDL_BUTTON_RIGHT => .{ .look = .{ from.button.x * density, from.button.y * density } },
+                else => null,
+            },
             c.SDL_EVENT_MOUSE_MOTION => .{ .move = .{ from.motion.x * density, from.motion.y * density } },
             c.SDL_EVENT_MOUSE_BUTTON_UP => if (from.button.button == c.SDL_BUTTON_LEFT)
                 .release

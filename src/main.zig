@@ -150,6 +150,12 @@ fn App(comptime Component: type) type {
                 // Modal to the window, and asynchronous: the answer arrives as
                 // an event, whenever whoever is looking at it decides.
                 .ask_name => sdl.askWhereToSave(self.renderer.window),
+
+                // Start and stop the watch that keeps the tree live. Out here
+                // rather than in the model because starting it registers a
+                // callback that pushes an SDL event.
+                .watch => self.model.watchTree(),
+                .unwatch => self.model.unwatchTree(),
             }
         }
 
@@ -216,6 +222,11 @@ fn run(model: *Model, comptime Component: type, component: Component) !void {
         return error.SdlInit;
     }
     defer c.SDL_Quit();
+
+    // Before `SDL_Quit`, since the watcher's callback pushes SDL events: let the
+    // subscription go while there is still something to push into. A no-op when
+    // the tree was never opened, which is why it can sit here for every window.
+    defer model.unwatchTree();
 
     // After `SDL_Init`, which is when the menu bar it takes this from is built.
     sdl.unbindCloseShortcut();
@@ -374,4 +385,6 @@ test {
     _ = @import("./components/tabs.zig");
     _ = @import("./components/vtuple.zig");
     _ = @import("./components/workbench.zig");
+    _ = @import("./components/tree.zig");
+    _ = @import("./glyph_atlas.zig");
 }

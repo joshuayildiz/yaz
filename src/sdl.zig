@@ -21,12 +21,28 @@ pub const c = @cImport({
 /// event -- and the answer is read where every other event is read.
 pub var path_chosen: u32 = 0;
 
-/// Claims the event type above. After `SDL_Init`, and once.
+/// The event a filesystem change pushes to wake the window. Zero until
+/// `registerEvents`, the same as `path_chosen` and for the same reason: the
+/// library's watcher runs on a thread of its own, so the one thing it does from
+/// there is push this, and the tree is rebuilt where every other event is read.
+pub var tree_changed: u32 = 0;
+
+/// Claims the two event types above, contiguously. After `SDL_Init`, and once.
 pub fn registerEvents() bool {
-    const first = c.SDL_RegisterEvents(1);
+    const first = c.SDL_RegisterEvents(2);
     if (first == 0) return false;
     path_chosen = first;
+    tree_changed = first + 1;
     return true;
+}
+
+/// Wakes the window to say the tree changed. Safe from any thread, which is
+/// what it is for: it is called from the library's watcher.
+pub fn pushTreeChanged() void {
+    if (tree_changed == 0) return;
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = tree_changed;
+    _ = c.SDL_PushEvent(&event);
 }
 
 /// Opens a dialog asking where to put a file that has no name yet.

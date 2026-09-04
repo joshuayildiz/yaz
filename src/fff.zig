@@ -29,6 +29,16 @@ const windows = builtin.target.os.tag == .windows;
 /// moves would be a search per keystroke of the arrow key.
 pub const page = 256;
 
+/// How much of the tree the sidebar enumerates at once. The finder shows a
+/// ranked handful; the tree wants the whole listing, so this is far larger --
+/// and still a bound, since a repository can hold more files than anyone folds
+/// open at once.
+pub const tree_page = 8192;
+
+/// Called from the library's watcher thread for every subscribed change. The
+/// callee owns `batch` and must let it go with `freeWatchEvents`.
+pub const WatchCallback = *const fn (u64, ?*anyopaque, ?*anyopaque) callconv(.c) void;
+
 /// Set on every `CreateOptions`. Tells the library which trailing fields are
 /// populated, so one built after this was written still reads it correctly.
 const options_version = 2;
@@ -79,6 +89,11 @@ const Symbols = struct {
     item: *const fn (*anyopaque, u32) callconv(.c) ?*anyopaque,
     relative_path: *const fn (*anyopaque) callconv(.c) ?[*:0]const u8,
 
+    set_watch_callback: *const fn (*anyopaque, WatchCallback, ?*anyopaque) callconv(.c) *Result,
+    watch: *const fn (*anyopaque, ?[*:0]const u8, ?*const anyopaque) callconv(.c) *Result,
+    unwatch: *const fn (*anyopaque, u64) callconv(.c) *Result,
+    free_watch_events: *const fn (*anyopaque) callconv(.c) void,
+
     /// Every symbol yaz uses, by the name it has in the library. Resolving all
     /// of them is also the health check -- `main` opens the library before it
     /// does anything else, so a truncated download or a library built for
@@ -94,10 +109,26 @@ const Symbols = struct {
         .{ "files", "fff_search_result_get_total_files" },
         .{ "item", "fff_search_result_get_item" },
         .{ "relative_path", "fff_file_item_get_relative_path" },
+        .{ "set_watch_callback", "fff_set_watch_callback" },
+        .{ "watch", "fff_watch" },
+        .{ "unwatch", "fff_unwatch" },
+        .{ "free_watch_events", "fff_free_watch_events" },
     };
 };
 
-pub const Error = error{ CannotOpenLibrary, MissingSymbol, CannotIndex, SearchFailed };
+pub const Error = error{ CannotOpenLibrary, MissingSymbol, CannotIndex, SearchFailed, WatchFailed };
+
+/// The one symbol a watch callback needs and cannot be handed: it runs on the
+/// library's thread with nothing but the batch, and letting the batch go is how
+/// it is answered. Set when a library opens, so a callback can reach it without
+/// carrying a copy of every symbol across the FFI boundary.
+var watch_free: ?*const fn (*anyopaque) callconv(.c) void = null;
+
+/// Frees a batch handed to a `WatchCallback`. A no-op before any library has
+/// opened, which is never, since a callback cannot fire until one has.
+pub fn freeWatchEvents(batch: *anyopaque) void {
+    if (watch_free) |free| free(batch);
+}
 
 /// Loading a library, on the two paths there are.
 ///
@@ -161,6 +192,9 @@ pub const Library = struct {
             const Fn = @FieldType(Symbols, field);
             @field(at, field) = loaded.lookup(Fn, named[1]) orelse return error.MissingSymbol;
         }
+        // So a watch callback, which is handed nothing but the batch, can let it
+        // go. The same for every library, since the symbol is the library's.
+        watch_free = at.free_watch_events;
         return .{ .loaded = loaded, .at = at };
     }
 
@@ -209,6 +243,51 @@ pub const Index = struct {
             .matched = self.at.matched(handle),
             .files = self.at.files(handle),
         };
+    }
+
+    /// Every indexed path, best-effort, for the tree to fold into a listing.
+    ///
+    /// An empty query matched against a wide page: the finder narrows and shows
+    /// a screenful, the tree wants the lot. The caller owns what comes back, the
+    /// same as `search`.
+    pub fn enumerate(self: *const Index) Error!Matches {
+        const answer = self.at.search(self.handle, "", null, 0, 0, tree_page, 0, 0);
+        defer self.at.free_result(answer);
+
+        if (!answer.success) return error.SearchFailed;
+        const handle = answer.handle orelse return error.SearchFailed;
+        return .{
+            .at = self.at,
+            .handle = handle,
+            .count = self.at.count(handle),
+            .matched = self.at.matched(handle),
+            .files = self.at.files(handle),
+        };
+    }
+
+    /// Subscribes to every change under the root, delivered to `callback` on a
+    /// thread of the library's own. Answers with the id that `unwatch` takes.
+    ///
+    /// The callback is instance-wide and set here each time: setting it again
+    /// only replaces it, so a window that opens and closes the tree more than
+    /// once does not have to remember whether it is the first.
+    pub fn watch(self: *const Index, callback: WatchCallback, user_data: ?*anyopaque) Error!u64 {
+        const registered = self.at.set_watch_callback(self.handle, callback, user_data);
+        defer self.at.free_result(registered);
+        if (!registered.success) return error.WatchFailed;
+
+        // Null pattern is everything, null options the defaults.
+        const answer = self.at.watch(self.handle, null, null);
+        defer self.at.free_result(answer);
+        if (!answer.success) return error.WatchFailed;
+        return @bitCast(answer.int_value);
+    }
+
+    /// Stops one subscription. The callback stays set, which costs nothing while
+    /// nothing is subscribed to it.
+    pub fn unwatch(self: *const Index, id: u64) void {
+        const answer = self.at.unwatch(self.handle, id);
+        self.at.free_result(answer);
     }
 };
 

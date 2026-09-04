@@ -100,19 +100,20 @@ pub const Tabs = struct {
     }
 
     pub fn update(self: *Tabs, _: *const Model, message: Message) !Change {
-        const at = switch (message) {
+        const press = switch (message) {
             // A tab is chosen by where the press landed; shift means nothing
             // to a bar.
-            .press => |what| what.at,
+            .press => |what| what,
             else => return .none,
         };
 
         for (self.rects.items, 0..) |rect, which| {
-            if (!rect.contains(at)) continue;
+            if (!rect.contains(press.at)) continue;
             // Pressing a tab is choosing that file over the others, which is
             // what cmd+N means too, and it is named the same way: by where it
-            // sits on the bar.
-            return .{ .show = which };
+            // sits on the bar. A second press keeps it, promoting a scratch
+            // preview into a tab of its own; the first has already shown it.
+            return if (press.clicks >= 2) .{ .pin = which } else .{ .show = which };
         }
         return .none;
     }
@@ -156,8 +157,19 @@ pub const Tabs = struct {
             const path = file.path orelse continue;
             defer which += 1;
 
+            // A scratch preview leans, so a tab that will be replaced by the
+            // next file opened reads as the loan it is. Reshaped when the slant
+            // has to change as well as when the atlas has, since the generation
+            // is the same either way and cannot say the style went stale.
             const name = &file.name;
-            if (model.atlas.stale(name)) try model.atlas.shapeLine(std.fs.path.basename(path), name);
+            const preview = model.preview == file;
+            if (model.atlas.stale(name) or name.slanted != preview) {
+                const basename = std.fs.path.basename(path);
+                if (preview)
+                    try model.atlas.shapeSlanted(basename, name)
+                else
+                    try model.atlas.shapeLine(basename, name);
+            }
 
             const width = @round(advance(name) + 2 * (ink.wide + gap) + 2 * inset);
             self.rects.items[which] = .{

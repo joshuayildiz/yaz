@@ -68,6 +68,15 @@ const max_slots = 1024;
 /// stay `no_slot` forever.
 const no_slot = std.math.maxInt(u16);
 
+/// How far the slanted glyphs lean, as the shear the outline is put through
+/// before it is rasterised: x gains this much of y, so what is above the
+/// baseline slides right. The font ships upright and no italic face with it, so
+/// this is the whole of the slant -- 0.21 is about twelve degrees, which is
+/// where DejaVu's own italic sits.
+///
+/// A 16.16 fixed point, which is what FreeType's matrix is measured in.
+const slant_fixed: c_long = @intFromFloat(0.21 * 65536.0);
+
 /// One rasterised glyph. `left` and `top` are the offset from the pen origin to
 /// the bitmap's top-left corner, in pixels, y counting downwards; FreeType has
 /// already folded the subpixel shift into them and into the coverage itself.
@@ -133,6 +142,12 @@ pub const LineLayout = struct {
     /// edit says a line has to be shaped again -- see `spliceLines`.
     stamp: u32 = 0,
 
+    /// Whether it was set in the slanted glyphs rather than the upright ones.
+    /// Kept so a caller can tell that a line shaped one way has to be shaped
+    /// again to be the other -- the generation is the same either way, so
+    /// `stale` cannot say it.
+    slanted: bool = false,
+
     pub fn deinit(self: *LineLayout, allocator: std.mem.Allocator) void {
         self.sprites.deinit(allocator);
         self.carets.deinit(allocator);
@@ -161,7 +176,13 @@ pub const GlyphAtlas = struct {
 
     /// Glyph id to a slot in `glyphs`. One entry per glyph in the font, which is
     /// kilobytes, so the lookup is an index rather than a hash.
+    ///
+    /// `oblique` is the same map for the slanted rasterisation of a glyph. The
+    /// two draw from one `glyphs` array and one texture -- a slot is a slot
+    /// whichever asked for it -- so only the id-to-slot map is doubled, and only
+    /// the glyphs actually asked for slanted ever take a slot.
     slots: []u16,
+    oblique: []u16,
     glyphs: []Glyph,
     used: u16 = 0,
 
@@ -227,6 +248,10 @@ pub const GlyphAtlas = struct {
         errdefer allocator.free(slots);
         @memset(slots, no_slot);
 
+        const oblique = try allocator.alloc(u16, @intCast(face.*.num_glyphs));
+        errdefer allocator.free(oblique);
+        @memset(oblique, no_slot);
+
         const glyphs = try allocator.alloc(Glyph, max_slots * subpixel_positions);
         errdefer allocator.free(glyphs);
 
@@ -241,6 +266,7 @@ pub const GlyphAtlas = struct {
             .texture = try createAtlas(allocator, gpu),
             .shaper = shaper,
             .slots = slots,
+            .oblique = oblique,
             .glyphs = glyphs,
             .ascent = fromFixed(face.*.size.*.metrics.ascender),
             .line_height = fromFixed(face.*.size.*.metrics.height),
@@ -274,6 +300,7 @@ pub const GlyphAtlas = struct {
         self.generation = nextGeneration(self.generation);
 
         @memset(self.slots, no_slot);
+        @memset(self.oblique, no_slot);
         self.used = 0;
         self.shelf_x = 0;
         self.shelf_y = 0;
@@ -292,6 +319,7 @@ pub const GlyphAtlas = struct {
         self.staging.deinit(self.allocator);
         self.allocator.free(self.glyphs);
         self.allocator.free(self.slots);
+        self.allocator.free(self.oblique);
         _ = ft.FT_Done_Face(self.face);
         _ = ft.FT_Done_FreeType(self.library);
     }
@@ -300,6 +328,17 @@ pub const GlyphAtlas = struct {
     /// baseline. Knowing nothing about the screen is what lets the caller keep
     /// the answer.
     pub fn shapeLine(self: *GlyphAtlas, text: []const u8, entry: *LineLayout) !void {
+        return self.shapeStyled(text, entry, false);
+    }
+
+    /// The same, in the slanted glyphs. Only the rasterisation leans: the
+    /// advances are the font's own, so the line is the same width and the carets
+    /// fall where the upright ones would.
+    pub fn shapeSlanted(self: *GlyphAtlas, text: []const u8, entry: *LineLayout) !void {
+        return self.shapeStyled(text, entry, true);
+    }
+
+    fn shapeStyled(self: *GlyphAtlas, text: []const u8, entry: *LineLayout, oblique: bool) !void {
         entry.sprites.clearRetainingCapacity();
         entry.carets.clearRetainingCapacity();
 
@@ -327,7 +366,7 @@ pub const GlyphAtlas = struct {
         // separate piece of text anyway.
         while (at < text.len) {
             const stop = std.mem.indexOfScalarPos(u8, text, at, '\t') orelse text.len;
-            if (stop > at) pen = try self.shapeRun(text[at..stop], at, pen, entry);
+            if (stop > at) pen = try self.shapeRun(text[at..stop], at, pen, entry, oblique);
             if (stop == text.len) break;
 
             // A boundary where the tab begins, and then the pen moves. Nothing
@@ -343,6 +382,7 @@ pub const GlyphAtlas = struct {
 
         entry.bytes = text.len;
         entry.stamp = self.generation;
+        entry.slanted = oblique;
     }
 
     /// Whether `entry` was shaped by some earlier atlas, or never shaped at all.
@@ -356,11 +396,11 @@ pub const GlyphAtlas = struct {
     ///
     /// `base` is where the run begins in the line, since a cluster is counted
     /// from the start of what was handed to the shaper rather than of the line.
-    fn shapeRun(self: *GlyphAtlas, text: []const u8, base: usize, from: f32, entry: *LineLayout) !f32 {
+    fn shapeRun(self: *GlyphAtlas, text: []const u8, base: usize, from: f32, entry: *LineLayout, oblique: bool) !f32 {
         const shaped = self.shaper.shape(text);
         var pen = from;
         for (shaped.infos, shaped.positions) |info, offset| {
-            try self.request(info.codepoint);
+            try self.request(info.codepoint, oblique);
 
             const cluster = info.cluster + @as(u32, @intCast(base));
 
@@ -377,7 +417,7 @@ pub const GlyphAtlas = struct {
             pen += fromFixed(offset.x_advance);
 
             // A space contributes its advance and nothing to draw.
-            const g = self.glyph(info.codepoint, position.subpixel) orelse continue;
+            const g = self.glyph(info.codepoint, position.subpixel, oblique) orelse continue;
             try entry.sprites.append(self.allocator, .{
                 .dest = .{
                     position.pixel + @as(f32, @floatFromInt(g.left)),
@@ -390,17 +430,25 @@ pub const GlyphAtlas = struct {
         return pen;
     }
 
-    /// Rasterises `id` the first time it is asked for. Runs once per glyph laid
-    /// out, so after a line's first redraw every call is a load and a compare.
-    fn request(self: *GlyphAtlas, id: u32) !void {
+    /// Rasterises `id` the first time it is asked for, upright or slanted. Runs
+    /// once per glyph laid out, so after a line's first redraw every call is a
+    /// load and a compare.
+    fn request(self: *GlyphAtlas, id: u32, oblique: bool) !void {
+        const map = if (oblique) self.oblique else self.slots;
+
         // Not a glyph this face defines, or already decided one way or another.
-        if (id >= self.slots.len or self.slots[id] != no_slot) return;
+        if (id >= map.len or map[id] != no_slot) return;
 
         // `max_slots` is past what the texture holds, so this should be
         // unreachable before `pack` fails.
         if (self.used == max_slots) {
             std.debug.panic("glyph atlas is out of slots at {d}, asked for glyph {d}", .{ max_slots, id });
         }
+
+        // The lean, put through the outline so the coverage itself is slanted
+        // rather than a square bitmap shoved sideways. Upright leaves it null,
+        // which is the identity.
+        var shear: ft.FT_Matrix = .{ .xx = 0x10000, .xy = slant_fixed, .yx = 0, .yy = 0x10000 };
 
         const slot = self.used;
         for (0..subpixel_positions) |subpixel| {
@@ -410,7 +458,7 @@ pub const GlyphAtlas = struct {
                 .x = @intCast(subpixel * 64 / subpixel_positions),
                 .y = 0,
             };
-            ft.FT_Set_Transform(self.face, null, &delta);
+            ft.FT_Set_Transform(self.face, if (oblique) &shear else null, &delta);
 
             if (ft.FT_Load_Glyph(self.face, id, ft.FT_LOAD_RENDER) != 0) {
                 // The font is compiled in, so a glyph it will not rasterise
@@ -465,7 +513,7 @@ pub const GlyphAtlas = struct {
             };
         }
 
-        self.slots[id] = slot;
+        map[id] = slot;
         self.used += 1;
     }
 
@@ -545,10 +593,12 @@ pub const GlyphAtlas = struct {
         }
     }
 
-    fn glyph(self: *const GlyphAtlas, id: u32, subpixel: usize) ?Glyph {
+    fn glyph(self: *const GlyphAtlas, id: u32, subpixel: usize, oblique: bool) ?Glyph {
+        const map = if (oblique) self.oblique else self.slots;
+
         // Laying a glyph out requests it, and a failed request panicked there.
-        std.debug.assert(id < self.slots.len);
-        const slot = self.slots[id];
+        std.debug.assert(id < map.len);
+        const slot = map[id];
         std.debug.assert(slot != no_slot);
 
         const found = self.glyphs[glyphIndex(slot, subpixel)];
@@ -572,6 +622,36 @@ test "glyphIndex does not wrap for late slots" {
         @as(usize, max_slots * subpixel_positions - 1),
         glyphIndex(max_slots - 1, subpixel_positions - 1),
     );
+}
+
+test "the slant shears a glyph rather than leaving it upright" {
+    // No atlas and no GPU: this is the one thing the slant rests on -- that the
+    // shear reaches the raster -- and FreeType alone is enough to see it.
+    var library: ft.FT_Library = null;
+    try std.testing.expect(ft.FT_Init_FreeType(&library) == 0);
+    defer _ = ft.FT_Done_FreeType(library);
+
+    var face: ft.FT_Face = null;
+    try std.testing.expect(ft.FT_New_Memory_Face(library, font_data, font_data.len, 0, &face) == 0);
+    defer _ = ft.FT_Done_Face(face);
+
+    // Large enough that a lean of a fifth is several whole pixels of extra width.
+    try std.testing.expect(ft.FT_Set_Pixel_Sizes(face, 0, 64) == 0);
+    const id = ft.FT_Get_Char_Index(face, 'n');
+    try std.testing.expect(id != 0);
+
+    ft.FT_Set_Transform(face, null, null);
+    try std.testing.expect(ft.FT_Load_Glyph(face, id, ft.FT_LOAD_RENDER) == 0);
+    const upright = face.*.glyph.*.bitmap.width;
+
+    var shear: ft.FT_Matrix = .{ .xx = 0x10000, .xy = slant_fixed, .yx = 0, .yy = 0x10000 };
+    ft.FT_Set_Transform(face, &shear, null);
+    try std.testing.expect(ft.FT_Load_Glyph(face, id, ft.FT_LOAD_RENDER) == 0);
+    const slanted = face.*.glyph.*.bitmap.width;
+
+    // The top of the stem has slid sideways past where it stood, so the ink is
+    // wider than upright -- which is the whole of what the eye reads as a lean.
+    try std.testing.expect(slanted > upright);
 }
 
 /// Splits a pen position into the pixel the quad lands on and the variant to
