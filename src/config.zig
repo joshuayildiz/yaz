@@ -37,6 +37,12 @@ pub const text_colour: [4]f32 = .{ 0, 0, 0, 1 };
 pub const caret_colour: [4]f32 = .{ 0, 0, 0, 1 };
 pub const scrollbar_colour: [4]f32 = .{ 0, 0, 0, 0.28 };
 
+/// The band under selected text. An off-yellow -- amber, warmed away from a
+/// pure yellow -- so a selection catches the eye against the page while black
+/// text still reads through it. Its own colour rather than the finder's row
+/// tint, which agrees quietly with a panel and has a different job.
+pub const text_selection_colour: [4]f32 = .{ 0.99, 0.86, 0.36, 1 };
+
 // The two things yaz draws that are not a file: the healthcheck's card, and
 // the finder's panel. Both are surfaces laid over the window rather than boxes
 // drawn in it, so they carry their own ground and their own edge.

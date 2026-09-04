@@ -63,7 +63,7 @@ const newline_stub = 4;
 /// The selection is the one thing under the text. Within a layer a solid quad
 /// is drawn after a glyph, so being underneath is a layer of its own rather
 /// than an ordering.
-const select_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.selection_colour };
+const select_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.text_selection_colour };
 const glyph_key: Key = .{ .layer = 1, .pipeline = .glyphs, .colour = config.text_colour };
 const caret_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.caret_colour };
 const bar_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = config.scrollbar_colour };
@@ -244,6 +244,46 @@ pub const TextView = struct {
             file.scroll = scrollToCentre(file.scroll, index, top, self.rect.height, model.atlas.line_height);
         }
         file.scroll = @min(self.furthest(model), @max(0, file.scroll));
+
+        // Worked out here, once the scroll is final, because where the selection
+        // sits on screen is a question only the settled view can answer. The
+        // window reads it back off the file and moves the pointer there.
+        if (file.warp_caret) {
+            file.warp_caret = false;
+            file.warp_to = self.selectionPixel(model);
+        }
+    }
+
+    /// Where to put the pointer so it lands in the current selection: the middle
+    /// of the first line the selection covers, in window pixels. Aimed at the
+    /// middle rather than an edge so that the click it invites cannot round to
+    /// the character just outside the selection and take a different word.
+    fn selectionPixel(self: *const TextView, model: *const Model) [2]f32 {
+        const file = self.file;
+        const span = file.selected();
+        const index = file.buffer.lineAt(span.from);
+        const start = file.buffer.lineStart(index);
+        const stop = start + file.buffer.lineLength(index);
+
+        const at = self.origin(model);
+        var x = at[0];
+        if (index < file.lines.items.len) {
+            const entry = &file.lines.items[index];
+            const shaped = if (model.atlas.stale(entry)) shape: {
+                const text = file.buffer.lineSlice(index) catch break :shape false;
+                model.atlas.shapeLine(text, entry) catch break :shape false;
+                break :shape true;
+            } else true;
+            if (shaped) {
+                const left = caretX(entry.carets.items, span.from - start);
+                const right = caretX(entry.carets.items, @min(span.to, stop) - start);
+                x = at[0] + (left + right) / 2;
+            }
+        }
+
+        const top = at[1] - self.rect.y;
+        const line_top = self.rect.y + lineTop(index, top, file.scroll, model.atlas.line_height);
+        return .{ @round(x), @round(line_top + model.atlas.line_height / 2) };
     }
 
     /// Clamped here rather than where it is stored: how far a file can be
@@ -430,7 +470,13 @@ pub const TextView = struct {
         const target = if (inside) chosen else wordAround(buffer, where.offset) orelse return .none;
 
         const found = searchFrom(buffer, target, target.to) orelse return .none;
-        return .{ .selection = .{ .column = self.which, .from = found.from, .to = found.to, .follow = true } };
+        return .{ .selection = .{
+            .column = self.which,
+            .from = found.from,
+            .to = found.to,
+            .follow = true,
+            .warp = true,
+        } };
     }
 
     /// Where a point falls: which line, how far into the file, and whether it

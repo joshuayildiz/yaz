@@ -431,6 +431,9 @@ pub const Model = struct {
                 // A look can land the selection anywhere; bringing the view to
                 // it is the rest of jumping there. A drag leaves this alone.
                 if (what.follow) file.follow_caret = true;
+                // And the pointer with it, so looking again from a still hand
+                // steps on to the next occurrence.
+                if (what.warp) file.warp_caret = true;
             },
             .scroll => |where| {
                 const file = self.column(where.column) orelse return .{ self, null };

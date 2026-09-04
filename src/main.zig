@@ -189,6 +189,25 @@ fn App(comptime Component: type) type {
             self.painter.clear();
             try self.component.draw(self.model, &self.painter);
             try self.renderer.present(&self.painter);
+
+            // After the frame it belongs to: a look worked out where its match
+            // ended up on screen while placing the columns, and the pointer is
+            // moved there now that the match is actually shown.
+            self.warpPending();
+        }
+
+        /// Moves the pointer to wherever a look asked it to go. In window
+        /// coordinates, which is what the request is divided back into: the
+        /// selection's place was worked out in pixels, and the cursor is the one
+        /// thing SDL still speaks to in points.
+        fn warpPending(self: *Self) void {
+            const density = c.SDL_GetWindowPixelDensity(self.renderer.window);
+            if (density <= 0) return;
+            for (self.model.columns.items) |file| {
+                const target = file.warp_to orelse continue;
+                file.warp_to = null;
+                c.SDL_WarpMouseInWindow(self.renderer.window, target[0] / density, target[1] / density);
+            }
         }
 
         /// Windows and macOS run a modal loop while a window is dragged or

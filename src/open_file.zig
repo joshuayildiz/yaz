@@ -615,6 +615,14 @@ pub const OpenFile = struct {
     /// view where it is.
     follow_caret: bool = false,
 
+    /// A look brings the pointer to what it found, so that clicking button 3
+    /// again lands in the new selection and steps on to the next occurrence.
+    /// `warp_caret` is the request; `warp_to` is where in the window to put the
+    /// pointer, filled in once the view has settled and the selection's place on
+    /// screen is known, and consumed by the window that owns the cursor.
+    warp_caret: bool = false,
+    warp_to: ?[2]f32 = null,
+
     /// What is left of a gesture too small to have moved a whole pixel yet. A
     /// trackpad reports fractions, and without this a slow drag would round
     /// away to nothing every event.

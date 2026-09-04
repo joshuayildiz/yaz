@@ -114,8 +114,10 @@ pub const Change = union(enum) {
     ///
     /// `follow` brings the view to the selection, the way an edit does. A drag
     /// must not, or dragging out a selection would jerk the view about; a look
-    /// must, since what it found can be anywhere in the file.
-    selection: struct { column: usize, from: usize, to: usize, follow: bool = false },
+    /// must, since what it found can be anywhere in the file. `warp` brings the
+    /// pointer to the selection too, which is what lets a look step on to the
+    /// next occurrence under a still hand.
+    selection: struct { column: usize, from: usize, to: usize, follow: bool = false, warp: bool = false },
 
     /// The selection to the system clipboard, and what is on the clipboard into
     /// the file.

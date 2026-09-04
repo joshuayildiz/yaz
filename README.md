@@ -926,6 +926,15 @@ occurrence in turn. The view is brought to whatever is found, since it can be
 anywhere in the file — the one thing a selection does that dragging one out must
 not.
 
+**The pointer is brought to the match too**, so the walk needs no hand movement:
+click button 3 once for the next occurrence, and keep clicking to keep going,
+each match landing under the cursor where the last click was. Where on screen the
+match ends up is a question only the settled view can answer — the scroll has to
+be final first — so the column works it out while it is being laid out and leaves
+the window to move the cursor once the frame is up. The pointer is aimed at the
+middle of the match rather than an edge, so the click it invites cannot round to
+the character just outside and take a different word.
+
 The match is over bytes, not whole words: looking for `in` will stop on the `in`
 inside `int`. It knows nothing of word boundaries once it has the word to look
 for, which is the same bargain the rest of the editor makes about not knowing the
@@ -937,6 +946,11 @@ The band under the text is **a layer of its own** rather than an ordering. Withi
 a painter layer a solid quad is drawn after a glyph, so a highlight added at the
 text's own layer would cover the text; everything the view draws above the text
 moved up one to make room.
+
+The band is **an off-yellow** — an amber, warmed away from a pure yellow — so a
+selection catches the eye against the white page while black text still reads
+through it. It is its own colour rather than the finder's row tint: that one
+agrees quietly with a panel already edged and shaded, and has a different job.
 
 A line whose ending is inside the selection gets **a stub past its last glyph**,
 without which three selected lines look like three selected pieces of text.
