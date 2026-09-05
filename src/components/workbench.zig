@@ -31,8 +31,6 @@ const TextView = @import("./text_view.zig").TextView;
 /// file it shows -- `OpenFile.rect` -- so a press can be turned back into the
 /// column it fell in, and so `Model.update` can read it without a view.
 const Views = struct {
-    rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-
     pub fn deinit(_: *Views, _: std.mem.Allocator) void {}
 
     /// Whatever it is given. How wide the columns are is a row's business; how
@@ -41,41 +39,32 @@ const Views = struct {
         return null;
     }
 
-    pub fn place(self: *Views, model: *Model, rect: Rect) !void {
-        self.rect = rect;
-
+    /// Divides the room into a column per file on screen, writing each column's
+    /// rect onto the file it shows -- a file is in at most one column, so there
+    /// is one rect, and keeping it there is what lets `Model.update` reach it
+    /// without a view. Each edge is rounded off the running width so the columns
+    /// meet exactly and `Model.columnAt` cannot disagree with where they were
+    /// drawn.
+    pub fn place(_: *Views, model: *Model, rect: Rect) !void {
+        const count: f32 = @floatFromInt(model.columns.items.len);
         var left = rect.x;
         for (model.columns.items, 1..) |file, nth| {
-            const right = self.edge(model, nth);
-            // Written onto the file it shows: a file is in at most one column, so
-            // there is one rect, and keeping it there is what lets `update` reach
-            // it without a view.
+            const right = @round(rect.x + rect.width * @as(f32, @floatFromInt(nth)) / count);
             file.rect = .{ .x = left, .y = rect.y, .width = right - left, .height = rect.height };
             left = right;
 
-            // The one thing layout writes back: what a column can show depends
-            // on the room it has, which nothing knew when the message arrived.
+            // Layout is the one thing that writes back to a file: what a column
+            // can show depends on the room it has, unknown when a message arrived.
             const column: TextView = .init(nth - 1, file, file.rect);
             column.settle(model);
         }
     }
 
-    pub fn draw(self: *Views, model: *const Model, painter: *Painter) !void {
-        _ = self;
+    pub fn draw(_: *Views, model: *const Model, painter: *Painter) !void {
         for (model.columns.items, 0..) |file, which| {
             var column: TextView = .init(which, file, file.rect);
             try column.draw(model, painter);
         }
-    }
-
-    /// Where the nth column ends, counted from one. Worked out rather than
-    /// remembered so that the columns always meet exactly, whatever the
-    /// fractions, and so `place` and `Model.columnAt` cannot disagree.
-    fn edge(self: *const Views, model: *const Model, nth: usize) f32 {
-        const count = model.columns.items.len;
-        if (count == 0) return self.rect.x;
-        const share = self.rect.width * @as(f32, @floatFromInt(nth)) / @as(f32, @floatFromInt(count));
-        return @round(self.rect.x + share);
     }
 };
 

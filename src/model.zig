@@ -459,13 +459,11 @@ pub const Model = struct {
             return .{ self, null };
         }
 
-        // A raw pointer message is turned into what it landed on, and acted on.
         switch (msg) {
+            // A raw pointer message is turned into what it landed on, then acted
+            // on by calling back in with the message that came out.
             .press, .move, .release, .wheel, .look => return self.update(self.resolve(msg)),
-            else => {},
-        }
 
-        switch (msg) {
             // Typing is an insert into the column with the keyboard; the tab key
             // and return are text that does not arrive as any.
             .text => |t| return self.update(.{ .insert = .{ .column = self.focus, .text = t } }),
@@ -542,8 +540,6 @@ pub const Model = struct {
                 self.holding = if (where.at == null) null else where.column;
                 file.drag = where.at;
             },
-            .focus => |which| self.focus = which,
-
             // The clipboard and the file are the runtime's; here they are named
             // by the column with the keyboard. Cut is a copy and a delete, the
             // delete done now and the copy left for the runtime.
@@ -639,12 +635,11 @@ pub const Model = struct {
                         return if (what.clicks >= 2) .{ .pin = nth } else .{ .show = nth };
                 }
 
+                // A press in a column resolves to a caret, which is also what
+                // moves the keyboard there -- so there is no separate focusing
+                // to do when it lands on nothing.
                 const which = self.columnAt(what.at) orelse return .none;
-                const asked = self.columnResolve(which, msg);
-                return switch (asked) {
-                    .none => .{ .focus = which },
-                    else => asked,
-                };
+                return self.columnResolve(which, msg);
             },
             // Only while the pointer is held: a drag stays with the column it
             // began in wherever it wanders, and a bare hover reaches no column.

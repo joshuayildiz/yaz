@@ -146,10 +146,6 @@ pub const Message = union(enum) {
     /// Where on the nth column's scrollbar thumb a press took hold. Null lets go.
     grab: struct { column: usize, at: ?f32 },
 
-    /// Give the nth column the keyboard, without moving anything in it. What a
-    /// press on an empty column says.
-    focus: usize,
-
     /// Type text into the nth column over whatever is selected. Carries the
     /// bytes, so it is also what a paste loops back as.
     insert: struct { column: usize, text: []const u8 },
