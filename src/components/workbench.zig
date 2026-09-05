@@ -1,15 +1,10 @@
-//! The files this window has open, and where each one is.
+//! The files on screen: a bar of tabs over a row of columns, the bar as tall as
+//! it asks and the columns taking the rest.
 //!
-//! A bar of tabs over a row of columns: the bar says how tall it is and the
-//! columns take the rest. Every question about which files exist is answered
-//! here, because they are all the same question asked of those two members --
-//! which are on screen is which are in a column, which has the keyboard is
-//! which column has it, and which have been changed is what their documents
-//! say.
-//!
-//! It is also the only thing that takes a path from somewhere else. The finder
-//! knows a file was picked and nothing about columns; this knows what to do
-//! with a file and nothing about panels. `act` is where the two meet.
+//! Layout and drawing, nothing more. Which files exist, which are on screen and
+//! which has the keyboard are the model's; this reads `model.columns`, gives each
+//! column its share of the width, and writes each one's rect onto the file it
+//! shows so `Model.resolve` can turn a press back into it.
 
 const std = @import("std");
 
@@ -26,10 +21,9 @@ const TextView = @import("./text_view.zig").TextView;
 /// Left to right, one per file on screen.
 ///
 /// Which files those are is not this to decide or to remember: it is
-/// `model.columns`, and a column is made from it for as long as it takes to place
-/// it, draw it, or hand it a message. Where each one ended up is kept on the
-/// file it shows -- `OpenFile.rect` -- so a press can be turned back into the
-/// column it fell in, and so `Model.update` can read it without a view.
+/// `model.columns`. It gives each its share of the width and writes the rect onto
+/// the file it shows -- `OpenFile.rect` -- so a press can be turned back into the
+/// column it fell in, and `Model.resolve` can read it without a view.
 const Views = struct {
     pub fn deinit(_: *Views, _: std.mem.Allocator) void {}
 

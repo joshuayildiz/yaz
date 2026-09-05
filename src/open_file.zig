@@ -1,11 +1,12 @@
 //! One file the window has open: the text itself, where its lines begin, what
-//! each line shaped to, the name on its tab, and where its reader was in it.
+//! each line shaped to, the name on its tab, where its reader was in it, and the
+//! room its column and tab were last given.
 //!
-//! Everything a file is, in other words, apart from where it is being shown.
-//! There is one of these per path and the context owns it; a column points at
-//! one rather than holding it, which is what lets the caret and the scroll live
-//! here and survive being looked away from. See components/text_view.zig for
-//! the rest, which is a scrollbar, a rect and a gesture.
+//! Nearly everything a file is, in other words. There is one per path and the
+//! context owns it; a column points at one rather than holding it, which is what
+//! lets the caret, the scroll and the rects live here and survive being looked
+//! away from. What draws a file, and turns a click in it into an offset, is
+//! components/text_view.zig.
 
 const std = @import("std");
 

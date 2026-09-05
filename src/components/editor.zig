@@ -1,16 +1,14 @@
 //! The editing window: the files, the sidebar tree beside them, and the finder
-//! over both.
+//! over both. It places the three and draws them; where a message goes is the
+//! model's, resolved against the layout left here.
 //!
-//! Which of the finder or the files has the keyboard is not this to remember.
-//! `model.finding` is null or it is not, and that is the whole of what "the
-//! panel is open" means: a keystroke goes to the panel while there is one and to
-//! the files while there is not, and the panel draws last because it lies over
-//! them.
+//! Which of the finder or the files has the keyboard is `model.finding` -- null
+//! or not is the whole of what "the panel is open" means -- and the panel draws
+//! last because it lies over the files, at full contrast either side of it.
 //!
-//! The tree is not a panel. `model.sidebar.open` says whether it is there, and
-//! when it is it takes a strip off the left rather than lying over anything: the
-//! files get what is left, and a press is handed to whichever of the two it
-//! landed in.
+//! The tree is not a panel: `model.sidebar.open` says whether it is there, and
+//! when it is it takes a strip off the left rather than lying over anything, so
+//! the files get what is left.
 
 const std = @import("std");
 

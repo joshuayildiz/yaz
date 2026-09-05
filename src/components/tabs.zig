@@ -4,14 +4,11 @@
 //! labels rather than as a grid: a row of equal shares is the wrong shape for a
 //! row of words, which is why this lays its own tabs out.
 //!
-//! It owns nothing but the rects it drew them at. Which files exist, which are
-//! on screen, which is being typed into and which have been changed are all
-//! read off the model as it draws, so the bar cannot disagree with what is
-//! there.
-//!
-//! It lays the tabs out in `place` -- shaping each name to measure it, writing
-//! where each sits onto the file it names -- and only paints in `draw`. Turning
-//! a press into the tab it landed on is `Model.resolve`'s, from those rects.
+//! It owns nothing. Which files exist, which are on screen and which is being
+//! typed into are read off the model, so the bar cannot disagree with what is
+//! there. `place` shapes each name to measure it and writes where the tab sits
+//! onto the file it names; `draw` only paints; and turning a press into the tab
+//! it landed on is `Model.resolve`'s, from those rects.
 
 const std = @import("std");
 

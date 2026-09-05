@@ -1,10 +1,10 @@
 //! A view of a file: where the caret sits in it, how far down it is being
 //! looked at, and the scrollbar that says so.
 //!
-//! The file is owned rather than pointed at, and everything derived from the
-//! bytes -- the line index, the shaped layout of every line -- lives on it. What
-//! a view adds is a position and a rect, which is also all it has to hand over
-//! when it is pointed at another file. See file.zig.
+//! Everything derived from the bytes -- the line index, the shaped layout of
+//! every line, the caret, the scroll -- lives on the file (see open_file.zig).
+//! A view is made on the spot from a file and the room it was given, and kept
+//! nowhere, since there is nothing left in it to keep.
 
 const std = @import("std");
 
@@ -142,7 +142,7 @@ pub const TextView = struct {
     }
 
     /// Moves the view by `pixels`, keeping the offset a whole number of them.
-    /// What is left over rides along in the change rather than being written
+    /// What is left over rides along in the message rather than being written
     /// down here, and waits for the next one instead of rounding away.
     fn scrollBy(self: *const TextView, model: *const Model, pixels: f32) Message {
         const gathered = self.file.pending + pixels;

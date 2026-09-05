@@ -1,14 +1,14 @@
 //! The state the window is showing, and the only thing that outlives a frame.
 //!
-//! Handed to `place`, `update` and `draw` as the first argument rather than
-//! stored: a component that kept a copy of the allocator would have a second
-//! one to keep in step with this, which is the thing this is here to stop, and
-//! the atlas was threaded through every one of those calls by hand.
+//! Handed to `place` and `draw` as the first argument rather than stored: a
+//! component that kept a copy of the allocator would have a second one to keep
+//! in step with this, which is the thing this is here to stop, and the atlas was
+//! threaded through every one of those calls by hand.
 //!
-//! What a component keeps is where it drew things. What files are open, which
-//! are on screen, where each caret is and whether the window is still up are
-//! all here, so drawing is a matter of reading this rather than of asking
-//! around.
+//! Components keep almost nothing between frames: what files are open, which are
+//! on screen, where each caret is, where every rect landed, and whether the
+//! window is still up are all here. So both drawing and resolving a click come
+//! down to reading this rather than asking around.
 
 const std = @import("std");
 
@@ -620,8 +620,7 @@ pub const Model = struct {
     /// What a raw pointer message means, once the layout `place` left is read:
     /// the tree row, the tab, or the place in a column it fell on. Answered as a
     /// message `update` calls itself with, so the geometry lives here and the
-    /// acting lives there. A press that lands on nothing in a column still moves
-    /// the keyboard to it.
+    /// acting lives there.
     fn resolve(self: *const Model, msg: Message) Message {
         switch (msg) {
             .press => |what| {
@@ -671,7 +670,6 @@ pub const Model = struct {
         return view.resolve(self, msg);
     }
 
-    /// Which column a point fell in, if any.
     fn columnAt(self: *const Model, at: [2]f32) ?usize {
         for (self.columns.items, 0..) |file, which| {
             if (file.rect.contains(at)) return which;
