@@ -20,10 +20,11 @@ const std = @import("std");
 const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Change = message_mod.Change;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
-const Model = @import("../model.zig").Model;
+const model_mod = @import("../model.zig");
+const Model = model_mod.Model;
+const Row = model_mod.Row;
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 
@@ -63,16 +64,6 @@ const gap = 4;
 /// set rather than stacked.
 const leading = 1.3;
 
-/// One line of the folded tree. The strings are the model's -- `path` is the
-/// listing's own slice, `name` its last segment -- and live until the next
-/// fold, which is exactly as long as a row does.
-const Row = struct {
-    path: []const u8,
-    name: []const u8,
-    depth: u16,
-    is_dir: bool,
-};
-
 /// A node while the hierarchy is being built. Lives in the fold's arena and is
 /// gone by the time it returns; the rows it produces point at the model instead.
 const Node = struct {
@@ -83,32 +74,111 @@ const Node = struct {
 };
 
 pub const Tree = struct {
-    /// The folded rows, top to bottom, and a shaped line for each. Parallel:
-    /// `layouts[i]` is `rows[i]` set in glyphs, shaped the first time it is
-    /// drawn and not before.
-    rows: std.ArrayList(Row) = .empty,
-    layouts: std.ArrayList(LineLayout) = .empty,
+    pub fn deinit(_: *Tree, _: std.mem.Allocator) void {}
 
-    /// Which revision the rows were folded from, or none before the first fold.
-    /// When it falls behind the model's, the fold is redone.
-    built: ?u32 = null,
+    /// Folds the listing, shapes the markers and the rows on screen, and records
+    /// the strip -- all into `model.sidebar`, so `update` can hit-test and `draw`
+    /// paint without either folding or shaping.
+    pub fn place(_: *Tree, model: *Model, rect: Rect) !void {
+        model.sidebar.rect = rect;
+        try ensureBuilt(model);
 
-    /// The two markers, shaped once each.
-    chevron_open: LineLayout = .{},
-    chevron_shut: LineLayout = .{},
+        const sidebar = &model.sidebar;
+        if (sidebar.rows.items.len == 0) return;
 
-    rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+        if (model.atlas.stale(&sidebar.chevron_open)) try model.atlas.shapeLine(chevron_open_glyph, &sidebar.chevron_open);
+        if (model.atlas.stale(&sidebar.chevron_shut)) try model.atlas.shapeLine(chevron_shut_glyph, &sidebar.chevron_shut);
 
-    pub fn deinit(self: *Tree, allocator: std.mem.Allocator) void {
-        for (self.layouts.items) |*layout| layout.deinit(allocator);
-        self.layouts.deinit(allocator);
-        self.rows.deinit(allocator);
-        self.chevron_open.deinit(allocator);
-        self.chevron_shut.deinit(allocator);
+        // Only the rows on screen are shaped, and only those.
+        const s = step(model);
+        var index: usize = @intFromFloat(@max(0, @floor(sidebar.scroll / s)));
+        while (index < sidebar.rows.items.len) : (index += 1) {
+            const top = @round(rect.y + @as(f32, @floatFromInt(index)) * s - sidebar.scroll);
+            if (top >= rect.y + rect.height) break;
+
+            const layout = &sidebar.layouts.items[index];
+            if (layout.sprites.items.len == 0 or model.atlas.stale(layout)) {
+                try model.atlas.shapeLine(sidebar.rows.items[index].name, layout);
+            }
+        }
     }
 
-    pub fn place(self: *Tree, _: *const Model, rect: Rect) void {
-        self.rect = rect;
+    /// What a press means: a folder to open or shut, a file to open, or nothing
+    /// when it fell past the last row. A wheel moves the list, clamped here
+    /// because only this knows how many rows there are. A free function, not a
+    /// method: `Model.update` calls it with the model it already holds.
+    pub fn resolve(model: *const Model, message: Message) Message {
+        const sidebar = &model.sidebar;
+        const s = step(model);
+
+        switch (message) {
+            .press => |what| {
+                const y = what.at[1] - sidebar.rect.y + sidebar.scroll;
+                if (y < 0) return .none;
+                const index: usize = @intFromFloat(@floor(y / s));
+                if (index >= sidebar.rows.items.len) return .none;
+
+                const row = sidebar.rows.items[index];
+                return if (row.is_dir) .{ .toggle_dir = row.path } else .{ .open_file = row.path };
+            },
+            .wheel => |wheel| {
+                const content = @as(f32, @floatFromInt(sidebar.rows.items.len)) * s;
+                const furthest = @max(0, content - sidebar.rect.height);
+                const to = std.math.clamp(sidebar.scroll + wheel.delta, 0, furthest);
+                if (to == sidebar.scroll) return .none;
+                return .{ .scroll_tree = to };
+            },
+            else => return .none,
+        }
+    }
+
+    pub fn draw(_: *Tree, model: *const Model, painter: *Painter) !void {
+        const sidebar = &model.sidebar;
+        const rect = sidebar.rect;
+
+        // So a row scrolled up cannot draw above the strip, and a name too long
+        // for it cannot draw into the files beside it.
+        painter.clipTo(rect);
+        defer painter.clipTo(null);
+
+        const line = @max(1, @round(model.atlas.scale));
+        try painter.add(ground_key, .solid(.{ rect.x, rect.y }, .{ rect.width, rect.height }));
+        try painter.add(rule_key, .solid(
+            .{ rect.x + rect.width - line, rect.y },
+            .{ line, rect.height },
+        ));
+
+        if (sidebar.rows.items.len == 0) return;
+
+        // Reserved on every row whether it carries a marker or not, so a file
+        // and the folder above it line their names up.
+        const marker = @round(@max(advance(&sidebar.chevron_open), advance(&sidebar.chevron_shut)) + gap * model.atlas.scale);
+
+        const s = step(model);
+        const inset = @round(pad * model.atlas.scale);
+        const indent = @round(indent_step * model.atlas.scale);
+        const scroll = sidebar.scroll;
+
+        // Only the rows on screen, which `place` has already shaped.
+        var index: usize = @intFromFloat(@max(0, @floor(scroll / s)));
+        while (index < sidebar.rows.items.len) : (index += 1) {
+            const top = @round(rect.y + @as(f32, @floatFromInt(index)) * s - scroll);
+            if (top >= rect.y + rect.height) break;
+
+            const row = sidebar.rows.items[index];
+            const layout = &sidebar.layouts.items[index];
+
+            const baseline = @round(top + (s - model.atlas.line_height) / 2 + model.atlas.ascent);
+            const left = rect.x + inset + @as(f32, @floatFromInt(row.depth)) * indent;
+
+            if (row.is_dir) {
+                const open = sidebar.expanded.contains(row.path);
+                const chevron = if (open) &sidebar.chevron_open else &sidebar.chevron_shut;
+                try drawLine(painter, chevron_key, chevron, .{ left, baseline });
+            }
+
+            try drawLine(painter, name_key, layout, .{ left + marker, baseline });
+        }
     }
 
     /// How tall one row is. A number of the font's own lines, so it grows with
@@ -120,114 +190,25 @@ pub const Tree = struct {
     /// Folds the flat listing into rows, once per revision. The old rows and the
     /// glyphs shaped for them are let go of first: a fold is a new set of rows,
     /// not an edit of the last.
-    fn rebuild(self: *Tree, model: *const Model) !void {
-        const allocator = model.allocator;
+    fn ensureBuilt(model: *Model) !void {
+        const sidebar = &model.sidebar;
+        if (sidebar.built != null and sidebar.built.? == sidebar.revision) return;
 
-        for (self.layouts.items) |*layout| layout.deinit(allocator);
-        self.rows.clearRetainingCapacity();
-        self.layouts.clearRetainingCapacity();
+        const allocator = model.allocator;
+        for (sidebar.layouts.items) |*layout| layout.deinit(allocator);
+        sidebar.rows.clearRetainingCapacity();
+        sidebar.layouts.clearRetainingCapacity();
 
         // The nodes and their maps live only as long as the fold. The rows that
         // come out of it point at the model's paths, which outlast it.
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        try fold(allocator, arena.allocator(), model.sidebar.paths.items, &model.sidebar.expanded, &self.rows);
+        try fold(allocator, arena.allocator(), sidebar.paths.items, &sidebar.expanded, &sidebar.rows);
 
-        try self.layouts.resize(allocator, self.rows.items.len);
-        for (self.layouts.items) |*layout| layout.* = .{};
+        try sidebar.layouts.resize(allocator, sidebar.rows.items.len);
+        for (sidebar.layouts.items) |*layout| layout.* = .{};
 
-        self.built = model.sidebar.revision;
-    }
-
-    fn ensureBuilt(self: *Tree, model: *const Model) !void {
-        if (self.built == null or self.built.? != model.sidebar.revision) try self.rebuild(model);
-    }
-
-    /// What a press means: a folder to open or shut, a file to open, or nothing
-    /// when it fell past the last row. A wheel moves the list, clamped here
-    /// because only this knows how many rows there are.
-    pub fn update(self: *Tree, model: *const Model, message: Message) !Change {
-        try self.ensureBuilt(model);
-        const s = step(model);
-
-        switch (message) {
-            .press => |what| {
-                const y = what.at[1] - self.rect.y + model.sidebar.scroll;
-                if (y < 0) return .none;
-                const index: usize = @intFromFloat(@floor(y / s));
-                if (index >= self.rows.items.len) return .none;
-
-                const row = self.rows.items[index];
-                return if (row.is_dir) .{ .toggle_dir = row.path } else .{ .open_file = row.path };
-            },
-            .wheel => |wheel| {
-                const content = @as(f32, @floatFromInt(self.rows.items.len)) * s;
-                const furthest = @max(0, content - self.rect.height);
-                const to = std.math.clamp(model.sidebar.scroll + wheel.delta, 0, furthest);
-                if (to == model.sidebar.scroll) return .none;
-                return .{ .scroll_tree = to };
-            },
-            else => return .none,
-        }
-    }
-
-    pub fn draw(self: *Tree, model: *const Model, painter: *Painter) !void {
-        try self.ensureBuilt(model);
-
-        // So a row scrolled up cannot draw above the strip, and a name too long
-        // for it cannot draw into the files beside it.
-        painter.clipTo(self.rect);
-        defer painter.clipTo(null);
-
-        const line = @max(1, @round(model.atlas.scale));
-        try painter.add(ground_key, .solid(
-            .{ self.rect.x, self.rect.y },
-            .{ self.rect.width, self.rect.height },
-        ));
-        try painter.add(rule_key, .solid(
-            .{ self.rect.x + self.rect.width - line, self.rect.y },
-            .{ line, self.rect.height },
-        ));
-
-        if (self.rows.items.len == 0) return;
-
-        if (model.atlas.stale(&self.chevron_open)) try model.atlas.shapeLine(chevron_open_glyph, &self.chevron_open);
-        if (model.atlas.stale(&self.chevron_shut)) try model.atlas.shapeLine(chevron_shut_glyph, &self.chevron_shut);
-
-        // Reserved on every row whether it carries a marker or not, so a file
-        // and the folder above it line their names up.
-        const marker = @round(@max(advance(&self.chevron_open), advance(&self.chevron_shut)) + gap * model.atlas.scale);
-
-        const s = step(model);
-        const inset = @round(pad * model.atlas.scale);
-        const indent = @round(indent_step * model.atlas.scale);
-        const scroll = model.sidebar.scroll;
-
-        // Only the rows on screen are shaped, and only those. The first is
-        // whatever the scroll has carried up past the top edge.
-        const first: usize = @intFromFloat(@max(0, @floor(scroll / s)));
-        var index = first;
-        while (index < self.rows.items.len) : (index += 1) {
-            const top = @round(self.rect.y + @as(f32, @floatFromInt(index)) * s - scroll);
-            if (top >= self.rect.y + self.rect.height) break;
-
-            const row = self.rows.items[index];
-            const layout = &self.layouts.items[index];
-            if (layout.sprites.items.len == 0 or model.atlas.stale(layout)) {
-                try model.atlas.shapeLine(row.name, layout);
-            }
-
-            const baseline = @round(top + (s - model.atlas.line_height) / 2 + model.atlas.ascent);
-            const left = self.rect.x + inset + @as(f32, @floatFromInt(row.depth)) * indent;
-
-            if (row.is_dir) {
-                const open = model.sidebar.expanded.contains(row.path);
-                const chevron = if (open) &self.chevron_open else &self.chevron_shut;
-                try drawLine(painter, chevron_key, chevron, .{ left, baseline });
-            }
-
-            try drawLine(painter, name_key, layout, .{ left + marker, baseline });
-        }
+        sidebar.built = sidebar.revision;
     }
 };
 

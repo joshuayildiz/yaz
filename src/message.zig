@@ -18,13 +18,13 @@ const lines_per_notch = 3;
 /// What the runtime is asked to go and do, once the model has moved as far as
 /// it can on its own.
 ///
-/// A `Change` is everything the model can do to itself; this is everything it
-/// cannot -- the clipboard, the filesystem, a dialog. `Model.update` answers
+/// A message is everything the model can do to itself; an effect is everything
+/// it cannot -- the clipboard, the filesystem, a dialog. `Model.update` answers
 /// with one rather than performing it, which is what keeps SDL and the
 /// filesystem out of every branch of it, and out of its tests.
 ///
-/// Whatever doing one produces comes back in as a `Change`, like anything else
-/// that ever moves the model.
+/// Whatever performing one produces comes back in as a message, like anything
+/// else that ever moves the model.
 pub const Effect = union(enum) {
     /// The nth column's selection, to the system clipboard.
     copy: usize,
@@ -46,162 +46,14 @@ pub const Effect = union(enum) {
     watch,
     unwatch,
 
-    /// Several of these, in order. Owned the way `Change.batch` is, and freed
-    /// by whoever performs it.
+    /// Several of these, in order. Owned, and freed by whoever performs it: the
+    /// slice a caller writes at a return is gone by the time it is walked.
     batch: []const Effect,
 
-    /// Gathers effects into one, on the terms `Change.gather` sets out.
+    /// Gathers effects into one, copying the list somewhere that outlives the
+    /// call so a stack literal survives being handed over.
     pub fn gather(allocator: std.mem.Allocator, these: []const Effect) !Effect {
         return .{ .batch = try allocator.dupe(Effect, these) };
-    }
-};
-
-/// A change to the model, named by whichever component worked out that it
-/// should happen. What a change cannot do is reach outside the model; that is
-/// an `Effect`, and `Model.update` is where the two part company.
-///
-/// A component cannot make the change itself -- `update` is handed the model to
-/// read and nothing more -- so this is the only way anything moves. `Model.apply`
-/// is the other half, and the two together are why nothing has to remember to
-/// say that it changed something: a change is that, and `none` is its
-/// absence.
-///
-/// Nothing here owns memory but `batch`, which cannot avoid it: a union may not
-/// hold an array of itself, so several changes can only travel as a slice, and
-/// a slice of a stack literal is gone by the time `apply` reads it. What used to
-/// be a path copied out of the finder's listing is now the index of the thing
-/// that was chosen, which the model can look up for itself.
-pub const Change = union(enum) {
-    /// Nothing happened, or nothing that shows. The window does not draw again.
-    none,
-
-    /// Several changes, in order, from one message. The only change that owns
-    /// anything: `apply` frees the list once it has walked it, so a batch is
-    /// handed over rather than lent.
-    ///
-    /// Build one with `gather` rather than by hand. `&.{ a, b }` written at a
-    /// return points at the frame that is about to go, and changes carry
-    /// runtime values, so nothing about it is comptime enough to be placed
-    /// somewhere that lasts. It compiles and it reads rubbish.
-    batch: []const Change,
-
-    /// Nothing in the model moved, but the window has to be drawn again anyway
-    /// -- which is only ever true of a resize, where what changed is the room
-    /// rather than anything in it.
-    ///
-    /// The other half of `none`, and named to read as one beside it.
-    redraw,
-
-    /// Put the window away.
-    quit,
-
-    /// Type into the file the nth column is showing, or take a character back
-    /// out of it.
-    insert: struct { column: usize, text: []const u8 },
-    backspace: usize,
-
-    /// Put the caret at a byte offset, or the top of the view at a pixel. Both
-    /// are worked out by the column, which is the only thing that knows where
-    /// its lines are and how much room it has.
-    /// `extend` leaves the far end of the selection where it is and moves only
-    /// this one, which is what a shifted press and a drag both do. Without it
-    /// the selection collapses to the caret.
-    caret: struct { column: usize, at: usize, extend: bool = false },
-
-    /// Both ends at once. What select-all has in common with the pointer's
-    /// gestures: they say where a selection is rather than moving one end of
-    /// it.
-    ///
-    /// `follow` brings the view to the selection, the way an edit does. A drag
-    /// must not, or dragging out a selection would jerk the view about; a look
-    /// must, since what it found can be anywhere in the file. `warp` brings the
-    /// pointer to the selection too, which is what lets a look step on to the
-    /// next occurrence under a still hand.
-    selection: struct { column: usize, from: usize, to: usize, follow: bool = false, warp: bool = false },
-
-    /// The selection to the system clipboard, and what is on the clipboard into
-    /// the file.
-    ///
-    /// Named by column and carrying nothing else: the text is in the file
-    /// already, or on the clipboard already, and copying it into a change
-    /// would be one more thing that owned memory.
-    ///
-    /// There is no `cut`. Cutting is a `copy` and a `delete_selection`, which
-    /// is what a batch is for -- see `TextView.update`.
-    copy: usize,
-    paste: usize,
-
-    /// Take out what is selected, leaving the caret where the selection began.
-    /// Nothing selected takes nothing out.
-    delete_selection: usize,
-
-    /// The nth column's file has been written. Clears the mark on its tab, and
-    /// is what comes back from an `Effect.save` that worked.
-    saved: usize,
-
-    /// Write the nth column's file back to the path it was opened from.
-    save: usize,
-
-    /// Give the file that asked for a name this one, and write it there. Which
-    /// file that is, the model knows; nothing else could, since the answer
-    /// arrives whenever the dialog is done with.
-    name_it: []const u8,
-    /// `pending` is what is left of a gesture too small to have moved a whole
-    /// pixel yet, carried in the change rather than kept by whatever worked it
-    /// out. A scroll that only moves the fraction changes nothing on screen.
-    scroll: struct { column: usize, to: f32, pending: f32 = 0 },
-
-    /// Which column has the keyboard. Which has the pointer is not said here:
-    /// a press says it by landing a caret or taking hold of a scrollbar, and
-    /// the release lets go, so there was never anything left for a change of
-    /// its own to do.
-    focus: usize,
-
-    /// Where on the scrollbar's thumb a press took hold. Null lets go.
-    grab: struct { column: usize, at: ?f32 },
-
-    /// Show the nth file on the bar and nothing else, or put it beside what is
-    /// already there, or take the focused one out of the window altogether.
-    show: usize,
-    split: usize,
-    close,
-
-    /// Keep the nth tab: promote it out of being the scratch preview, so the
-    /// next file opened does not replace it. What a double-click on a tab asks
-    /// for.
-    pin: usize,
-
-    /// Open the finder, put it away, and what happens while it is up.
-    find,
-    dismiss,
-    query: []const u8,
-    rub,
-    up,
-    down,
-    /// Open what the finder has selected, in the column with the keyboard.
-    choose,
-
-    /// Open or close the sidebar, and what happens while it is open.
-    ///
-    /// `refresh_tree` is what a change on disk comes back as: the listing is
-    /// re-read and the view rebuilt. `toggle_dir` opens or closes one folder,
-    /// `open_file` opens one file in the column with the keyboard, and
-    /// `scroll_tree` moves the list. The paths are borrowed from the view's own
-    /// rows, which outlive the call, so nothing here owns memory.
-    toggle_tree,
-    refresh_tree,
-    toggle_dir: []const u8,
-    open_file: []const u8,
-    scroll_tree: f32,
-
-    /// Gathers changes into one, copying the list somewhere that outlives the
-    /// call. `Model.apply` frees it.
-    ///
-    /// This is the only safe way to make a batch, and the reason it takes an
-    /// allocator: the list a caller writes at the point of return lives on that
-    /// caller's stack, and the copy is what it is here for.
-    pub fn gather(allocator: std.mem.Allocator, these: []const Change) !Change {
-        return .{ .batch = try allocator.dupe(Change, these) };
     }
 };
 
@@ -229,13 +81,13 @@ pub const Message = union(enum) {
     /// The tree the sidebar shows changed on disk. Pushed from the library's
     /// watcher, so it wakes the window rather than being a keystroke.
     disk_changed,
-    /// Show the nth file open in the window, counted from zero: cmd+1 to cmd+9.
-    /// Named for what it asks for rather than for the strip it is asked from,
-    /// which leaves `tab` to mean the key of that name.
-    show: u8,
+    /// Show the nth file open in the window, counted from zero: cmd+1 to cmd+9,
+    /// or the tab a press landed on. Named for what it asks for rather than for
+    /// the strip it is asked from, which leaves `tab` to mean the key.
+    show: usize,
     /// Put the nth file beside what is already split, or take it away again:
     /// cmd+alt+1 to cmd+alt+9.
-    split: u8,
+    split: usize,
     /// Take the file in front off the bar and out of memory: cmd+W.
     close,
     /// Take the whole file: cmd+A.
@@ -273,6 +125,59 @@ pub const Message = union(enum) {
     /// gets searched for, so a column can jump to the next place that word
     /// appears rather than putting a caret down.
     look: [2]f32,
+
+    // -- Resolved intents ----------------------------------------------------
+    //
+    // What `Model.resolve` turns a raw pointer message into, and what an effect
+    // that finished loops back as. `update` recurses on the raw ones and mutates
+    // on these; nothing but `update` itself produces them, so they never reach
+    // `resolve`.
+
+    /// Keep the nth tab: promote it out of being the scratch preview, so the
+    /// next file opened does not replace it. What a double-click on a tab asks
+    /// for.
+    pin: usize,
+
+    /// Put the caret at a byte offset in the nth column. `extend` leaves the far
+    /// end of the selection where it is and moves only this one, which is what a
+    /// shifted press and a drag both do; without it the selection collapses.
+    caret: struct { column: usize, at: usize, extend: bool = false },
+
+    /// Both ends of a selection at once. `follow` brings the view to it the way
+    /// an edit does; `warp` brings the pointer too, which is what lets a look
+    /// step on to the next occurrence under a still hand. A drag sets neither.
+    selection: struct { column: usize, from: usize, to: usize, follow: bool = false, warp: bool = false },
+
+    /// The top of the nth column's view, in pixels. `pending` is the fraction of
+    /// a gesture too small to have moved a whole pixel yet, carried rather than
+    /// kept, so a scroll that only moves the fraction changes nothing on screen.
+    scroll: struct { column: usize, to: f32, pending: f32 = 0 },
+
+    /// Where on the nth column's scrollbar thumb a press took hold. Null lets go.
+    grab: struct { column: usize, at: ?f32 },
+
+    /// Give the nth column the keyboard, without moving anything in it. What a
+    /// press on an empty column says.
+    focus: usize,
+
+    /// Type text into the nth column over whatever is selected. Carries the
+    /// bytes, so it is also what a paste loops back as.
+    insert: struct { column: usize, text: []const u8 },
+
+    /// Take out what is selected in the nth column, leaving the caret where it
+    /// began. Nothing selected takes nothing out.
+    delete_selection: usize,
+
+    /// The nth column's file has been written: clears the mark on its tab. What
+    /// an `Effect.save` that worked loops back as.
+    saved: usize,
+
+    /// Open or close one folder in the tree, open one file in the focused
+    /// column, or move the list. The paths are borrowed from the sidebar's own
+    /// rows, which outlive the call, so nothing here owns memory.
+    toggle_dir: []const u8,
+    open_file: []const u8,
+    scroll_tree: f32,
 
     /// Whether a key was pressed with the modifier that means "this is a
     /// command". Cmd on macOS, Ctrl elsewhere -- either is accepted everywhere,
@@ -457,15 +362,15 @@ test "a digit on its own is a character, not a binding" {
 
 test "the platform's modifier and a digit reach that tab, counted from zero" {
     const first = pressed(c.SDL_SCANCODE_1, c.SDLK_1, shows);
-    try std.testing.expectEqual(@as(u8, 0), Message.init(&first, 1, a_line).show);
+    try std.testing.expectEqual(@as(usize, 0), Message.init(&first, 1, a_line).show);
 
     const ninth = pressed(c.SDL_SCANCODE_9, c.SDLK_9, shows);
-    try std.testing.expectEqual(@as(u8, 8), Message.init(&ninth, 1, a_line).show);
+    try std.testing.expectEqual(@as(usize, 8), Message.init(&ninth, 1, a_line).show);
 }
 
 test "the second modifier splits that tab instead of showing it" {
     const message = pressed(c.SDL_SCANCODE_3, c.SDLK_3, splits);
-    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).split);
+    try std.testing.expectEqual(@as(usize, 2), Message.init(&message, 1, a_line).split);
 }
 
 test "ctrl still does what cmd does for the letters, on any platform" {
@@ -493,7 +398,7 @@ test "on macOS the command key is still what the digits answer to" {
     try std.testing.expectEqual(Message.none, Message.init(&alone, 1, a_line));
 
     const commanded_digit = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LCTRL);
-    try std.testing.expectEqual(@as(u8, 0), Message.init(&commanded_digit, 1, a_line).show);
+    try std.testing.expectEqual(@as(usize, 0), Message.init(&commanded_digit, 1, a_line).show);
 }
 
 test "the keycode a modifier produces is not what a digit is read from" {
@@ -501,7 +406,7 @@ test "the keycode a modifier produces is not what a digit is read from" {
     // else again elsewhere. The scancode is the key under the finger either way,
     // and is what these bindings are read from.
     const message = pressed(c.SDL_SCANCODE_3, c.SDLK_HASH, splits);
-    try std.testing.expectEqual(@as(u8, 2), Message.init(&message, 1, a_line).split);
+    try std.testing.expectEqual(@as(usize, 2), Message.init(&message, 1, a_line).split);
 }
 
 test "the letters are read from the keycode, which is where they are" {

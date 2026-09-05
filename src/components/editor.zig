@@ -18,7 +18,6 @@ const Model = @import("../model.zig").Model;
 
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Change = message_mod.Change;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -50,12 +49,12 @@ pub const Editor = struct {
     /// The tree takes a strip off the left when it is open and the workbench
     /// takes the rest; when it is closed the workbench takes it all. The finder
     /// lies over everything and wants the whole window to measure from.
-    pub fn place(self: *Editor, model: *const Model, rect: Rect) void {
+    pub fn place(self: *Editor, model: *Model, rect: Rect) !void {
         if (model.sidebar.open) {
             const width = @min(@round(sidebar_width * model.atlas.scale), @round(rect.width / 2));
             self.sidebar = .{ .x = rect.x, .y = rect.y, .width = width, .height = rect.height };
-            self.tree.place(model, self.sidebar);
-            self.workbench.place(model, .{
+            try self.tree.place(model, self.sidebar);
+            try self.workbench.place(model, .{
                 .x = rect.x + width,
                 .y = rect.y,
                 .width = rect.width - width,
@@ -63,10 +62,10 @@ pub const Editor = struct {
             });
         } else {
             self.sidebar = .{ .x = rect.x, .y = rect.y, .width = 0, .height = rect.height };
-            self.workbench.place(model, rect);
+            try self.workbench.place(model, rect);
         }
 
-        self.finder.place(model, rect);
+        try self.finder.place(model, rect);
     }
 
     pub fn draw(self: *Editor, model: *const Model, painter: *Painter) !void {
@@ -75,36 +74,4 @@ pub const Editor = struct {
         try self.finder.draw(model, painter);
     }
 
-    /// The finder while it is up, the tree for a press that lands in it, and the
-    /// files for everything else. cmd+P and cmd+B belong to none of them: they
-    /// are what decides whether a panel is there at all. A change on disk is the
-    /// tree's whether the finder is up or not, since the tree is drawn under it.
-    pub fn update(self: *Editor, model: *const Model, message: Message) !Change {
-        if (message == .disk_changed) return .refresh_tree;
-
-        if (model.finding != null) return self.finder.update(model, message);
-
-        switch (message) {
-            .find => return .find,
-            .toggle_tree => return .toggle_tree,
-            .press => |what| {
-                if (model.sidebar.open and self.sidebar.contains(what.at))
-                    return self.tree.update(model, message);
-                return self.workbench.update(model, message);
-            },
-            .look => |at| {
-                // The tree has nothing to look up, so a look in it does nothing;
-                // one over the files is the workbench's to route to a column.
-                if (model.sidebar.open and self.sidebar.contains(at))
-                    return self.tree.update(model, message);
-                return self.workbench.update(model, message);
-            },
-            .wheel => |wheel| {
-                if (model.sidebar.open and self.sidebar.contains(wheel.at))
-                    return self.tree.update(model, message);
-                return self.workbench.update(model, message);
-            },
-            else => return self.workbench.update(model, message),
-        }
-    }
 };

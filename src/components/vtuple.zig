@@ -15,7 +15,6 @@ const std = @import("std");
 
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Change = message_mod.Change;
 
 const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
 const Model = @import("../model.zig").Model;
@@ -71,7 +70,7 @@ pub fn VTuple(comptime members: []const type) type {
 
         /// Asks every member how tall it wants to be, hands what is left to the
         /// ones that did not say, and places them from the top.
-        pub fn place(self: *Self, model: *const Model, rect: Rect) void {
+        pub fn place(self: *Self, model: *Model, rect: Rect) !void {
             var asked: [count]?f32 = undefined;
             var spoken: f32 = 0;
             var quiet: usize = 0;
@@ -91,7 +90,7 @@ pub fn VTuple(comptime members: []const type) type {
                 const y = @round(top);
                 const bottom = @round(top + want);
                 self.rects[i] = .{ .x = rect.x, .y = y, .width = rect.width, .height = bottom - y };
-                self.items[i].place(model, self.rects[i]);
+                try self.items[i].place(model, self.rects[i]);
                 top += want;
             }
         }
@@ -99,50 +98,14 @@ pub fn VTuple(comptime members: []const type) type {
         pub fn draw(self: *Self, model: *const Model, painter: *Painter) !void {
             inline for (0..count) |i| try self.items[i].draw(model, painter);
         }
-
-        pub fn update(self: *Self, model: *const Model, message: Message) !Change {
-            switch (message) {
-                .press => |what| {
-                    const which = self.over(what.at) orelse return .none;
-                    self.focus = which;
-                    self.holding = which;
-                    return self.tell(model, which, message);
-                },
-                .move => |at| return self.tell(model, self.holding orelse self.over(at) orelse return .none, message),
-                .release => {
-                    const which = self.holding orelse return .none;
-                    self.holding = null;
-                    return self.tell(model, which, message);
-                },
-                .wheel => |wheel| return self.tell(model, self.over(wheel.at) orelse return .none, message),
-                .look => |at| return self.tell(model, self.over(at) orelse return .none, message),
-                else => return self.tell(model, self.focus, message),
-            }
-        }
-
-        /// Which member a point falls in. The bands do not overlap, so at most
-        /// one can answer.
-        fn over(self: *const Self, at: [2]f32) ?usize {
-            for (self.rects, 0..) |rect, which| {
-                if (rect.contains(at)) return which;
-            }
-            return null;
-        }
-
-        fn tell(self: *Self, model: *const Model, which: usize, message: Message) !Change {
-            inline for (0..count) |i| {
-                if (which == i) return self.items[i].update(model, message);
-            }
-            unreachable;
-        }
     };
 }
 
 /// A member that wants `wants` pixels, or all it can get when that is null.
-fn Band(comptime tag: u8, comptime wants: ?f32) type {
+/// Nothing but a rect, since layout is the whole of what these tests are about.
+fn Band(comptime wants: ?f32) type {
     return struct {
         const Self = @This();
-        told: *std.ArrayList(u8),
         rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
         pub fn deinit(_: *Self, _: std.mem.Allocator) void {}
@@ -152,37 +115,25 @@ fn Band(comptime tag: u8, comptime wants: ?f32) type {
             return wants;
         }
 
-        pub fn place(self: *Self, _: *const Model, rect: Rect) void {
+        pub fn place(self: *Self, _: *Model, rect: Rect) !void {
             self.rect = rect;
-        }
-
-        pub fn update(self: *Self, model: *const Model, _: Message) !Change {
-            try self.told.append(model.allocator, tag);
-            return .none;
         }
     };
 }
 
-const Heading = Band('h', 20);
-const List = Band('l', null);
-const Footer = Band('f', 10);
+const Heading = Band(20);
+const List = Band(null);
+const Footer = Band(10);
 
 fn testModel(allocator: std.mem.Allocator) Model {
     return .{ .allocator = allocator, .io = undefined };
 }
 
 test "a member that says nothing takes what is left" {
-    const allocator = std.testing.allocator;
-    var model = testModel(allocator);
-    var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(allocator);
+    var model = testModel(std.testing.allocator);
 
-    var column: VTuple(&.{ Heading, List, Footer }) = .init(.{
-        .{ .told = &told },
-        .{ .told = &told },
-        .{ .told = &told },
-    });
-    column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
+    var column: VTuple(&.{ Heading, List, Footer }) = .init(.{ .{}, .{}, .{} });
+    try column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
 
     try std.testing.expectEqual(@as(f32, 0), column.items[0].rect.y);
     try std.testing.expectEqual(@as(f32, 20), column.items[0].rect.height);
@@ -194,18 +145,11 @@ test "a member that says nothing takes what is left" {
 }
 
 test "the bands meet exactly, whatever the fractions" {
-    const allocator = std.testing.allocator;
-    var model = testModel(allocator);
-    var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(allocator);
+    var model = testModel(std.testing.allocator);
 
-    const Thirds = Band('t', 33.4);
-    var column: VTuple(&.{ Thirds, Thirds, List }) = .init(.{
-        .{ .told = &told },
-        .{ .told = &told },
-        .{ .told = &told },
-    });
-    column.place(&model, .{ .x = 0, .y = 5, .width = 100, .height = 100 });
+    const Thirds = Band(33.4);
+    var column: VTuple(&.{ Thirds, Thirds, List }) = .init(.{ .{}, .{}, .{} });
+    try column.place(&model, .{ .x = 0, .y = 5, .width = 100, .height = 100 });
 
     // No seam and no overlap: each band starts where the one above it ended.
     for (column.rects[1..], column.rects[0 .. column.rects.len - 1]) |below, above| {
@@ -217,52 +161,21 @@ test "the bands meet exactly, whatever the fractions" {
 }
 
 test "a column with nothing spare does not stretch anyone" {
-    const allocator = std.testing.allocator;
-    var model = testModel(allocator);
-    var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(allocator);
+    var model = testModel(std.testing.allocator);
 
-    var column: VTuple(&.{ Heading, Footer }) = .init(.{
-        .{ .told = &told },
-        .{ .told = &told },
-    });
-    column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 500 });
+    var column: VTuple(&.{ Heading, Footer }) = .init(.{ .{}, .{} });
+    try column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 500 });
 
     try std.testing.expectEqual(@as(f32, 20), column.items[0].rect.height);
     try std.testing.expectEqual(@as(f32, 10), column.items[1].rect.height);
 }
 
 test "asking for more than there is leaves nothing spare rather than a negative band" {
-    const allocator = std.testing.allocator;
-    var model = testModel(allocator);
-    var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(allocator);
+    var model = testModel(std.testing.allocator);
 
-    var column: VTuple(&.{ Heading, List }) = .init(.{
-        .{ .told = &told },
-        .{ .told = &told },
-    });
-    column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 8 });
+    var column: VTuple(&.{ Heading, List }) = .init(.{ .{}, .{} });
+    try column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 8 });
 
     try std.testing.expectEqual(@as(f32, 0), column.items[1].rect.height);
 }
 
-test "a press moves the keyboard down the column and typing follows it" {
-    const allocator = std.testing.allocator;
-    var model = testModel(allocator);
-    var told: std.ArrayList(u8) = .empty;
-    defer told.deinit(allocator);
-
-    var column: VTuple(&.{ Heading, List }) = .init(.{
-        .{ .told = &told },
-        .{ .told = &told },
-    });
-    column.place(&model, .{ .x = 0, .y = 0, .width = 100, .height = 100 });
-
-    _ = try column.update(&model, .{ .text = "a" });
-    _ = try column.update(&model, .{ .press = .{ .at = .{ 10, 50 }, .extend = false, .clicks = 1 } });
-    _ = try column.update(&model, .{ .text = "b" });
-
-    try std.testing.expectEqualStrings("hll", told.items);
-    try std.testing.expectEqual(@as(usize, 1), column.focus);
-}

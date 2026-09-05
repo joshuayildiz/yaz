@@ -23,7 +23,6 @@ const std = @import("std");
 const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Change = message_mod.Change;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const model_mod = @import("../model.zig");
@@ -127,12 +126,8 @@ const Query = struct {
         };
     }
 
-    pub fn place(self: *Query, _: *const Model, rect: Rect) void {
+    pub fn place(self: *Query, _: *Model, rect: Rect) !void {
         self.rect = rect;
-    }
-
-    pub fn update(_: *Query, _: *Model, _: Message) !Change {
-        return .none;
     }
 
     pub fn draw(self: *Query, model: *const Model, painter: *Painter) !void {
@@ -222,12 +217,8 @@ const Results = struct {
         return @round(@as(f32, @floatFromInt(shown)) * step + 2 * @round(pad * model.atlas.scale));
     }
 
-    pub fn place(self: *Results, _: *const Model, rect: Rect) void {
+    pub fn place(self: *Results, _: *Model, rect: Rect) !void {
         self.rect = rect;
-    }
-
-    pub fn update(_: *Results, _: *Model, _: Message) !Change {
-        return .none;
     }
 
     /// Shapes the rows on screen, and only those.
@@ -309,34 +300,17 @@ pub const Finder = struct {
     /// A measure down the middle, hanging a short way from the top of the
     /// window. Its height is whatever the two surfaces asked for, since neither
     /// of them wants what is left over.
-    pub fn place(self: *Finder, model: *const Model, rect: Rect) void {
+    pub fn place(self: *Finder, model: *Model, rect: Rect) !void {
         self.rect = rect;
 
         const column = @round(rect.width * column_share);
         const top = @round(rect.y + @round(drop * model.atlas.scale));
-        self.panel.place(model, .{
+        try self.panel.place(model, .{
             .x = @round(rect.x + (rect.width - column) / 2),
             .y = top,
             .width = column,
             .height = @max(0, rect.y + rect.height - top),
         });
-    }
-
-    /// What a keystroke means while the panel is up. Nothing here changes
-    /// anything: it says what it wants and the model does it.
-    ///
-    /// Nothing it answers with owns memory either -- return is `choose`, and
-    /// which file that is is the model's to look up.
-    pub fn update(_: *Finder, _: *const Model, message: Message) !Change {
-        return switch (message) {
-            .cancel, .find => .dismiss,
-            .newline => .choose,
-            .up => .up,
-            .down => .down,
-            .text => |what| .{ .query = what },
-            .backspace => .rub,
-            else => .none,
-        };
     }
 
     pub fn draw(self: *Finder, model: *const Model, painter: *Painter) !void {

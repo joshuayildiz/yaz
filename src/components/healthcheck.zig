@@ -12,7 +12,6 @@ const std = @import("std");
 const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
-const Change = message_mod.Change;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Model = @import("../model.zig").Model;
@@ -147,19 +146,9 @@ pub const Healthcheck = struct {
         self.tail.deinit(allocator);
     }
 
-    pub fn place(self: *Healthcheck, model: *const Model, rect: Rect) void {
+    pub fn place(self: *Healthcheck, model: *Model, rect: Rect) !void {
         _ = model.atlas;
         self.rect = rect;
-    }
-
-    /// Nothing here reacts to anything. Quit and resize belong to the window and
-    /// have been dealt with above; every other message is for an editor that is
-    /// not running.
-    pub fn update(self: *Healthcheck, model: *Model, message: Message) !Change {
-        _ = self;
-        _ = message;
-        _ = model.atlas;
-        return .none;
     }
 
     const piece_count = 4 + tools.Tool.all.len * 3;

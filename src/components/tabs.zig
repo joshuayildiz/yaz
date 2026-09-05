@@ -9,16 +9,13 @@
 //! read off the model as it draws, so the bar cannot disagree with what is
 //! there.
 //!
-//! A press answers `Change.show` and the tab's place on the bar, which is what
-//! cmd+N means as well, so a tab reached either way says the same thing: show
-//! this and put the rest away. Nothing here has to name a file to say it.
+//! It lays the tabs out in `place` -- shaping each name to measure it, writing
+//! where each sits onto the file it names -- and only paints in `draw`. Turning
+//! a press into the tab it landed on is `Model.resolve`'s, from those rects.
 
 const std = @import("std");
 
 const config = @import("../config.zig");
-const message_mod = @import("../message.zig");
-const Message = message_mod.Message;
-const Change = message_mod.Change;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Model = @import("../model.zig").Model;
@@ -70,23 +67,7 @@ const Ink = struct {
 };
 
 pub const Tabs = struct {
-    /// The mark itself, shaped once. Its width is reserved on every tab whether
-    /// it is drawn or not, so a file does not shift the bar by being typed into,
-    /// and again on the other side of the name, so the name sits in the middle
-    /// of the tab rather than hard against its right edge.
-    bullet: LineLayout = .{},
-
-    /// Where each one ended up, worked out while drawing, which is the only
-    /// time the labels can be measured. A press comes after a frame, so there
-    /// is always something to hit.
-    rects: std.ArrayList(Rect) = .empty,
-
-    rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-
-    pub fn deinit(self: *Tabs, allocator: std.mem.Allocator) void {
-        self.rects.deinit(allocator);
-        self.bullet.deinit(allocator);
-    }
+    pub fn deinit(_: *Tabs, _: std.mem.Allocator) void {}
 
     /// Nothing at all when no file has been named: a strip with no tabs on it
     /// is a promise of something that is not there.
@@ -95,89 +76,68 @@ pub const Tabs = struct {
         return @round(model.atlas.line_height + 2 * @round(down * model.atlas.scale));
     }
 
-    pub fn place(self: *Tabs, _: *const Model, rect: Rect) void {
-        self.rect = rect;
-    }
+    /// Lays the bar out: shapes the mark and every name, works out where each
+    /// tab sits, and writes the band onto the model and each tab's rect onto the
+    /// file it names. Drawing then only reads, and a press -- which comes after a
+    /// frame -- has rects to hit. The mark's width is reserved on both sides of
+    /// every name, so a file being typed into does not shift the bar and its name
+    /// sits centred rather than hard against the right edge.
+    pub fn place(_: *Tabs, model: *Model, rect: Rect) !void {
+        model.tabs_rect = rect;
+        if (listed(model) == 0) return;
 
-    pub fn update(self: *Tabs, _: *const Model, message: Message) !Change {
-        const press = switch (message) {
-            // A tab is chosen by where the press landed; shift means nothing
-            // to a bar.
-            .press => |what| what,
-            else => return .none,
-        };
+        if (model.atlas.stale(&model.tab_bullet)) try model.atlas.shapeLine(unsaved_mark, &model.tab_bullet);
+        const ink = inkOf(&model.tab_bullet);
 
-        for (self.rects.items, 0..) |rect, which| {
-            if (!rect.contains(press.at)) continue;
-            // Pressing a tab is choosing that file over the others, which is
-            // what cmd+N means too, and it is named the same way: by where it
-            // sits on the bar. A second press keeps it, promoting a scratch
-            // preview into a tab of its own; the first has already shown it.
-            return if (press.clicks >= 2) .{ .pin = which } else .{ .show = which };
-        }
-        return .none;
-    }
-
-    pub fn draw(self: *Tabs, model: *const Model, painter: *Painter) !void {
-        const count = listed(model);
-        if (count == 0) return;
-
-        // One per tab, sized here rather than as files are opened: the bar is
-        // told nothing when one is.
-        try self.rects.resize(model.allocator, count);
-
-        const line = @max(1, @round(model.atlas.scale));
         const inset = @round(across * model.atlas.scale);
         const gap = @round(beside * model.atlas.scale);
 
-        if (model.atlas.stale(&self.bullet)) try model.atlas.shapeLine(unsaved_mark, &self.bullet);
-
-        // What the mark draws, not what it advances. A bullet carries wide side
-        // bearings, and reserving them twice over would be paying for space
-        // `beside` is already providing -- on a bar this tight, twice.
-        const ink: Ink = if (self.bullet.sprites.items.len == 0) .{} else .{
-            .from = self.bullet.sprites.items[0].dest[0],
-            .wide = self.bullet.sprites.items[0].size[0],
-        };
-
-        // The strip, and the rule that closes it off. Cut so they do not
-        // overlap, which is what lets them share a layer.
-        try painter.add(ground_key, .solid(
-            .{ self.rect.x, self.rect.y },
-            .{ self.rect.width, @max(0, self.rect.height - line) },
-        ));
-        try painter.add(rule_key, .solid(
-            .{ self.rect.x, self.rect.y + self.rect.height - line },
-            .{ self.rect.width, line },
-        ));
-
-        var left = self.rect.x;
-        var which: usize = 0;
+        var left = rect.x;
         for (model.files.items) |file| {
             const path = file.path orelse continue;
-            defer which += 1;
 
             // A scratch preview leans, so a tab that will be replaced by the
             // next file opened reads as the loan it is. Reshaped when the slant
             // has to change as well as when the atlas has, since the generation
             // is the same either way and cannot say the style went stale.
-            const name = &file.name;
             const preview = model.preview == file;
-            if (model.atlas.stale(name) or name.slanted != preview) {
+            if (model.atlas.stale(&file.name) or file.name.slanted != preview) {
                 const basename = std.fs.path.basename(path);
                 if (preview)
-                    try model.atlas.shapeSlanted(basename, name)
+                    try model.atlas.shapeSlanted(basename, &file.name)
                 else
-                    try model.atlas.shapeLine(basename, name);
+                    try model.atlas.shapeLine(basename, &file.name);
             }
 
-            const width = @round(advance(name) + 2 * (ink.wide + gap) + 2 * inset);
-            self.rects.items[which] = .{
-                .x = left,
-                .y = self.rect.y,
-                .width = width,
-                .height = self.rect.height,
-            };
+            const width = @round(advance(&file.name) + 2 * (ink.wide + gap) + 2 * inset);
+            file.tab_rect = .{ .x = left, .y = rect.y, .width = width, .height = rect.height };
+            left += width;
+        }
+    }
+
+    pub fn draw(_: *Tabs, model: *const Model, painter: *Painter) !void {
+        if (listed(model) == 0) return;
+
+        const bar = model.tabs_rect;
+        const line = @max(1, @round(model.atlas.scale));
+        const inset = @round(across * model.atlas.scale);
+        const gap = @round(beside * model.atlas.scale);
+        const ink = inkOf(&model.tab_bullet);
+
+        // The strip, and the rule that closes it off. Cut so they do not
+        // overlap, which is what lets them share a layer.
+        try painter.add(ground_key, .solid(
+            .{ bar.x, bar.y },
+            .{ bar.width, @max(0, bar.height - line) },
+        ));
+        try painter.add(rule_key, .solid(
+            .{ bar.x, bar.y + bar.height - line },
+            .{ bar.width, line },
+        ));
+
+        for (model.files.items) |file| {
+            if (file.path == null) continue;
+            const r = file.tab_rect;
 
             // The one in front is the colour of the page. It stops short of the
             // rule along the bottom rather than covering it, so the bar's edge
@@ -186,34 +146,36 @@ pub const Tabs = struct {
             // split they have different answers: the ground says whether the
             // file is on screen at all, and the name's colour says whether it is
             // the one being typed into.
-            const on_screen = model.onScreen(file);
-            if (on_screen) try painter.add(shown_key, .solid(
-                .{ left, self.rect.y },
-                .{ width, @max(0, self.rect.height - line) },
+            if (model.onScreen(file)) try painter.add(shown_key, .solid(
+                .{ r.x, bar.y },
+                .{ r.width, @max(0, bar.height - line) },
             ));
 
             // Down the right edge of every tab, over the fill rather than under
             // it, so the one in front is edged on both sides like the rest.
             try painter.add(seam_key, .solid(
-                .{ left + width - line, self.rect.y },
-                .{ line, @max(0, self.rect.height - line) },
+                .{ r.x + r.width - line, bar.y },
+                .{ line, @max(0, bar.height - line) },
             ));
 
             const key = if (model.showing() == file) name_key else other_key;
-            const baseline = @round(self.rect.y + @round(down * model.atlas.scale) + model.atlas.ascent);
+            const baseline = @round(bar.y + @round(down * model.atlas.scale) + model.atlas.ascent);
 
-            // The mark's room is taken whether or not it is drawn, so a file
-            // being typed into does not push the rest of the bar along; the
-            // same room again on the right is what centres the name.
+            // The mark's room is taken whether or not it is drawn, placed by its
+            // ink rather than its pen so what was reserved is what appears there.
             if (file.modified) {
-                // Placed by its ink rather than by its pen, so what was
-                // reserved is what appears there.
-                try drawLine(painter, key, &self.bullet, .{ @round(left + inset - ink.from), baseline });
+                try drawLine(painter, key, &model.tab_bullet, .{ @round(r.x + inset - ink.from), baseline });
             }
-            try drawLine(painter, key, name, .{ @round(left + inset + ink.wide + gap), baseline });
-
-            left += width;
+            try drawLine(painter, key, &file.name, .{ @round(r.x + inset + ink.wide + gap), baseline });
         }
+    }
+
+    /// What the mark draws, not what it advances. A bullet carries wide side
+    /// bearings, and reserving them twice over would be paying for space
+    /// `beside` is already providing -- on a bar this tight, twice.
+    fn inkOf(bullet: *const LineLayout) Ink {
+        if (bullet.sprites.items.len == 0) return .{};
+        return .{ .from = bullet.sprites.items[0].dest[0], .wide = bullet.sprites.items[0].size[0] };
     }
 
     /// How many files have a name, which is how many tabs there are: a file

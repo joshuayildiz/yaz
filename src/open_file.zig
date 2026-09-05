@@ -10,6 +10,7 @@
 const std = @import("std");
 
 const LineLayout = @import("./glyph_atlas.zig").LineLayout;
+const Rect = @import("./painter.zig").Rect;
 
 /// A stretch of the file, in order. What a selection is once it has been asked
 /// for rather than stored: which end the caret is on stops mattering the moment
@@ -600,6 +601,18 @@ pub const OpenFile = struct {
     /// to survive being looked away from, which a view does not.
     cursor: usize = 0,
     scroll: f32 = 0,
+
+    /// The room the column showing this file was given, in window pixels. Here
+    /// with the scroll and the caret, and for the same reason: a file is shown
+    /// in at most one column, so there is one rect to keep. `place` writes it
+    /// afresh for every on-screen column each frame, and `update` reads it to
+    /// turn a click into a place in the text. Stale while the file is off screen.
+    rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+
+    /// Where this file's tab sits on the bar, or a zero rect when it has none.
+    /// Written by `place` alongside the column rect, and read to turn a press on
+    /// the bar into the file it chose. On the file because a file has one tab.
+    tab_rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
     /// The other end of the selection. Equal to `cursor` when there is none: a
     /// caret is a selection of nothing, so nothing has to ask which of two
