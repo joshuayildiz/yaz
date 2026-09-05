@@ -21,6 +21,7 @@ const Message = message.Message;
 const Effect = message.Effect;
 const TextView = @import("./components/text_view.zig").TextView;
 const Tree = @import("./components/tree.zig").Tree;
+const Columns = @import("./components/columns.zig").Columns;
 
 /// What still costs per line of the file, not per line on screen, is the layout
 /// cache: a 64-byte entry for each, and the line index behind it.
@@ -179,9 +180,12 @@ pub const Model = struct {
     holding: ?usize = null,
 
     /// Sublime by default; swapped at runtime. `acme` is the acme view's columns
-    /// of windows, read only while `view` is `.acme`.
+    /// of windows, read only while `view` is `.acme`. `acme_tags` are the tag
+    /// buttons -- New and Del -- shaped once, so the view can draw them and
+    /// `update` can size the box a press has to land in.
     view: View = .sublime,
     acme: std.ArrayList(Column) = .empty,
+    acme_tags: [2]LineLayout = .{ .{}, .{} },
 
     /// The scratch preview: a file opened from the finder or tree, replaced by
     /// the next one opened rather than kept, so browsing leaves no trail of tabs.
@@ -504,6 +508,9 @@ pub const Model = struct {
                 self.sidebar.scroll = to;
             },
 
+            .acme_new => |col| try self.acmeNew(col),
+            .acme_del => |which| try self.acmeDel(which),
+
             else => return .{ self, null },
         }
 
@@ -526,6 +533,10 @@ pub const Model = struct {
             .press => |what| {
                 if (self.sidebar.open and self.sidebar.rect.contains(what.at))
                     return Tree.resolve(self, msg);
+
+                if (self.view == .acme) {
+                    if (Columns.button(self, what.at)) |m| return m;
+                }
 
                 if (self.view == .sublime) {
                     var nth: usize = 0;
@@ -898,10 +909,51 @@ pub const Model = struct {
         }
     }
 
+    /// A blank window at the foot of the nth acme column, focused. What `New`
+    /// on a column's tag asks for.
+    fn acmeNew(self: *Model, col: usize) !void {
+        if (col >= self.acme.items.len) return;
+        const file = try self.blank();
+        try self.acme.items[col].panes.append(self.allocator, file);
+        self.focus = self.columnOf(file) orelse self.focus;
+        self.changed();
+    }
+
+    /// Closes the nth acme window and its file. Scrubs the file from both views
+    /// first so neither is left pointing at freed memory, and keeps at least one
+    /// window so the view is never empty.
+    fn acmeDel(self: *Model, which: usize) !void {
+        const file = self.column(which) orelse return;
+
+        for (self.acme.items) |*col| {
+            for (col.panes.items, 0..) |pane, j| {
+                if (pane == file) {
+                    _ = col.panes.orderedRemove(j);
+                    break;
+                }
+            }
+        }
+        for (self.columns.items, 0..) |shown, i| {
+            if (shown == file) {
+                _ = self.columns.orderedRemove(i);
+                break;
+            }
+        }
+        self.close(file);
+
+        if (self.windowCount() == 0) {
+            if (self.acme.items.len == 0) try self.acme.append(self.allocator, .{});
+            try self.acme.items[0].panes.append(self.allocator, try self.blank());
+        }
+        if (self.focus >= self.windowCount()) self.focus = self.windowCount() -| 1;
+        self.changed();
+    }
+
     pub fn deinit(self: *Model) void {
         self.stopFinding();
         self.unwatchTree();
         self.tab_bullet.deinit(self.allocator);
+        for (&self.acme_tags) |*tag| tag.deinit(self.allocator);
         self.sidebar.deinit(self.allocator);
         if (self.index) |*indexed| indexed.close();
         if (self.library) |*loaded| loaded.close();
@@ -1731,4 +1783,27 @@ test "the acme view makes a window of every open file, sublime of the shown one"
     _ = try moved(&model, .toggle_view);
     try std.testing.expectEqual(View.sublime, model.view);
     try std.testing.expectEqual(@as(usize, 1), model.windowCount());
+}
+
+test "acme New adds a focused window, Del closes one and never empties" {
+    const allocator = std.testing.allocator;
+    var model = try browsing(allocator);
+    defer model.deinit();
+
+    _ = try moved(&model, .toggle_view);
+    try std.testing.expectEqual(@as(usize, 1), model.windowCount());
+
+    _ = try moved(&model, .{ .acme_new = 0 });
+    try std.testing.expectEqual(@as(usize, 2), model.windowCount());
+    // The new window is blank and focused, and every window is an open file.
+    try std.testing.expect(model.showing().?.path == null);
+    try std.testing.expectEqual(model.files.items.len, model.windowCount());
+
+    _ = try moved(&model, .{ .acme_del = 0 });
+    try std.testing.expectEqual(@as(usize, 1), model.windowCount());
+
+    // Deleting the last window leaves a blank rather than nothing.
+    _ = try moved(&model, .{ .acme_del = 0 });
+    try std.testing.expectEqual(@as(usize, 1), model.windowCount());
+    try std.testing.expect(model.showing() != null);
 }

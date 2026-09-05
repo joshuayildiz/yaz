@@ -122,6 +122,11 @@ pub const Message = union(enum) {
     open_file: []const u8,
     scroll_tree: f32,
 
+    /// Acme's tag buttons: a new window at the foot of the nth column, or the nth
+    /// window closed.
+    acme_new: usize,
+    acme_del: usize,
+
     /// The "this is a command" modifier: cmd on macOS, ctrl elsewhere, either
     /// accepted everywhere. The letters go by this; the digits by `numbered`.
     fn commanded(mod: c.SDL_Keymod) bool {
