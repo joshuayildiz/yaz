@@ -29,7 +29,7 @@ const Workbench = @import("./workbench.zig").Workbench;
 const sidebar_width = 240;
 
 pub const Editor = struct {
-    workbench: Workbench = .{},
+    workbench: Workbench = .init(.{ .{}, .{} }),
     tree: Tree = .{},
     finder: Finder = .{},
 

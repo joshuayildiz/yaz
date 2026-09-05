@@ -79,20 +79,7 @@ const Views = struct {
     }
 };
 
-const Stack = VTuple(&.{ Tabs, Views });
-
-pub const Workbench = struct {
-    stack: Stack = .init(.{ .{}, .{} }),
-
-    pub fn deinit(self: *Workbench, allocator: std.mem.Allocator) void {
-        self.stack.deinit(allocator);
-    }
-
-    pub fn place(self: *Workbench, model: *Model, rect: Rect) !void {
-        try self.stack.place(model, rect);
-    }
-
-    pub fn draw(self: *Workbench, model: *const Model, painter: *Painter) !void {
-        try self.stack.draw(model, painter);
-    }
-};
+/// The bar of tabs over the row of columns, and nothing but the two stacked:
+/// which one a pointer fell in is `Model.resolve`'s to work out from the rects
+/// they leave, so this only has to lay them out and draw them.
+pub const Workbench = VTuple(&.{ Tabs, Views });
