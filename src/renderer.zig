@@ -14,11 +14,9 @@ const glyph_atlas = @import("./glyph_atlas.zig");
 const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const Sprite = glyph_atlas.Sprite;
 
-/// The build compiles shaders to exactly one bytecode format, chosen from the
-/// target. Declaring it here rather than probing at runtime also pins the
-/// backend: SDL can only pick one that accepts this format, so Windows gets
-/// Vulkan rather than whichever backend SDL would have preferred.
-/// Keep in step with `shaderFormat` in build.zig.
+/// The one bytecode format the build compiled shaders to. Declaring it pins the
+/// backend, since SDL can only pick one that accepts it. Keep in step with
+/// `shaderFormat` in build.zig.
 const shader_target: struct {
     format: c.SDL_GPUShaderFormat,
     entrypoint: [*:0]const u8,
@@ -31,22 +29,18 @@ const vertex_shader_code = @embedFile("quad.vert");
 const fragment_shader_code = @embedFile("quad.frag");
 const solid_shader_code = @embedFile("solid.frag");
 
-/// Matches the uniform block in quad.vert.glsl. Both fields are vec2, which has
-/// the same size and alignment in std140 as here.
+/// Must match the uniform block in quad.vert.glsl. Both fields are vec2, the
+/// same size and alignment in std140 as here.
 const Frame = extern struct {
     viewport: [2]f32,
     atlas_size: [2]f32,
 };
 
-/// Matches the uniform block in quad.frag.glsl. Pushed rather than compiled in
-/// so the theme stays in config.zig beside the background it has to be readable
-/// against.
+/// Must match the uniform block in quad.frag.glsl.
 const Ink = extern struct {
     colour: [4]f32,
 };
 
-/// Sprites the buffer holds before it has to grow. A screenful is a couple of
-/// thousand, so this is a startup cost rather than a per-frame one.
 const initial_sprites = 4096;
 
 pub const Renderer = struct {
@@ -54,28 +48,23 @@ pub const Renderer = struct {
     window: *c.SDL_Window,
     pipeline: *c.SDL_GPUGraphicsPipeline,
 
-    /// Quads that are a flat colour: the caret and the scrollbar. Same vertex
-    /// shader and same buffer as the glyphs, and a fragment shader that samples
-    /// nothing -- which is what lets a quad be larger than anything in the atlas.
+    /// Flat-colour quads (the caret, the scrollbar): a fragment shader that
+    /// samples nothing, so a quad can be larger than anything in the atlas.
     solid: *c.SDL_GPUGraphicsPipeline,
     sampler: *c.SDL_GPUSampler,
     atlas: GlyphAtlas,
 
     /// Which palette every `Colour` resolves against, followed from the system.
-    /// Read by `present`; the window sets it and asks for a redraw when it moves.
     theme: config.Theme,
 
     /// The frame's sprites as the vertex shader indexes them, and the staging
-    /// buffer they are written through. Both are kept and grown rather than
-    /// created per frame: a redraw maps and fills them, which is the whole of
-    /// what it costs to draw a screenful.
+    /// buffer they are written through. Kept and grown rather than made per frame.
     instances: *c.SDL_GPUBuffer,
     transfer: *c.SDL_GPUTransferBuffer,
     capacity: u32,
 
-    /// Creates the device as well: the shader format the build compiled for
-    /// decides which backend SDL is able to pick, so the choice belongs with
-    /// the shaders rather than with the caller.
+    /// Creates the device too: the shader format decides which backend SDL can
+    /// pick, so the choice belongs with the shaders rather than the caller.
     pub fn init(allocator: std.mem.Allocator, window: *c.SDL_Window) !Renderer {
         const gpu = c.SDL_CreateGPUDevice(shader_target.format, false, null) orelse {
             std.log.err("SDL_CreateGPUDevice: {s}", .{sdl.lastError()});
@@ -118,9 +107,8 @@ pub const Renderer = struct {
         var atlas = try GlyphAtlas.init(allocator, gpu, displayScale(window));
         errdefer atlas.deinit();
 
-        // Nearest, not linear: quads are placed on whole pixels and sized to
-        // match their source, so every sample lands dead centre on a texel and
-        // interpolation has nothing to do but soften what it touches.
+        // Nearest, not linear: quads are on whole pixels and sized to their
+        // source, so every sample lands dead centre on a texel.
         const sampler = c.SDL_CreateGPUSampler(gpu, &std.mem.zeroInit(c.SDL_GPUSamplerCreateInfo, .{
             .min_filter = c.SDL_GPU_FILTER_NEAREST,
             .mag_filter = c.SDL_GPU_FILTER_NEAREST,
@@ -163,15 +151,11 @@ pub const Renderer = struct {
         c.SDL_DestroyGPUDevice(self.gpu);
     }
 
-    /// Draws what the painter was given and knows nothing else about it.
-    ///
     /// The colour comes off the run rather than the sprite: it changes once per
-    /// call, and putting it on every quad would upload four floats per glyph per
-    /// frame to repeat one value.
+    /// call, where per-quad would upload four floats per glyph to repeat a value.
     pub fn present(self: *Renderer, painter: *Painter) !void {
-        // Sorted so that quads wanting the same thing end up next to each other,
-        // however many components produced them. Safe to reorder because the
-        // key's layer says what has to stay on top of what.
+        // Sorted so quads sharing a key end up adjacent, whoever produced them.
+        // Safe to reorder because the key's layer says what stays on top.
         std.mem.sort(Run, painter.runs.items, {}, struct {
             fn less(_: void, a: Run, b: Run) bool {
                 return painter_mod.Key.before({}, a.key, b.key);
@@ -179,8 +163,8 @@ pub const Renderer = struct {
         }.less);
 
         const sprites = painter.quads.items;
-        // A copy pass cannot be opened inside a render pass, and doing it here
-        // keeps it out of the wait for a frame.
+        // A copy pass cannot be opened inside a render pass; here it also stays
+        // out of the wait for a frame.
         try self.atlas.upload();
 
         const count: u32 = @intCast(sprites.len);
@@ -191,8 +175,7 @@ pub const Renderer = struct {
             return error.SdlAcquireCommandBuffer;
         };
 
-        // Before the swapchain: this does not need a frame handed back first,
-        // so doing it here keeps it out of the wait.
+        // Before the swapchain, so it stays out of the wait for a frame.
         if (count > 0) self.stage(cmd, painter) catch |err| {
             _ = c.SDL_SubmitGPUCommandBuffer(cmd);
             return err;
@@ -243,8 +226,7 @@ pub const Renderer = struct {
                 .sampler = self.sampler,
             });
 
-            // One call per key. The runs are sorted and staged in that order, so
-            // every run sharing a key is contiguous and covered by one draw.
+            // One call per key: runs sharing a key are contiguous after sorting.
             var bound: ?painter_mod.Pipeline = null;
             var i: usize = 0;
             while (i < painter.runs.items.len) {
@@ -286,8 +268,8 @@ pub const Renderer = struct {
         }
     }
 
-    /// Doubling rather than fitting exactly, so a file that grows a glyph
-    /// at a time does not reallocate a glyph at a time.
+    /// Doubling rather than fitting, so growing a glyph at a time does not
+    /// reallocate a glyph at a time.
     fn reserve(self: *Renderer, count: u32) !void {
         if (count <= self.capacity) return;
 
@@ -307,13 +289,9 @@ pub const Renderer = struct {
         self.capacity = capacity;
     }
 
-    /// Both halves cycle: the previous frame may still be in flight, and waiting
-    /// for it would stall the middle of a redraw.
-    ///
-    /// Copies run by run rather than in one go, so that the buffer ends up in
-    /// the order the runs were sorted into and a run's quads are contiguous --
-    /// which is what lets one call cover several runs. Each run is left saying
-    /// where it landed.
+    /// Copies run by run so the buffer ends up in the sorted order, each run's
+    /// quads contiguous -- what lets one call cover several runs -- and leaves
+    /// each run saying where it landed.
     fn stage(self: *Renderer, cmd: *c.SDL_GPUCommandBuffer, painter: *Painter) !void {
         const bytes = painter.quads.items.len * @sizeOf(Sprite);
 
@@ -344,12 +322,9 @@ pub const Renderer = struct {
     }
 };
 
-/// How much larger than nominal to draw everything in this window: pixel density
-/// and the size the user asked content to be, in one number.
-///
-/// Not density alone. Windows at 150% on an ordinary panel reports a density of
-/// one and a scale of one and a half, and sizing by density there would ignore
-/// the setting. Density is still what turns a point into a pixel.
+/// Pixel density and the size the user asked content to be, in one number. Not
+/// density alone: Windows at 150% on an ordinary panel reports density one and
+/// scale one-and-a-half, and sizing by density there would ignore the setting.
 pub fn displayScale(window: *c.SDL_Window) f32 {
     // Zero is SDL's failure, and a font sized from it does not rasterise.
     const scale = c.SDL_GetWindowDisplayScale(window);

@@ -46,12 +46,8 @@ pub fn main(init: std.process.Init) !void {
     return run(&model, Editor, .{});
 }
 
-/// The window, and the one component `main` put in it.
-///
-/// Generic over that component, so a window that is one thing costs no more
-/// than one thing. Nothing here asks what that component is: an event it does
-/// not own itself goes into the tree, and what the tree cannot deal with comes
-/// back out.
+/// The window and the one component in it, generic over which, so a window that
+/// is one thing costs no more than one thing.
 fn App(comptime Component: type) type {
     return struct {
         const Self = @This();
@@ -67,14 +63,8 @@ fn App(comptime Component: type) type {
             self.renderer.deinit();
         }
 
-        /// One message in, the model moved, and whatever the move left for the
-        /// runtime done.
-        ///
         /// The model comes back from `update` rather than being written through,
-        /// so this is the one place it is put down again. Nothing else holds a
-        /// copy: everything reads it through this same pointer. The component is
-        /// not consulted -- `Model.update` resolves a pointer message against the
-        /// layout `place` left, so routing lives with the state it reads.
+        /// so this is the one place it is put down again.
         fn update(self: *Self, message: Message) !void {
             const next, const effect = try self.model.update(message);
             self.model.* = next;
@@ -82,26 +72,16 @@ fn App(comptime Component: type) type {
             if (effect) |asked| try self.perform(asked);
         }
 
-        /// What the model asked for and could not do itself. Whatever one
-        /// produces comes back round as a message, like anything else that moves
-        /// the model.
+        /// What the model asked for and could not do itself; whatever performing
+        /// one produces loops back as a message. Keeping it out here is what lets
+        /// `Model.update` be tested without SDL or a filesystem.
         ///
-        /// Everything here either ends in a file or on the clipboard, or comes
-        /// back round as another change. That is what keeps `Model.update` free
-        /// of SDL and of the filesystem, which is what lets it be tested
-        /// without either.
-        /// `anyerror` because this and `update` call each other -- an effect can
-        /// loop back as a message and a message can ask for another effect --
-        /// and two inferred error sets that each depend on the other cannot be
-        /// worked out. Naming one of them breaks the loop.
+        /// `anyerror` because this and `update` call each other, and two inferred
+        /// error sets that depend on each other cannot be worked out.
         fn perform(self: *Self, effect: Effect) anyerror!void {
             switch (effect) {
-                // Reported rather than returned, all three of them. A clipboard
-                // that will not take text, a file that cannot be written --
-                // read-only, no room, a directory gone -- is something to be
-                // told about, and for a save the mark staying on its tab is the
-                // rest of the telling. An error here would take the window down
-                // over one file.
+                // Reported, not returned: a clipboard or a write that fails is
+                // something to be told about, not to take the window down over.
                 .copy => |which| self.model.copyOut(which) catch |err| {
                     std.log.err("copy: {s}", .{@errorName(err)});
                 },
@@ -112,9 +92,6 @@ fn App(comptime Component: type) type {
                         return;
                     } orelse return;
                     defer self.model.allocator.free(text);
-
-                    // An ordinary insert from here on, which is what makes
-                    // pasting over a selection replace it without asking.
                     try self.update(.{ .insert = .{ .column = which, .text = text } });
                 },
 
@@ -127,47 +104,35 @@ fn App(comptime Component: type) type {
                     try self.update(.{ .saved = which });
                 },
 
-                // Modal to the window, and asynchronous: the answer arrives as
-                // an event, whenever whoever is looking at it decides.
+                // Asynchronous: the answer arrives as an event.
                 .ask_name => sdl.askWhereToSave(self.renderer.window),
 
-                // Start and stop the watch that keeps the tree live. Out here
-                // rather than in the model because starting it registers a
-                // callback that pushes an SDL event.
+                // Out here rather than in the model because starting the watch
+                // registers a callback that pushes an SDL event.
                 .watch => self.model.watchTree(),
                 .unwatch => self.model.unwatchTree(),
             }
         }
 
         fn redraw(self: *Self) !void {
-            // Read rather than listened for: three window events can imply the
-            // scale changed, and dragging to another display happens inside the
-            // modal loop, where only the watch below runs.
-            // Nobody is told about it. Everything shaped carries the
-            // generation of the atlas that shaped it, so what was cached before
-            // a rebuild answers `stale` for itself, wherever it is kept.
+            // Read each frame rather than listened for: several window events can
+            // imply the scale changed, and a drag to another display happens
+            // inside the modal loop where only the resize watch runs.
             const scale = displayScale(self.renderer.window);
             try self.renderer.atlas.setScale(scale);
 
-            // Read rather than listened for, like the scale: the palette is
-            // resolved fresh each frame, and the strip a resize grows into is
-            // repainted only when the theme actually moves.
             const theme = sdl.systemTheme();
             if (theme != self.renderer.theme) {
                 self.renderer.theme = theme;
                 sdl.setLayerBackground(self.renderer.window, config.rgba(theme, .background));
             }
 
-            // The window rather than the swapchain, which is not acquired until
-            // `present`. The two can disagree for a frame mid-resize, which is
-            // one line too many or too few.
+            // The window, not the swapchain: the two can disagree for a frame
+            // mid-resize, which is one line too many or too few.
             var width: c_int = 0;
             var height: c_int = 0;
             _ = c.SDL_GetWindowSizeInPixels(self.renderer.window, &width, &height);
 
-            // Everything gets the whole window. A component that divides it --
-            // the columns -- does that itself; one that lies over it -- the
-            // finder -- wants all of it.
             try self.component.place(self.model, .{
                 .x = 0,
                 .y = 0,
@@ -179,16 +144,13 @@ fn App(comptime Component: type) type {
             try self.component.draw(self.model, &self.painter);
             try self.renderer.present(&self.painter);
 
-            // After the frame it belongs to: a look worked out where its match
-            // ended up on screen while placing the columns, and the pointer is
-            // moved there now that the match is actually shown.
+            // After the frame: a look worked out where its match landed while
+            // placing the columns, and the pointer is moved there now it shows.
             self.warpPending();
         }
 
-        /// Moves the pointer to wherever a look asked it to go. In window
-        /// coordinates, which is what the request is divided back into: the
-        /// selection's place was worked out in pixels, and the cursor is the one
-        /// thing SDL still speaks to in points.
+        /// Moves the pointer to where a look asked. Back in window coordinates:
+        /// the request is in pixels, and SDL still speaks to the cursor in points.
         fn warpPending(self: *Self) void {
             const density = c.SDL_GetWindowPixelDensity(self.renderer.window);
             if (density <= 0) return;
@@ -207,11 +169,11 @@ fn App(comptime Component: type) type {
         fn redrawWhileResizing(userdata: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.c) bool {
             if (event.*.type == c.SDL_EVENT_WINDOW_EXPOSED) {
                 const app: *Self = @ptrCast(@alignCast(userdata.?));
-                // Swallowed: the main loop draws again the moment it gets
-                // control back and surfaces the failure there.
+                // Swallowed: the main loop redraws and surfaces the failure once
+                // it gets control back.
                 app.redraw() catch {};
             }
-            // Watch callbacks cannot filter; the return value is ignored.
+            // A watch callback's return value is ignored.
             return true;
         }
     };
@@ -219,10 +181,8 @@ fn App(comptime Component: type) type {
 
 /// Puts a window up and runs `component` in it until it is closed.
 fn run(model: *Model, comptime Component: type, component: Component) !void {
-    // macOS makes inertial scroll events of its own and SDL turns them off
-    // unless asked. Asking costs nothing while nothing is moving: momentum is
-    // more wheel events, and they stop arriving when it stops. Before
-    // `SDL_Init`, which is when SDL reads it.
+    // macOS inertial scroll is off unless asked; before `SDL_Init`, when SDL
+    // reads the hint.
     _ = c.SDL_SetHint(c.SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
 
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
@@ -231,25 +191,22 @@ fn run(model: *Model, comptime Component: type, component: Component) !void {
     }
     defer c.SDL_Quit();
 
-    // Before `SDL_Quit`, since the watcher's callback pushes SDL events: let the
-    // subscription go while there is still something to push into. A no-op when
-    // the tree was never opened, which is why it can sit here for every window.
+    // Before `SDL_Quit`, so the watcher's thread still has an event queue to push
+    // into as it stops. A no-op when the tree was never opened.
     defer model.unwatchTree();
 
-    // After `SDL_Init`, which is when the menu bar it takes this from is built.
+    // After `SDL_Init`, which builds the menu bar this takes it off.
     sdl.unbindCloseShortcut();
 
-    // After it too: the event type a save dialog answers on is claimed from
-    // SDL's pool. Without one there is no way to hear back, so a file with no
-    // name would ask and never learn the answer.
+    // The event type a save dialog answers on, claimed from SDL's pool. Without
+    // one a file with no name could ask and never learn the answer.
     if (!sdl.registerEvents()) {
         std.log.err("SDL_RegisterEvents: {s}", .{sdl.lastError()});
         return error.SdlRegisterEvents;
     }
 
-    // The size is in window coordinates. Without `HIGH_PIXEL_DENSITY` the back
-    // buffer is that size too and the finished frame is scaled up to the
-    // display, which no amount of care in the text pipeline survives.
+    // Without `HIGH_PIXEL_DENSITY` the back buffer is window-sized and scaled up
+    // to the display, which no care in the text pipeline survives.
     const flags = c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
     const window = c.SDL_CreateWindow("yaz", 1024, 768, flags) orelse {
         std.log.err("SDL_CreateWindow: {s}", .{sdl.lastError()});
@@ -259,10 +216,8 @@ fn run(model: *Model, comptime Component: type, component: Component) !void {
 
     std.log.info("video driver: {s}", .{std.mem.span(c.SDL_GetCurrentVideoDriver())});
 
-    // Text arrives as finished characters rather than keys. The platform's
-    // input method gets the keystrokes first, so a dead key, a compose
-    // sequence or a CJK conversion has already become the character it means
-    // by the time it reaches us.
+    // So text arrives as finished characters: the input method has already
+    // turned a dead key, a compose sequence or a CJK conversion into one.
     if (!c.SDL_StartTextInput(window)) {
         std.log.err("SDL_StartTextInput: {s}", .{sdl.lastError()});
         return error.SdlStartTextInput;
@@ -277,8 +232,8 @@ fn run(model: *Model, comptime Component: type, component: Component) !void {
     };
     defer app.deinit();
 
-    // The last thing the context was missing: the renderer owns the atlas, and
-    // the renderer needs a window. Nothing has placed, drawn or measured yet.
+    // The renderer owns the atlas and needs a window, so this is the first point
+    // the model can have one.
     model.attach(&app.renderer.atlas);
 
     if (!c.SDL_AddEventWatch(App(Component).redrawWhileResizing, &app)) {
@@ -301,21 +256,17 @@ fn run(model: *Model, comptime Component: type, component: Component) !void {
             return error.SdlWaitEvent;
         }
 
-        // Everything already queued belongs to the frame this wakeup produces.
-        // Folding a burst into one redraw is what stops a keystroke queueing up
-        // behind presents of unchanged content: presenting blocks on the
-        // swapchain, so each redundant one costs real latency, not just work.
+        // Folding a whole queued burst into one redraw: presenting blocks on the
+        // swapchain, so a keystroke queued behind redundant presents is latency,
+        // not just work.
         while (true) {
             const density = c.SDL_GetWindowPixelDensity(window);
             const line_height = app.renderer.atlas.line_height;
 
-            // A save dialog's answer owns the path it carries, and the message
-            // made from it only borrows one. Let go of here, in a block of its
-            // own, because the poll below overwrites the event this is holding.
+            // The event carries a borrowed path that the poll below would
+            // overwrite, so it is let go of here, in a block of its own.
             {
                 defer sdl.releasePath(&event);
-                // `.none` is most of what SDL sends; the loop drops it rather
-                // than waking a frame for it.
                 const what = Message.init(&event, density, line_height);
                 if (what != .none) try app.update(what);
             }
@@ -372,19 +323,14 @@ fn setup(init: std.process.Init) !void {
         std.log.info("{s} installed at {s}", .{ tool.title(), exe });
     }
 
-    // Exiting rather than returning the error: everything that went wrong has
-    // already been reported in terms a person can act on, and returning it would
-    // add a Zig stack trace that says nothing they can.
+    // Exit rather than return: everything is already reported in terms a person
+    // can act on, and returning would add a Zig stack trace that says nothing.
     if (failed) std.process.exit(1);
 }
 
 test {
-    // A test build analyses only what a test reaches. Without the first line
-    // nothing below `main` in this file is compiled at all, which is how a green
-    // `zig build test` has twice been followed by a failing `zig build`.
-    //
-    // The imports are separate from it: reaching a file's functions is not the
-    // same as collecting its tests, and tools.zig's had never run.
+    // A test build analyses only what a test reaches: without `&main` nothing
+    // below it here is compiled, and the imports collect each file's own tests.
     _ = &main;
     _ = @import("./tools.zig");
     _ = @import("./model.zig");

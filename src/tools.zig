@@ -1,17 +1,9 @@
 //! fff: the library the finder is built on, and how it arrives.
 //!
-//! Not bundled, and not looked for on any search path -- yaz loads what it
-//! installed itself, so another copy elsewhere cannot quietly change what the
-//! finder does.
-//!
-//! `yaz setup` downloads a pinned release and refuses anything whose bytes do
-//! not hash to what is recorded below. That is the rule
-//! vendor/setup-macos-sdk.sh already applies to the macOS SDK, for the same
-//! reason: a downloaded library is code we are about to run.
-//!
-//! It replaced ripgrep and fzf, which were two binaries spawned as processes --
-//! `rg --files` on every cmd+P and `fzf --filter` on every keystroke, with the
-//! whole listing down a pipe each time. See src/fff.zig.
+//! Not looked for on any search path -- yaz loads what it installed itself, so
+//! another copy elsewhere cannot quietly change what the finder does. `yaz setup`
+//! downloads a pinned release and refuses anything whose bytes do not hash to
+//! what is recorded below: a downloaded library is code we are about to run.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -21,20 +13,17 @@ const fff = @import("./fff.zig");
 const windows = builtin.target.os.tag == .windows;
 
 pub const Tool = enum {
-    /// Indexes the tree, keeps it fresh, and ranks it against what is typed.
     fff,
 
     pub const all = [_]Tool{.fff};
 
-    /// What it is called on disk. An asset arrives named for the target it was
-    /// built for, and is written under this.
+    /// What it is called on disk; an asset is written under this.
     pub fn binary(self: Tool) []const u8 {
         return switch (self) {
             .fff => fff.library_name,
         };
     }
 
-    /// The project's name, for anything a person reads.
     pub fn title(self: Tool) []const u8 {
         return switch (self) {
             .fff => "fff",
@@ -45,8 +34,8 @@ pub const Tool = enum {
 const fff_version = "0.10.6";
 const fff_base = "https://github.com/dmtrKovalenko/fff/releases/download/v" ++ fff_version ++ "/";
 
-/// The pin's hash as bytes. Comptime, so a mistyped constant is a build error
-/// rather than a download that can never verify.
+/// Comptime, so a mistyped hash is a build error rather than a download that can
+/// never verify.
 fn digestOf(comptime hex: []const u8) [32]u8 {
     return comptime blk: {
         var out: [32]u8 = undefined;
@@ -56,21 +45,18 @@ fn digestOf(comptime hex: []const u8) [32]u8 {
     };
 }
 
-/// One pinned release artefact.
 const Pin = struct {
     url: []const u8,
-    /// Checked against the bytes as they arrive. Nothing is written unless it
+    /// Checked against the bytes as they arrive; nothing is written unless it
     /// matches.
     sha256: [32]u8,
 };
 
 const Pins = struct { fff: Pin };
 
-/// Taken from the `.sha256` published beside each asset. The assets are bare
-/// libraries rather than archives, so what is downloaded is what is written.
-///
-/// A target with no entry here is one whose library yaz cannot install, which
-/// is better as a build error than as a surprise on someone's machine.
+/// The assets are bare libraries, not archives, so what is downloaded is what is
+/// written. A target with no entry cannot install, better a build error than a
+/// surprise on someone's machine.
 const pinned: Pins = switch (builtin.target.os.tag) {
     .macos => switch (builtin.target.cpu.arch) {
         .aarch64 => .{ .fff = .{
@@ -114,7 +100,7 @@ fn pin(tool: Tool) Pin {
     };
 }
 
-/// Where both tools live. Caller owns the result.
+/// Where a tool lives. Caller owns the result.
 pub fn path(allocator: std.mem.Allocator, environ: std.process.Environ, tool: Tool) ![]u8 {
     const where = try home(allocator, environ);
     defer allocator.free(where);
@@ -122,12 +108,9 @@ pub fn path(allocator: std.mem.Allocator, environ: std.process.Environ, tool: To
     return pathUnder(allocator, where, tool);
 }
 
-/// The home directory. Caller owns the result.
-///
-/// `getPosix` reads the environment block directly; `getAlloc` builds a map of
-/// the whole environment first, which measured 7.8ms per call in a Debug build.
-/// It is only used where it has to be -- `getPosix` is not implemented on
-/// Windows.
+/// Caller owns the result. `getAlloc` builds a map of the whole environment
+/// (7.8ms per call in a Debug build), so it is used only on Windows, where
+/// `getPosix` is not implemented.
 fn home(allocator: std.mem.Allocator, environ: std.process.Environ) ![]u8 {
     if (windows) {
         return environ.getAlloc(allocator, "USERPROFILE") catch error.NoHomeDirectory;
@@ -141,17 +124,10 @@ fn pathUnder(allocator: std.mem.Allocator, where: []const u8, tool: Tool) ![]u8 
     return std.fs.path.join(allocator, &.{ where, ".config", "yaz", "lib", tool.binary() });
 }
 
-/// Whether the library at `exe` loads and has everything yaz calls.
-///
-/// Opened rather than stat-ed. A stat calls a truncated download or a library
-/// built for another architecture healthy, and the finder would then be what
-/// discovered otherwise -- in the middle of a keystroke, rather than at startup
-/// where it can be reported.
-///
-/// This used to spawn `--version`, back when the tools were executables, and
-/// two spawns of a 4MB binary cost 11ms of every launch (OPTIMIZATIONS 12).
-/// Loading a library yaz is about to load anyway costs a fraction of that and
-/// checks more: every symbol has to resolve, not just the entry point.
+/// Whether the library at `exe` loads and has everything yaz calls. Opened, not
+/// stat-ed: a stat calls a truncated or wrong-arch library healthy, leaving the
+/// finder to discover otherwise mid-keystroke rather than at startup. Opening it
+/// also checks every symbol resolves, not just that a file is there.
 pub fn probe(exe: []const u8) bool {
     var lib = fff.Library.open(exe) catch return false;
     lib.close();
@@ -159,7 +135,7 @@ pub fn probe(exe: []const u8) bool {
 }
 
 /// Which tools are not working. Everything but the healthcheck is off while any
-/// of them are.
+/// are.
 pub const Missing = struct {
     fff: bool,
 
@@ -197,15 +173,9 @@ test "every pinned url names the version it is pinned to" {
     }
 }
 
-/// Downloads the pinned release for `tool` and installs it.
-///
-/// Nothing is written until the bytes hash to the pin, and what is written
-/// lands under a temporary name and is renamed into place -- so an install that
-/// fails part way through leaves either the old library or none, never half of
-/// a new one for `probe` to have to explain.
-///
-/// The asset is the library itself rather than an archive holding it, so there
-/// is nothing to unpack: what was verified is what is written.
+/// Nothing is written until the bytes hash to the pin, and it lands under a
+/// temporary name renamed into place -- so a failed install leaves the old
+/// library or none, never half of a new one.
 pub fn install(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ, tool: Tool) !void {
     const p = pin(tool);
 

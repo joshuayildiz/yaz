@@ -1,16 +1,9 @@
-//! A column of components, top to bottom, whose members are not all the same
-//! size.
+//! A column of components, top to bottom, not all the same size: each says how
+//! tall it wants to be, and one that says nothing takes what is left. The model
+//! comes with the rect because a height is nearly always a number of lines.
 //!
-//! Each member says how tall it wants to be, and one that says nothing takes
-//! what is left -- which is how a list under a heading gets the rest of the
-//! window without either of them knowing the window's size. The atlas comes
-//! with the rect because a height is nearly always a number of lines, and what
-//! a line is worth is a property of the font at the display's scale rather than
-//! of the layout.
-//!
-//! All of them draw, since none covers another. It lays out and paints, and
-//! nothing more: which member a pointer fell in is `Model.resolve`'s to work out
-//! from the rects it left.
+//! It lays out and paints, nothing more: which member a pointer fell in is
+//! `Model.resolve`'s to work out from the rects left here.
 
 const std = @import("std");
 
@@ -45,8 +38,6 @@ pub fn VTuple(comptime members: []const type) type {
             inline for (0..count) |i| self.items[i].deinit(allocator);
         }
 
-        /// Asks every member how tall it wants to be, hands what is left to the
-        /// ones that did not say, and places them from the top.
         pub fn place(self: *Self, model: *Model, rect: Rect) !void {
             var asked: [count]?f32 = undefined;
             var spoken: f32 = 0;
@@ -58,9 +49,8 @@ pub fn VTuple(comptime members: []const type) type {
 
             const spare = if (quiet == 0) 0 else @max(0, rect.height - spoken) / @as(f32, @floatFromInt(quiet));
 
-            // Each edge is rounded off a running total rather than each height
-            // being rounded on its own, so the bands meet exactly and the last
-            // one ends where the rect does.
+            // Each edge rounded off the running total, not each height alone, so
+            // the bands meet exactly and the last ends where the rect does.
             var top = rect.y;
             inline for (0..count) |i| {
                 const want = asked[i] orelse spare;
@@ -114,7 +104,6 @@ test "a member that says nothing takes what is left" {
 
     try std.testing.expectEqual(@as(f32, 0), column.items[0].rect.y);
     try std.testing.expectEqual(@as(f32, 20), column.items[0].rect.height);
-    // 100 less the 20 and the 10 that were asked for.
     try std.testing.expectEqual(@as(f32, 20), column.items[1].rect.y);
     try std.testing.expectEqual(@as(f32, 70), column.items[1].rect.height);
     try std.testing.expectEqual(@as(f32, 90), column.items[2].rect.y);

@@ -1,15 +1,11 @@
 //! Everything between a line of text and the pixels the GPU samples for it:
 //! shaping the bytes into positioned glyph ids, rasterising the ones the atlas
 //! does not hold yet, uploading those, and saying where to sample each from.
-//!
 //! Shaping and rasterising stay together because neither can be asked without
-//! the other. Shaping decides which glyphs exist, so it is the only thing that
-//! can say what to rasterise; rasterising decides where they land in the atlas,
-//! so it is the only thing that can say what to sample.
+//! the other.
 //!
-//! What is not here is which lines a file has and which of them have changed.
-//! That belongs to the file rather than to a font: one atlas serves every file,
-//! and each file caches its own shaped lines. See open_file.zig.
+//! One atlas serves every file; each file caches its own shaped lines. See
+//! open_file.zig.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -29,57 +25,38 @@ const hb = @cImport({
 });
 
 /// Embedded rather than discovered, so every platform renders the same pixels.
-/// Which file comes from config.zig, by way of the build.
 const font_data = @embedFile("font");
 
 /// Proportional advances put glyph origins on fractional pixels. Rasterising at
 /// four horizontal offsets keeps the quad pixel-aligned while the origin is not,
-/// which stops stems wobbling as text reflows. The atlas grows linearly in this
-/// number and a quarter of a pixel is past where the difference shows.
+/// which stops stems wobbling as text reflows.
 const subpixel_positions = 4;
 
-/// The atlas starts empty and fills as glyphs are asked for. Nothing else works
-/// once text is shaped: `fi` is one glyph here and no character maps to it, so no
-/// walk over characters would ever rasterise it.
-///
-/// Single-channel coverage, so it costs its area in bytes. A glyph rasterised at
-/// twice the size takes four times the area, and every Mac SDL runs on is
-/// Retina, so macOS is sized for a scale of two at build time. Elsewhere the
-/// scale is whatever the display reports and 1024 covers a scale of one.
-///
-/// 46 distinct glyphs reach 82 rows, putting the ceiling near 500 -- past a page
-/// of English, short of a CJK file, which wants eviction rather than a
-/// bigger number here.
+/// Single-channel coverage, so the atlas costs its area in bytes and a glyph at
+/// twice the size takes four times the area. Every Mac SDL runs on is Retina, so
+/// macOS is sized for a scale of two; elsewhere 1024 covers a scale of one.
 ///
 /// TODO: the ceiling follows scale, not platform. Windows on a 4K panel at 200%
-/// is as dense as a Mac and gets the smaller atlas.
+/// is as dense as a Mac and gets the smaller atlas. There is no eviction either.
 const atlas_width = switch (builtin.target.os.tag) {
     .macos, .ios, .tvos, .watchos => 2048,
     else => 1024,
 };
 const atlas_height = atlas_width;
 
-/// A slot is an atlased glyph and its `subpixel_positions` variants. The cap
-/// keeps the metrics one flat array, and is deliberately past what the texture
-/// holds so that running out of texture is the limit that bites.
+/// A slot is an atlased glyph and its `subpixel_positions` variants. Past what
+/// the texture holds, so running out of texture is the limit that bites first.
 const max_slots = 1024;
 
-/// `GlyphAtlas.slots` holds one of these per glyph the font defines, so most entries
-/// stay `no_slot` forever.
 const no_slot = std.math.maxInt(u16);
 
-/// How far the slanted glyphs lean, as the shear the outline is put through
-/// before it is rasterised: x gains this much of y, so what is above the
-/// baseline slides right. The font ships upright and no italic face with it, so
-/// this is the whole of the slant -- 0.21 is about twelve degrees, which is
-/// where DejaVu's own italic sits.
-///
-/// A 16.16 fixed point, which is what FreeType's matrix is measured in.
+/// The shear a slanted outline is put through before rasterising: x gains this
+/// much of y, so what is above the baseline slides right. 0.21 is about where
+/// DejaVu's own italic sits. A 16.16 fixed point, which FreeType's matrix wants.
 const slant_fixed: c_long = @intFromFloat(0.21 * 65536.0);
 
-/// One rasterised glyph. `left` and `top` are the offset from the pen origin to
-/// the bitmap's top-left corner, in pixels, y counting downwards; FreeType has
-/// already folded the subpixel shift into them and into the coverage itself.
+/// One rasterised glyph. `left` and `top` are the pen-origin-to-top-left offset
+/// in pixels, y downwards, with the subpixel shift already folded in.
 const Glyph = struct {
     x: u16 = 0,
     y: u16 = 0,
@@ -89,63 +66,51 @@ const Glyph = struct {
     top: i16 = 0,
 };
 
-/// Where the quad goes and where to sample it from, both in whole pixels: the
-/// fraction of the pen position chose the subpixel variant instead.
+/// Where the quad goes and where to sample it from, both in whole pixels.
 ///
 /// `extern` because the array is copied to the GPU as it stands, so the field
-/// order is the struct declared in the shader. renderer.zig tests that.
+/// order has to match the shader's. renderer.zig tests that.
 pub const Sprite = extern struct {
     dest: [2]f32,
     source: [2]f32,
     size: [2]f32,
 
-    /// A quad for the pipeline that samples nothing, so `source` means nothing
-    /// either. Any size: this is what the caret and the scrollbar are.
+    /// A quad for the pipeline that samples nothing, so `source` is ignored:
+    /// what the caret and the scrollbar are.
     pub fn solid(dest: [2]f32, extent: [2]f32) Sprite {
         return .{ .dest = dest, .source = .{ 0, 0 }, .size = extent };
     }
 };
 
 /// One per cluster boundary shaping reported, plus one past the last glyph.
-///
 /// Boundaries rather than characters: `ffi` is one glyph over three bytes with
-/// nowhere between them for a caret, and a space is a boundary with no glyph at
-/// all. Neither is recoverable from the sprites, so this is kept, not derived.
+/// no caret stop between them, and a space is a boundary with no glyph at all.
 pub const Caret = struct {
     /// Bytes from the start of the line.
     offset: u32,
 
-    /// Unrounded: this is a measurement, and rounding would make two boundaries
-    /// a third of a pixel apart into the same one.
+    /// Unrounded: rounding would merge two boundaries a third of a pixel apart.
     x: f32,
 };
 
-/// Held in the line's own coordinates: x from where the line starts, y from its
-/// baseline. Knowing nothing about where the line sits on screen is what lets a
-/// line that only moved down keep its layout.
+/// In the line's own coordinates: x from where the line starts, y from its
+/// baseline. Knowing nothing about the screen is what lets a line that only
+/// moved down keep its layout.
 pub const LineLayout = struct {
     sprites: std.ArrayList(Sprite) = .empty,
-
-    /// Where the caret may go on this line, kept because it comes out of the
-    /// same shaping pass the sprites do and costs nothing extra to record.
     carets: std.ArrayList(Caret) = .empty,
 
-    /// What this was shaped from. A cache that has drifted out of step with the
-    /// file would otherwise draw the wrong line rather than say so.
+    /// What this was shaped from, so a cache drifted out of step with the file
+    /// says so rather than drawing the wrong line.
     bytes: usize = 0,
 
-    /// Which atlas shaped it. Glyphs are of one size and the atlas is rebuilt
-    /// at another whenever the display scale changes, so an entry is only worth
-    /// drawing if it was shaped by the atlas that is about to draw it.
-    ///
-    /// Zero is "never shaped", which no generation ever is. That is also how an
-    /// edit says a line has to be shaped again -- see `spliceLines`.
+    /// Which atlas shaped it: an entry is worth drawing only if the atlas about
+    /// to draw it is the one that shaped it. Zero is "never shaped", which is
+    /// also how an edit marks a line for reshaping -- see `spliceLines`.
     stamp: u32 = 0,
 
-    /// Whether it was set in the slanted glyphs rather than the upright ones.
-    /// Kept so a caller can tell that a line shaped one way has to be shaped
-    /// again to be the other -- the generation is the same either way, so
-    /// `stale` cannot say it.
+    /// Whether it was set in the slanted glyphs. Kept because the generation is
+    /// the same either way, so `stale` cannot tell one style from the other.
     slanted: bool = false,
 
     pub fn deinit(self: *LineLayout, allocator: std.mem.Allocator) void {
@@ -154,18 +119,15 @@ pub const LineLayout = struct {
     }
 };
 
-/// The atlas texture's dimensions, which the vertex shader needs to turn a
-/// source rectangle into texture coordinates.
+/// The atlas texture's dimensions, which the vertex shader turns a source
+/// rectangle into texture coordinates with.
 pub const size: [2]f32 = .{ atlas_width, atlas_height };
 
 /// The font as the GPU sees it: coverage for the glyphs asked for so far, at
-/// every subpixel offset, plus the metrics to place them.
-///
-/// Keyed by `(glyph id, subpixel)`, because two origins a quarter of a pixel
-/// apart are different pictures rather than one picture moved.
-///
-/// FreeType stays open for the life of the font: there is no moment when the
-/// atlas is finished, since a glyph nobody has typed is not rasterised yet.
+/// every subpixel offset, plus the metrics to place them. Keyed by `(glyph id,
+/// subpixel)`, since two origins a quarter of a pixel apart are different
+/// pictures. FreeType stays open for the font's life: a glyph nobody has typed
+/// is not rasterised yet.
 pub const GlyphAtlas = struct {
     allocator: std.mem.Allocator,
     gpu: *c.SDL_GPUDevice,
@@ -174,13 +136,10 @@ pub const GlyphAtlas = struct {
     texture: *c.SDL_GPUTexture,
     shaper: Shaper,
 
-    /// Glyph id to a slot in `glyphs`. One entry per glyph in the font, which is
-    /// kilobytes, so the lookup is an index rather than a hash.
-    ///
-    /// `oblique` is the same map for the slanted rasterisation of a glyph. The
-    /// two draw from one `glyphs` array and one texture -- a slot is a slot
-    /// whichever asked for it -- so only the id-to-slot map is doubled, and only
-    /// the glyphs actually asked for slanted ever take a slot.
+    /// Glyph id to a slot in `glyphs`, one entry per glyph in the font, so the
+    /// lookup is an index rather than a hash. `oblique` is the same map for the
+    /// slanted rasterisation; both draw from one `glyphs` array and one texture,
+    /// so only the id-to-slot map is doubled.
     slots: []u16,
     oblique: []u16,
     glyphs: []Glyph,
@@ -188,34 +147,31 @@ pub const GlyphAtlas = struct {
 
     /// A shelf packer: fill a row left to right, start a new row when the next
     /// glyph will not fit. Glyphs at one pixel size are close enough in height
-    /// that the wasted strip above the short ones is not worth a better fit.
+    /// that the strip wasted above the short ones is not worth a better fit.
     shelf_x: u16 = 0,
     shelf_y: u16 = 0,
     shelf_height: u16 = 0,
 
-    /// Coverage rasterised this frame and not yet on the GPU. Uploading is a
-    /// copy pass, and a copy pass cannot be opened inside a render pass, so the
-    /// misses are collected first and sent in one go before drawing starts.
+    /// Coverage rasterised this frame and not yet on the GPU. A copy pass cannot
+    /// be opened inside a render pass, so the misses are collected first and sent
+    /// in one go before drawing starts.
     staging: std.ArrayList(u8) = .empty,
     uploads: std.ArrayList(Upload) = .empty,
 
     ascent: f32,
     line_height: f32,
 
-    /// How far one step of indentation advances the pen, and how far a tab
-    /// does. Measured, not derived: see `measureIndent`.
+    /// How far a step of indentation and a tab advance the pen. Measured, not
+    /// derived: see `measureIndent`.
     indent_width: f32,
     tab_width: f32,
 
-    /// What everything above was built at, so a move to a display of a
-    /// different density is a float compare rather than the right event.
+    /// What everything above was built at, so a change of display density is a
+    /// float compare.
     scale: f32,
 
-    /// Which rebuild this is. Stamped onto everything shaped, so a cache from
-    /// an earlier one answers for itself rather than having to be told.
-    ///
-    /// Counting from one leaves zero to mean "never shaped", and `nextGeneration`
-    /// is what keeps it that way when the count comes round.
+    /// Which rebuild this is, stamped onto everything shaped so a stale cache
+    /// answers for itself. From one, leaving zero to mean "never shaped".
     generation: u32 = 1,
 
     const Placed = struct { x: u16, y: u16 };
@@ -276,15 +232,10 @@ pub const GlyphAtlas = struct {
         };
     }
 
-    /// Rebuilds the atlas at a new display scale. A window dragged to a display
-    /// of a different density lands here.
-    ///
-    /// The texture survives, since its size does not depend on the scale; what
-    /// a rebuild costs is the packing state and the metrics. The next layout
-    /// refills it through the path a first redraw uses.
-    ///
-    /// Nobody has to be told. Everything shaped carries the generation it was
-    /// shaped by, so a cache from before this call answers `stale` for itself.
+    /// Rebuilds the atlas at a new display scale. The texture survives, its size
+    /// not depending on the scale; a rebuild costs the packing state and metrics,
+    /// and the next layout refills it. Everything shaped carries the generation
+    /// it was shaped by, so a cache from before this answers `stale` for itself.
     pub fn setScale(self: *GlyphAtlas, scale: f32) !void {
         if (scale == self.scale) return;
 
@@ -324,16 +275,12 @@ pub const GlyphAtlas = struct {
         _ = ft.FT_Done_FreeType(self.library);
     }
 
-    /// Into the line's own coordinates: x from where it starts, y from its
-    /// baseline. Knowing nothing about the screen is what lets the caller keep
-    /// the answer.
     pub fn shapeLine(self: *GlyphAtlas, text: []const u8, entry: *LineLayout) !void {
         return self.shapeStyled(text, entry, false);
     }
 
-    /// The same, in the slanted glyphs. Only the rasterisation leans: the
-    /// advances are the font's own, so the line is the same width and the carets
-    /// fall where the upright ones would.
+    /// The same in slanted glyphs. Only the rasterisation leans; the advances are
+    /// the font's own, so the width and the carets match the upright line.
     pub fn shapeSlanted(self: *GlyphAtlas, text: []const u8, entry: *LineLayout) !void {
         return self.shapeStyled(text, entry, true);
     }
@@ -345,14 +292,10 @@ pub const GlyphAtlas = struct {
         var pen: f32 = 0;
         var at: usize = 0;
 
-        // The indentation first, a byte at a time, because what it is worth is
-        // a decision rather than a metric: a space here is a digit wide and a
-        // tab is `tab_stops` of them. The font's own space is about half a
-        // digit, which is too thin to line code up with, and its answer for a
-        // tab is no answer at all.
-        //
-        // Only at the start of a line. A space between words is a space, and
-        // widening those would be setting the text rather than indenting it.
+        // Indentation first, a byte at a time, because what it is worth is a
+        // decision not a metric: a space here is a digit wide and a tab is
+        // `tab_stops` of them. Only at the start of a line -- a space between
+        // words is a space.
         while (at < text.len) : (at += 1) {
             const byte = text[at];
             if (byte != ' ' and byte != '\t') break;
@@ -362,22 +305,18 @@ pub const GlyphAtlas = struct {
         }
 
         // The rest is shaped in the runs between its tabs, so a tab never
-        // reaches the shaper either way, and a run on each side of one is a
-        // separate piece of text anyway.
+        // reaches the shaper.
         while (at < text.len) {
             const stop = std.mem.indexOfScalarPos(u8, text, at, '\t') orelse text.len;
             if (stop > at) pen = try self.shapeRun(text[at..stop], at, pen, entry, oblique);
             if (stop == text.len) break;
 
-            // A boundary where the tab begins, and then the pen moves. Nothing
-            // is drawn, so there is no glyph to ask the atlas for.
             try entry.carets.append(self.allocator, .{ .offset = @intCast(stop), .x = pen });
             pen += self.tab_width;
             at = stop + 1;
         }
 
-        // No glyph begins at the end of the line, so the caret can only go
-        // there by being appended.
+        // No glyph begins at the end of the line, so its caret is appended.
         try entry.carets.append(self.allocator, .{ .offset = @intCast(text.len), .x = pen });
 
         entry.bytes = text.len;
@@ -391,11 +330,9 @@ pub const GlyphAtlas = struct {
         return entry.stamp != self.generation;
     }
 
-    /// One run of a line with no tab in it, laid out from `pen` and answering
-    /// where the pen ended up.
-    ///
-    /// `base` is where the run begins in the line, since a cluster is counted
-    /// from the start of what was handed to the shaper rather than of the line.
+    /// One run of a line with no tab in it, laid out from `pen`. `base` is where
+    /// the run begins in the line, since the shaper counts a cluster from the
+    /// start of what it was handed.
     fn shapeRun(self: *GlyphAtlas, text: []const u8, base: usize, from: f32, entry: *LineLayout, oblique: bool) !f32 {
         const shaped = self.shaper.shape(text);
         var pen = from;
@@ -404,15 +341,14 @@ pub const GlyphAtlas = struct {
 
             const cluster = info.cluster + @as(u32, @intCast(base));
 
-            // Clusters only climb, so the last entry is the only possible
-            // repeat. Glyphs sharing one -- a letter and its mark -- are a
-            // single boundary at the pen before the first.
+            // Clusters only climb, so the last entry is the only possible repeat;
+            // glyphs sharing one -- a letter and its mark -- are one boundary.
             if (entry.carets.items.len == 0 or entry.carets.getLast().offset != cluster) {
                 try entry.carets.append(self.allocator, .{ .offset = cluster, .x = pen });
             }
 
-            // Moves a glyph off the pen without moving the pen, which is how
-            // marks land on their letters. Latin leaves it at zero.
+            // The x offset moves a glyph off the pen without moving the pen,
+            // which is how marks land on their letters. Latin leaves it zero.
             const position = quantize(pen + fromFixed(offset.x_offset));
             pen += fromFixed(offset.x_advance);
 
@@ -430,30 +366,27 @@ pub const GlyphAtlas = struct {
         return pen;
     }
 
-    /// Rasterises `id` the first time it is asked for, upright or slanted. Runs
-    /// once per glyph laid out, so after a line's first redraw every call is a
-    /// load and a compare.
+    /// Rasterises `id` the first time it is asked for, upright or slanted, so
+    /// after a line's first redraw every call is a load and a compare.
     fn request(self: *GlyphAtlas, id: u32, oblique: bool) !void {
         const map = if (oblique) self.oblique else self.slots;
 
-        // Not a glyph this face defines, or already decided one way or another.
+        // Not a glyph this face defines, or already decided.
         if (id >= map.len or map[id] != no_slot) return;
 
-        // `max_slots` is past what the texture holds, so this should be
-        // unreachable before `pack` fails.
+        // `max_slots` is past what the texture holds, so `pack` fails first.
         if (self.used == max_slots) {
             std.debug.panic("glyph atlas is out of slots at {d}, asked for glyph {d}", .{ max_slots, id });
         }
 
-        // The lean, put through the outline so the coverage itself is slanted
-        // rather than a square bitmap shoved sideways. Upright leaves it null,
-        // which is the identity.
+        // Put through the outline so the coverage is slanted, not a square
+        // bitmap shoved sideways. Null for upright, which is the identity.
         var shear: ft.FT_Matrix = .{ .xx = 0x10000, .xy = slant_fixed, .yx = 0, .yy = 0x10000 };
 
         const slot = self.used;
         for (0..subpixel_positions) |subpixel| {
-            // Translating the outline puts the fractional offset in the
-            // coverage rather than approximating it by moving the bitmap.
+            // Translating the outline puts the fractional offset in the coverage
+            // rather than approximating it by moving the bitmap.
             var delta: ft.FT_Vector = .{
                 .x = @intCast(subpixel * 64 / subpixel_positions),
                 .y = 0,
@@ -461,15 +394,14 @@ pub const GlyphAtlas = struct {
             ft.FT_Set_Transform(self.face, if (oblique) &shear else null, &delta);
 
             if (ft.FT_Load_Glyph(self.face, id, ft.FT_LOAD_RENDER) != 0) {
-                // The font is compiled in, so a glyph it will not rasterise
-                // is a broken build rather than bad input.
+                // The font is compiled in, so this is a broken build, not input.
                 std.debug.panic("FreeType cannot render glyph {d}", .{id});
             }
             const rendered = self.face.*.glyph;
             const bitmap = rendered.*.bitmap;
 
-            // A space rasterises to nothing. It still takes a slot, so that the
-            // next lookup is a hit rather than another trip through FreeType.
+            // A space rasterises to nothing but still takes a slot, so the next
+            // lookup is a hit rather than another trip through FreeType.
             if (bitmap.width == 0 or bitmap.rows == 0) {
                 self.glyphs[glyphIndex(slot, subpixel)] = .{};
                 continue;
@@ -477,11 +409,8 @@ pub const GlyphAtlas = struct {
 
             const width: u16 = @intCast(bitmap.width);
             const height: u16 = @intCast(bitmap.rows);
-            // TODO: fixed size and no eviction, so a file with more
-            // distinct glyphs than fit lands here -- CJK long before Latin.
-            // Growing at runtime means a larger texture, re-running the packer
-            // over `slots` and re-rasterising; FreeType is still open, so no CPU
-            // copy of the atlas has to be kept for it.
+            // TODO: fixed size and no eviction, so a file with more distinct
+            // glyphs than fit panics here -- CJK long before Latin.
             const placed = self.pack(width, height) orelse std.debug.panic(
                 "glyph atlas is full: no room for glyph {d} at {d}x{d} in {d}x{d}, {d} glyphs in",
                 .{ id, width, height, atlas_width, atlas_height, self.used },
@@ -518,7 +447,7 @@ pub const GlyphAtlas = struct {
     }
 
     /// Finds room for one bitmap and reserves it. Null when the atlas is full,
-    /// which is permanent: nothing is ever evicted.
+    /// which is permanent: nothing is evicted.
     fn pack(self: *GlyphAtlas, width: u16, height: u16) ?Placed {
         if (width > atlas_width) return null;
         if (self.shelf_x + width > atlas_width) {
@@ -534,8 +463,8 @@ pub const GlyphAtlas = struct {
         return placed;
     }
 
-    /// Sends everything rasterised since the last call. The early return is
-    /// what keeps a steady-state frame free of transfers.
+    /// Sends everything rasterised since the last call. The early return keeps a
+    /// steady-state frame free of transfers.
     pub fn upload(self: *GlyphAtlas) !void {
         const gpu = self.gpu;
         if (self.uploads.items.len == 0) return;
@@ -566,9 +495,8 @@ pub const GlyphAtlas = struct {
         };
         const pass = c.SDL_BeginGPUCopyPass(cmd);
         for (self.uploads.items) |queued| {
-            // Tight rows, which Vulkan and Metal both take as given. D3D12
-            // wants 256-byte padding, and the pinned shader format means SDL
-            // never selects it.
+            // Tight rows, which Vulkan and Metal take as given. D3D12 wants
+            // 256-byte padding, but the pinned shader format keeps SDL off it.
             const source = std.mem.zeroInit(c.SDL_GPUTextureTransferInfo, .{
                 .transfer_buffer = transfer,
                 .offset = queued.offset,
@@ -602,12 +530,10 @@ pub const GlyphAtlas = struct {
         std.debug.assert(slot != no_slot);
 
         const found = self.glyphs[glyphIndex(slot, subpixel)];
-        // A space rasterises to nothing; there is no quad to draw for it.
         return if (found.width == 0) null else found;
     }
 };
 
-/// Where `(slot, subpixel)` lives in `GlyphAtlas.glyphs`.
 fn glyphIndex(slot: u16, subpixel: usize) usize {
     // Widened before the multiply, which overflows a u16 well inside the slot
     // counts the atlas can hold.
@@ -625,8 +551,8 @@ test "glyphIndex does not wrap for late slots" {
 }
 
 test "the slant shears a glyph rather than leaving it upright" {
-    // No atlas and no GPU: this is the one thing the slant rests on -- that the
-    // shear reaches the raster -- and FreeType alone is enough to see it.
+    // The one thing the slant rests on -- that the shear reaches the raster --
+    // and FreeType alone is enough to see it.
     var library: ft.FT_Library = null;
     try std.testing.expect(ft.FT_Init_FreeType(&library) == 0);
     defer _ = ft.FT_Done_FreeType(library);
@@ -655,8 +581,7 @@ test "the slant shears a glyph rather than leaving it upright" {
 }
 
 /// Splits a pen position into the pixel the quad lands on and the variant to
-/// sample. Rounding rather than truncating: 0.24 of a pixel along is nearer the
-/// quarter-pixel rasterisation than the whole-pixel one.
+/// sample. Rounding, not truncating, so a position lands on the nearest variant.
 fn quantize(pen: f32) struct { pixel: f32, subpixel: usize } {
     const steps = @round(pen * subpixel_positions);
     const whole = @floor(steps / subpixel_positions);
@@ -685,18 +610,14 @@ test "quantize splits a pen position into pixel and subpixel" {
     try std.testing.expectEqual(@as(usize, 3), quantize(-0.3).subpixel);
 }
 
-/// Turns bytes into glyph ids and the positions to draw them at. Proportional
-/// text cannot do without it: advances differ per character and kerning depends
-/// on which are adjacent, so a pen position is accumulated, never computed.
+/// Turns bytes into glyph ids and the positions to draw them at.
 ///
-/// HarfBuzz reads the font tables directly rather than going through `hb-ft`,
-/// which would report advances rounded to whole pixels once hinting is on --
-/// exactly the fraction the subpixel atlas exists to render. Glyph ids agree
-/// either way, being a property of the file.
+/// HarfBuzz reads the font tables directly rather than through `hb-ft`, which
+/// would round advances to whole pixels once hinting is on -- exactly the
+/// fraction the subpixel atlas exists to render.
 const Shaper = struct {
     font: *hb.hb_font_t,
-    /// Reused across lines: shaping is on the path from keystroke to redraw,
-    /// and this is the allocation it would otherwise make every time.
+    /// Reused across lines, so shaping does not allocate on the keystroke path.
     buffer: *hb.hb_buffer_t,
 
     fn init(scale: f32) !Shaper {
@@ -721,14 +642,12 @@ const Shaper = struct {
         return .{ .font = font, .buffer = buffer };
     }
 
-    /// Nothing is cached across calls, so this is the whole of a resize.
     fn setScale(self: *Shaper, scale: f32) void {
         setFontScale(self.font, scale);
     }
 
-    /// Font units until told otherwise. Scaling by 64 asks for 26.6 fixed point,
-    /// which is what FreeType reports metrics in, so the two halves agree without
-    /// a conversion. Both must be told the same size.
+    /// Scaling by 64 asks for 26.6 fixed point, which FreeType reports metrics
+    /// in, so the two halves agree without a conversion.
     fn setFontScale(font: *hb.hb_font_t, scale: f32) void {
         const px: c_int = @intCast(pixelSize(scale));
         hb.hb_font_set_scale(font, px * 64, px * 64);
@@ -744,20 +663,16 @@ const Shaper = struct {
         positions: []const hb.hb_glyph_position_t,
     };
 
-    /// Shapes one line. The result borrows the shared buffer, so it is only
-    /// valid until the next call.
+    /// Shapes one line. The result borrows the shared buffer, valid only until
+    /// the next call.
     fn shape(self: *Shaper, text: []const u8) Shaped {
         hb.hb_buffer_clear_contents(self.buffer);
         hb.hb_buffer_add_utf8(self.buffer, text.ptr, @intCast(text.len), 0, @intCast(text.len));
 
-        // Left to right by decision: there is no bidi pass and there is not
-        // going to be one, so right-to-left text shapes its joining forms
-        // correctly and is then set down backwards.
-        //
-        // Stated rather than guessed, because `hb_buffer_guess_segment_properties`
-        // takes the language from the system locale and the point of embedding
-        // the font is that every machine draws the same pixels. See README.md
-        // for what the script tag costs, which with this font is nothing.
+        // LTR by decision: there is no bidi pass. Stated rather than guessed,
+        // because `guess_segment_properties` takes the language from the system
+        // locale, and the point of embedding the font is one set of pixels
+        // everywhere. See README.md for what the script tag costs.
         hb.hb_buffer_set_direction(self.buffer, hb.HB_DIRECTION_LTR);
         hb.hb_buffer_set_script(self.buffer, hb.HB_SCRIPT_LATIN);
         hb.hb_buffer_set_language(self.buffer, hb.hb_language_from_string("en", -1));
@@ -768,17 +683,15 @@ const Shaper = struct {
         const infos = hb.hb_buffer_get_glyph_infos(self.buffer, &count);
         const positions = hb.hb_buffer_get_glyph_positions(self.buffer, &count);
 
-        // HarfBuzz answers an empty buffer with a null pointer rather than a
-        // pointer to no glyphs, and slicing null is not an empty slice. Every
-        // file ending in a newline has such a line.
+        // HarfBuzz answers an empty buffer with null, and slicing null is not an
+        // empty slice. Every file ending in a newline has such a line.
         if (count == 0) return .{ .infos = &.{}, .positions = &.{} };
 
         return .{ .infos = infos[0..count], .positions = positions[0..count] };
     }
 };
 
-/// How wide a run shapes to. Only the tests want a total; hit-testing needs the
-/// width at each cluster and gets it from `shapeLine`.
+/// Only the tests want a total; hit-testing gets each cluster's x from `shapeLine`.
 fn shapedWidth(shaper: *Shaper, text: []const u8) f32 {
     var total: f32 = 0;
     for (shaper.shape(text).positions) |position| total += fromFixed(position.x_advance);
@@ -839,8 +752,6 @@ test "an empty line shapes to no glyphs rather than crashing" {
     var shaper = try Shaper.init(1);
     defer shaper.deinit();
 
-    // Reachable from a keystroke -- Return at the end of the file -- and
-    // from opening any file that ends in a newline.
     const shaped = shaper.shape("");
     try std.testing.expectEqual(@as(usize, 0), shaped.infos.len);
     try std.testing.expectEqual(@as(usize, 0), shaped.positions.len);
@@ -862,27 +773,15 @@ test "shaping follows a change of scale" {
     try std.testing.expectApproxEqAbs(single * 2, double, 0.5);
 }
 
-/// What FreeType and HarfBuzz are both set to. Whole pixels, because that is the
-/// unit FreeType takes; the fraction of a *pen position* is a different question,
-/// and what the subpixel variants are for.
-/// The generation after `from`, which is never zero.
-///
-/// Zero means "never shaped". A stamp of zero looking fresh would draw an entry
-/// that holds no glyphs and no carets, against a line that has both -- an
-/// assertion in a debug build and a missing line in a release one. Coming round
-/// takes four billion rebuilds and is still cheaper to rule out than to reason
-/// about.
+/// The generation after `from`, skipping zero, which means "never shaped": a
+/// stamp of zero looking fresh would draw an empty entry against a real line.
 fn nextGeneration(from: u32) u32 {
     return if (from == std.math.maxInt(u32)) 1 else from + 1;
 }
 
-/// How far one step of indentation advances the pen: the width of
-/// `config.indent_stop`.
-///
-/// Measured through the shaper rather than taken off the face, so it is the
-/// same arithmetic that lays out the text the indentation is lining up against,
-/// and it follows the font and the display scale without anything having to
-/// remember to make it.
+/// The width of `config.indent_stop`, measured through the shaper rather than
+/// off the face, so it is the same arithmetic that lays out the text it lines up
+/// against and follows the font and the scale on its own.
 fn measureIndent(shaper: *Shaper) f32 {
     const shaped = shaper.shape(config.indent_stop);
     var pen: f32 = 0;
@@ -890,11 +789,8 @@ fn measureIndent(shaper: *Shaper) f32 {
     return pen;
 }
 
-/// How far a tab advances the pen, from one step of indentation.
-///
-/// Derived from the step rather than measured on its own, so that a tab and
-/// `config.tab_stops` leading spaces are the same distance by construction. A
-/// file that indents with both would come apart down the middle otherwise.
+/// Derived from the step, not measured on its own, so a tab and `tab_stops`
+/// leading spaces are the same distance by construction.
 fn tabFrom(indent: f32) f32 {
     return indent * config.tab_stops;
 }
@@ -923,15 +819,13 @@ test "pixelSize rounds rather than truncating" {
     }
 }
 
-/// FreeType reports most metrics in 26.6 fixed point: pixels times 64. So does
-/// HarfBuzz, once its font is scaled to match, hence the two integer types.
+/// FreeType and HarfBuzz both report in 26.6 fixed point: pixels times 64.
 fn fromFixed(value: anytype) f32 {
     return @as(f32, @floatFromInt(value)) / 64.0;
 }
 
 /// Creates the atlas texture and zeroes it. Nothing samples outside a glyph's
-/// own rectangle, so the clear is not load-bearing today; it costs one upload at
-/// startup and means the texture never holds anything nobody wrote.
+/// rectangle, so the clear only means the texture holds nothing nobody wrote.
 fn createAtlas(allocator: std.mem.Allocator, gpu: *c.SDL_GPUDevice) !*c.SDL_GPUTexture {
     const texture = c.SDL_CreateGPUTexture(gpu, &std.mem.zeroInit(c.SDL_GPUTextureCreateInfo, .{
         .type = c.SDL_GPU_TEXTURETYPE_2D,
@@ -997,9 +891,7 @@ test "an indent step is one character wide" {
     var shaper = try Shaper.init(1);
     defer shaper.deinit();
 
-    // The same as a space, this font being monospace, so widening a leading
-    // one changes nothing. It is measured from a digit anyway: what the rule
-    // has to hold against is the font, not the other way round.
+    // The same as a space, this font being monospace.
     const space = shapedWidth(&shaper, " ");
     try std.testing.expect(space > 0);
     try std.testing.expectEqual(space, measureIndent(&shaper));

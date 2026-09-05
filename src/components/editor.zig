@@ -37,11 +37,9 @@ pub const Editor = struct {
         self.finder.deinit(allocator);
     }
 
-    /// The tree takes a strip off the left when it is open and the workbench
-    /// takes the rest; when it is closed the workbench takes it all. The finder
-    /// lies over everything and wants the whole window to measure from. Where
-    /// the strip landed is `tree.place`'s to record, on `model.sidebar`, which
-    /// is where a press is tested against it.
+    /// The tree takes a strip off the left when open, the workbench the rest (or
+    /// all of it), and the finder lies over everything. `tree.place` records
+    /// where the strip landed on `model.sidebar`, where a press is tested.
     pub fn place(self: *Editor, model: *Model, rect: Rect) !void {
         if (model.sidebar.open) {
             const width = @min(@round(sidebar_width * model.atlas.scale), @round(rect.width / 2));
@@ -64,5 +62,4 @@ pub const Editor = struct {
         if (model.sidebar.open) try self.tree.draw(model, painter);
         try self.finder.draw(model, painter);
     }
-
 };

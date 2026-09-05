@@ -1,22 +1,10 @@
 //! The file finder: cmd+P, type, arrow keys, return.
 //!
-//! It does no listing and no matching of its own, and nothing is spawned to do
-//! it either. The model holds an index of the tree -- built at startup, kept
-//! fresh by a watcher -- and a search against it is a function call. See
-//! src/fff.zig.
-//!
-//! The panel is a `VTuple` of two surfaces: the line being typed, and what it
-//! matched. Each says how tall it is -- the query is one line of text and its
-//! padding, the list is as many rows as it has -- so an empty query is a single
-//! box with nothing under it, and the panel is never larger than what is in it.
-//!
-//! It is laid over the file rather than replacing it, and nothing is dimmed:
-//! the surfaces carry their own ground and their own edge, so the code either
-//! side of them stays at full contrast.
-//!
-//! Nothing is offered until something is typed. A list of every file in the
-//! repository is not an answer to a question nobody has asked yet, and drawing
-//! one would be a screenful of shaping done on the way to being replaced.
+//! It does no listing or matching of its own: the model holds an index of the
+//! tree and a search is a function call (see fff.zig). The panel is a `VTuple`
+//! of two surfaces -- the query line and the matches -- laid over the file, each
+//! carrying its own ground and edge so the file stays at full contrast either
+//! side of it. Nothing is offered until something is typed.
 
 const std = @import("std");
 
@@ -37,42 +25,31 @@ const advance = @import("../text.zig").advance;
 
 const VTuple = @import("./vtuple.zig").VTuple;
 
-/// Above a view's 0, 1 and 2 and the tab bar's 0 to 3 -- the panel hangs from the
-/// top of the window and overlaps the bar. Each of these covers the one before
-/// it, so they are separate layers rather than an order of drawing: within a
-/// layer the painter is free to reorder, and it does.
+/// Above the views and the tab bar, since the panel hangs over them. Each covers
+/// the one before, so they are separate layers, not an order within one.
 const edge_key: Key = .{ .layer = 4, .pipeline = .solid, .colour = .edge };
 const surface_key: Key = .{ .layer = 5, .pipeline = .solid, .colour = .panel };
 const chosen_key: Key = .{ .layer = 6, .pipeline = .solid, .colour = .selection };
 const caret_key: Key = .{ .layer = 7, .pipeline = .solid, .colour = .caret };
 
-/// Words, above all of it. Which of the three a row is set in is what says
-/// whether it is the chosen one, so the colours are keys rather than an
-/// argument.
+/// The colour of a row's words is what says whether it is the chosen one, so it
+/// is a key rather than an argument.
 const text_key: Key = .{ .layer = 8, .pipeline = .glyphs, .colour = .text };
 const muted_key: Key = .{ .layer = 8, .pipeline = .glyphs, .colour = .muted };
 const faint_key: Key = .{ .layer = 8, .pipeline = .glyphs, .colour = .faint };
 
-/// How wide the panel is, as a share of the window.
 const column_share = 0.46;
-
-/// In points, scaled like the font: how far the panel hangs from the top of the
-/// window, the air inside a surface, and the gap that separates the two.
 const drop = 20;
 const pad = 9;
 const split = 8;
-
-/// Rows are set looser than body text. Air is most of what makes a list read as
-/// set rather than dumped.
 const leading = 1.45;
 
-/// A hairline, whatever the display scale.
 fn hairline(atlas: *const GlyphAtlas) f32 {
     return @max(1, @round(atlas.scale));
 }
 
-/// One floating surface: an edge, and a ground inset inside it. Two quads rather
-/// than four sides, which is both fewer and impossible to get out of square.
+/// An edge with a ground inset inside it -- two quads, which cannot go out of
+/// square the way four sides could.
 fn surface(painter: *Painter, atlas: *const GlyphAtlas, rect: Rect) !void {
     const line = hairline(atlas);
     try painter.add(edge_key, .solid(.{ rect.x, rect.y }, .{ rect.width, rect.height }));
@@ -82,12 +59,8 @@ fn surface(painter: *Painter, atlas: *const GlyphAtlas, rect: Rect) !void {
     ));
 }
 
-/// The line being typed, with what it matched said quietly at the far end of the
-/// same measure, and a rule under both.
-/// The line being typed, and how many of how many it matched.
-///
-/// It keeps the glyphs and nothing else: what was typed and what it found are
-/// the model's, and this is what they look like.
+/// The line being typed, and how many of how many it matched. Keeps the glyphs
+/// and nothing else: what was typed and found are the model's.
 const Query = struct {
     layout: LineLayout = .{},
     count: LineLayout = .{},
@@ -105,9 +78,8 @@ const Query = struct {
         self.count.deinit(allocator);
     }
 
-    /// One line of text and the air round it, plus the gap that separates this
-    /// surface from the list. Stated here rather than by the panel because the
-    /// panel cannot know that this is a line of text.
+    /// A line of text with its padding, plus the gap to the list. Here rather
+    /// than on the panel, which cannot know this is a line of text.
     pub fn height(_: *const Query, model: *const Model) ?f32 {
         return @round(model.atlas.line_height + 2 * @round(pad * model.atlas.scale) + @round(split * model.atlas.scale));
     }
@@ -136,8 +108,8 @@ const Query = struct {
         const right = field.x + field.width - inset;
         const baseline = @round(field.y + inset + model.atlas.ascent);
 
-        // `shapeLine` marks what it shaped as done and nothing else clears it,
-        // so the length of what was typed is what says the glyphs are stale.
+        // The typed length is what says the glyphs are stale, since `shapeLine`
+        // marks its own work done and nothing else clears it.
         if (model.atlas.stale(&self.layout) or self.typed != finding.typed.items.len) {
             try model.atlas.shapeLine(finding.typed.items, &self.layout);
             self.typed = finding.typed.items.len;
@@ -153,8 +125,7 @@ const Query = struct {
         const total = finding.files;
         if (model.atlas.stale(&self.count) or self.shown != shown or self.total != total) {
             var buffer: [32]u8 = undefined;
-            // Nothing typed, or everything matched: the total on its own, which
-            // is what there is to search rather than what was found.
+            // Nothing typed, or everything matched: the total on its own.
             const label = if (finding.typed.items.len == 0 or shown == total)
                 try std.fmt.bufPrint(&buffer, "{d}", .{total})
             else
@@ -167,9 +138,8 @@ const Query = struct {
     }
 };
 
-/// A row is set on two axes: the filename flush left, the directory it is in
-/// flush right. The name is what is being chosen, so it gets the strong edge and
-/// the strong colour.
+/// The filename flush left, its directory flush right -- the name is what is
+/// being chosen, so it gets the strong colour.
 const Row = struct {
     name: LineLayout = .{},
     directory: LineLayout = .{},
@@ -184,13 +154,9 @@ const Row = struct {
 const Results = struct {
     rows: [visible_rows]Row = @splat(.{}),
 
-    /// Which set of matches `rows` was shaped from, and by which atlas. A
-    /// search answers with a new set every time, so its identity and its length
-    /// together say whether these glyphs are still the right ones -- and the
-    /// generation says whether they are still the right size.
-    ///
-    /// The rows are `LineLayout`s and carry their own stamp, but nothing would
-    /// look at it: this is the check that decides whether to shape them at all.
+    /// The memoisation key: which set of matches `rows` was shaped from (a search
+    /// answers with a new set each time), how many, and the atlas generation.
+    /// Checked before shaping, rather than each row's own stamp.
     listed: ?*anyopaque = null,
     count: usize = 0,
     top: usize = 0,
@@ -233,9 +199,8 @@ const Results = struct {
 
             try model.atlas.shapeLine(std.fs.path.basename(path), &row.name);
 
-            // Everything up to the last separator, kept: two files of the same
-            // name are told apart by what is in front of them, and that is the
-            // whole reason the directory is on the row at all.
+            // The directory is on the row so two files of the same name are told
+            // apart by what is in front of them.
             try model.atlas.shapeLine(std.fs.path.dirname(path) orelse "", &row.directory);
         }
 
@@ -266,8 +231,8 @@ const Results = struct {
             const top = @round(self.rect.y + inset + @as(f32, @floatFromInt(index)) * step);
             const baseline = @round(top + (step - model.atlas.line_height) / 2 + model.atlas.ascent);
 
-            // Edge to edge inside the border, so the tint reads as the row
-            // rather than as another box inside the one it is already in.
+            // Edge to edge inside the border, so the tint reads as the row and
+            // not another box.
             if (is_chosen) try painter.add(chosen_key, .solid(
                 .{ self.rect.x + line, top },
                 .{ @max(0, self.rect.width - 2 * line), step },
@@ -293,9 +258,8 @@ pub const Finder = struct {
         self.panel.deinit(allocator);
     }
 
-    /// A measure down the middle, hanging a short way from the top of the
-    /// window. Its height is whatever the two surfaces asked for, since neither
-    /// of them wants what is left over.
+    /// A column down the middle, hanging a short way from the top; as tall as the
+    /// two surfaces ask for, since neither takes what is left over.
     pub fn place(self: *Finder, model: *Model, rect: Rect) !void {
         self.rect = rect;
 
@@ -315,8 +279,6 @@ pub const Finder = struct {
         painter.clipTo(self.rect);
         defer painter.clipTo(null);
 
-        // Nothing is laid over the file: the panel is two opaque surfaces and
-        // the code either side of them is not dimmed at all.
         try self.panel.draw(model, painter);
     }
 };

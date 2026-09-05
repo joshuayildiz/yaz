@@ -13,9 +13,8 @@ const std = @import("std");
 const LineLayout = @import("./glyph_atlas.zig").LineLayout;
 const Rect = @import("./painter.zig").Rect;
 
-/// A stretch of the file, in order. What a selection is once it has been asked
-/// for rather than stored: which end the caret is on stops mattering the moment
-/// anything wants to read it.
+/// A stretch of the file, in order: what a selection is once which end the caret
+/// is on stops mattering.
 pub const Span = struct {
     from: usize,
     to: usize,
@@ -25,45 +24,36 @@ pub const Span = struct {
     }
 };
 
-/// What an edit did to the line index, so anything else keyed by line can be
-/// spliced rather than rebuilt. Both counts are of lines after `line`.
+/// What an edit did to the line index, so anything keyed by line can be spliced
+/// rather than rebuilt. Both counts are of lines after `line`.
 pub const Edit = struct {
-    /// The line the edit landed in. Its bytes changed; no other line's did.
     line: usize,
-    /// Lines that stopped existing, their newlines having been deleted.
     removed: usize,
-    /// Lines that came into being, from newlines in the inserted text.
     added: usize,
 };
 
-/// Room left ahead of the text by a reallocation. Typing arrives one character
-/// at a time, and an exact fit would reallocate on every keystroke.
+/// Room left ahead of the text by a reallocation, so typing does not reallocate
+/// on every keystroke.
 const min_gap = 4096;
 
-/// The file: one contiguous allocation with a hole in it, kept wherever the
-/// last edit happened.
-///
-/// Editing at the hole is a write and a bounds change. Editing elsewhere moves
-/// the hole there first, one memmove of the bytes in between. The bet is that
-/// editing is local, so a jump across the whole file is a rare pass at memory
-/// bandwidth rather than a data structure to maintain.
+/// The file: one contiguous allocation with a hole kept wherever the last edit
+/// happened. Editing at the hole is a write; editing elsewhere moves the hole
+/// there first, one memmove -- the bet being that editing is local.
 pub const Buffer = struct {
     allocator: std.mem.Allocator,
 
     /// Text and hole together. `bytes[0..gap_start]` and `bytes[gap_end..]` are
-    /// the file; what lies between them is not part of it.
+    /// the file; what lies between them is not.
     bytes: []u8,
     gap_start: usize,
     gap_end: usize,
 
-    /// Where each line begins, counting the gap as absent. Variable-length lines
-    /// in a proportional font cannot be found by arithmetic, so they are indexed,
-    /// and the index is patched on each edit rather than rebuilt. Text ending in
-    /// a newline therefore ends with an empty line.
+    /// Where each line begins, the gap counted as absent: proportional lines
+    /// cannot be found by arithmetic, so they are indexed and the index is
+    /// patched per edit. Text ending in a newline ends with an empty line.
     starts: std.ArrayList(usize),
 
-    /// A line containing the gap is not contiguous and has to be copied out.
-    /// Only one line can contain it, so one scratch buffer serves all of them.
+    /// The one line containing the gap is not contiguous and is copied out here.
     scratch: std.ArrayList(u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, text: []const u8) !Buffer {
@@ -152,27 +142,21 @@ pub const Buffer = struct {
         return self.slice(range.from, range.to);
     }
 
-    /// Turns an offset within a line, which is what layout and hit-testing both
-    /// speak in, back into one the file understands.
     pub fn lineStart(self: *const Buffer, index: usize) usize {
         std.debug.assert(index < self.lineCount());
         return self.starts.items[index];
     }
 
-    /// Without reading it. A cached line is never fetched, so this is what
-    /// checks the cache still lines up with the file.
+    /// The line's length without reading it, so the caller can check a cached
+    /// line still lines up with the file.
     pub fn lineLength(self: *const Buffer, index: usize) usize {
         const range = self.lineRange(index);
         return range.to - range.from;
     }
 
-    /// The offset one character before `offset`, or `offset` at the start of the
-    /// file.
-    ///
-    /// A whole UTF-8 sequence, but not yet a whole grapheme cluster: `e` plus a
-    /// combining acute is two of these, so backspacing over it takes two presses.
-    /// Fixing that needs Unicode tables, and is not worth the dependency until
-    /// cursor movement exists to be wrong about.
+    /// The offset one character before `offset`. A whole UTF-8 sequence, but not
+    /// a grapheme cluster: `e` plus a combining acute is two, so backspacing over
+    /// it takes two presses. A cluster needs Unicode tables.
     pub fn stepBack(self: *const Buffer, offset: usize) usize {
         var at = offset;
         while (at > 0) {
@@ -183,17 +167,14 @@ pub const Buffer = struct {
         return at;
     }
 
-    /// One byte of the file, the gap counted as absent. Public because a
-    /// double-click reads its way outwards from where it landed, which is a
-    /// question about bytes rather than about lines.
+    /// One byte of the file, the gap counted as absent.
     pub fn byteAt(self: *const Buffer, offset: usize) u8 {
         std.debug.assert(offset < self.byteLen());
         const gap = self.gap_end - self.gap_start;
         return if (offset < self.gap_start) self.bytes[offset] else self.bytes[offset + gap];
     }
 
-    /// The last line starting at or before `offset`. Binary search, because an
-    /// edit and a mouse click both need it and neither knows it already.
+    /// The last line starting at or before `offset`.
     pub fn lineAt(self: *const Buffer, offset: usize) usize {
         var low: usize = 0;
         var high: usize = self.starts.items.len;
@@ -205,10 +186,8 @@ pub const Buffer = struct {
         return low - 1;
     }
 
-    /// `[from, to)` as one slice, copying it out when the gap divides it.
-    ///
-    /// The result borrows from the buffer, or from the one scratch buffer the
-    /// gap-straddling case shares, and is good until the next call.
+    /// `[from, to)` as one slice, copied into `scratch` when the gap divides it.
+    /// Borrows from the buffer or from scratch, good until the next call.
     pub fn slice(self: *Buffer, from: usize, to: usize) ![]const u8 {
         const gap = self.gap_end - self.gap_start;
         if (to <= self.gap_start) return self.bytes[from..to];
@@ -220,8 +199,8 @@ pub const Buffer = struct {
         return self.scratch.items;
     }
 
-    /// Moves the bytes in between across the hole. The one operation here that
-    /// is not constant time, and what an edit away from the last one costs.
+    /// Moves the bytes in between across the hole: the one operation here that is
+    /// not constant time, and what an edit away from the last one costs.
     fn moveGap(self: *Buffer, to: usize) void {
         std.debug.assert(to <= self.byteLen());
         if (to == self.gap_start) return;
@@ -440,10 +419,9 @@ test "moving a nearly exhausted gap a long way does not smear the text" {
     var buffer = try Buffer.init(std.testing.allocator, head);
     defer buffer.deinit();
 
-    // Fill the hole to within a few bytes, without asking for more than it
-    // holds and so without reallocating. The text then being dragged across it
-    // is longer than the hole is, which is the only time the source and the
-    // destination of the move overlap.
+    // Fill the hole to within a few bytes without reallocating, so the text then
+    // dragged across it is longer than the hole -- the only time the move's
+    // source and destination overlap.
     const filler = "-" ** (min_gap - 4);
     _ = try buffer.insert(head.len, filler);
 
@@ -517,8 +495,7 @@ test "random edits agree with a plain array doing the same thing" {
     var buffer = try Buffer.init(allocator, seed_text);
     defer buffer.deinit();
 
-    // The same file held the obvious way, which is wrong for an editor and
-    // right for saying what the answer should have been.
+    // The same file held the obvious way, to say what the answer should be.
     var model: std.ArrayList(u8) = .empty;
     defer model.deinit(allocator);
     try model.appendSlice(allocator, seed_text);
@@ -558,96 +535,59 @@ test "random edits agree with a plain array doing the same thing" {
 
 /// The text, everything derived from it, and where its reader was.
 ///
-/// The layout cache is here rather than in the view because shaping depends on
-/// a line's bytes and on the atlas scale, and on nothing a view has. Keeping it
-/// beside the text is also what lets `insert` and `delete` splice it themselves,
-/// rather than leaving a caller to remember to.
-///
-/// The caret is here for a different reason: a file is shown in at most one
-/// column at a time, so there is one answer rather than one per view, and it
-/// has to outlive being looked away from. That is what a separate parked-file
-/// type used to be for.
+/// The view state -- layout cache, caret, scroll, rects -- lives here rather
+/// than on a view because a file is shown in at most one column at a time, so
+/// there is one answer, and it has to survive being looked away from. That the
+/// cache sits beside the text is also what lets `insert` and `delete` splice it.
 pub const OpenFile = struct {
     allocator: std.mem.Allocator,
     buffer: Buffer,
 
-    /// One entry per line, in the file's order. Empty until the first frame,
-    /// which is where it learns how many lines there are.
+    /// One entry per line. Empty until the first frame learns the line count.
     lines: std.ArrayList(LineLayout) = .empty,
 
     /// What it was opened as, or null for a file nobody named. Owned, and the
     /// only copy: the bar and the columns both read this one.
     path: ?[]u8 = null,
 
-    /// The name on its tab, shaped once. Here rather than on the bar for the
-    /// same reason the line cache is here rather than on a view: it is the
-    /// glyphs of this file's name, and it outlives every place it is drawn.
+    /// The name on its tab, shaped once, outliving every place it is drawn.
     name: LineLayout = .{},
 
-    /// Whether the text has been changed since it was read or last written.
-    /// The bar draws a mark for it and a save is what clears it.
+    /// Changed since read or last written: the tab's mark, cleared by a save.
     modified: bool = false,
 
-    /// Whether the file's lines ended with a carriage return when it was read.
-    /// The returns are taken out on the way in so that only `\n` starts a line,
-    /// and this is what puts them back on the way out: opening a file written
-    /// on Windows and saving it should not rewrite every line of it.
+    /// Whether the file's lines ended CRLF. The returns are stripped on the way
+    /// in so only `\n` starts a line, and put back on the way out, so opening and
+    /// saving a Windows file does not rewrite every line.
     crlf: bool = false,
 
-    /// Where the next character lands, as a byte offset, and how far down the
-    /// window sits, in whole pixels.
-    ///
-    /// Here rather than on a view because a file is shown in at most one column
-    /// at a time, so there is only ever one answer -- and because the answer has
-    /// to survive being looked away from, which a view does not.
     cursor: usize = 0,
     scroll: f32 = 0,
 
-    /// The room the column showing this file was given, in window pixels. Here
-    /// with the scroll and the caret, and for the same reason: a file is shown
-    /// in at most one column, so there is one rect to keep. `place` writes it
-    /// afresh for every on-screen column each frame, and `update` reads it to
-    /// turn a click into a place in the text. Stale while the file is off screen.
+    /// The room the column and the tab were last given, written by `place` and
+    /// read by `Model.resolve` to turn a click into a place. Stale off screen.
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-
-    /// Where this file's tab sits on the bar, or a zero rect when it has none.
-    /// Written by `place` alongside the column rect, and read to turn a press on
-    /// the bar into the file it chose. On the file because a file has one tab.
     tab_rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    /// The other end of the selection. Equal to `cursor` when there is none: a
-    /// caret is a selection of nothing, so nothing has to ask which of two
-    /// states a file is in before reading it.
-    ///
-    /// Which end is which is not fixed. Dragging upwards leaves the anchor
-    /// after the cursor, which is why everything that reads a selection asks
-    /// for it in order rather than assuming one.
+    /// The other end of the selection, equal to `cursor` when there is none.
+    /// Which end is which is not fixed: dragging upwards leaves the anchor after
+    /// the cursor, so everything reads a selection in order rather than assuming.
     anchor: usize = 0,
 
-    /// Set by an edit, acted on before the next frame is drawn: typing that
-    /// has gone off screen brings the view back to it, and clicking reads the
-    /// view where it is.
+    /// Acted on before the next frame: typing off screen brings the view back.
     follow_caret: bool = false,
 
-    /// A look brings the pointer to what it found, so that clicking button 3
-    /// again lands in the new selection and steps on to the next occurrence.
-    /// `warp_caret` is the request; `warp_to` is where in the window to put the
-    /// pointer, filled in once the view has settled and the selection's place on
-    /// screen is known, and consumed by the window that owns the cursor.
+    /// A look brings the pointer to what it found, so clicking button 3 again
+    /// steps on to the next occurrence. `warp_to` is where, filled in once the
+    /// view has settled and consumed by the window that owns the cursor.
     warp_caret: bool = false,
     warp_to: ?[2]f32 = null,
 
-    /// What is left of a gesture too small to have moved a whole pixel yet. A
-    /// trackpad reports fractions, and without this a slow drag would round
-    /// away to nothing every event.
+    /// What is left of a gesture too small to have moved a whole pixel yet,
+    /// without which a slow trackpad drag would round away to nothing each event.
     pending: f32 = 0,
 
-    /// Where on the scrollbar's thumb the pointer took hold, while it is
-    /// holding it. Null the rest of the time, which is also the answer to
-    /// whether a drag is on.
-    ///
-    /// Here with the caret and the scroll, and for the same reason: a file is
-    /// shown in at most one column, so there is one of each per file.
+    /// Where on the scrollbar thumb the pointer took hold; null when no drag.
     drag: ?f32 = null,
 
     pub fn init(allocator: std.mem.Allocator, text: []const u8, path: ?[]const u8) !OpenFile {
@@ -669,8 +609,7 @@ pub const OpenFile = struct {
         self.buffer.deinit();
     }
 
-    /// The selection in order, which is what every reader of one wants. `from`
-    /// equals `to` when nothing is selected, and both are then the caret.
+    /// The selection in order. `from` equals `to` when nothing is selected.
     pub fn selected(self: *const OpenFile) Span {
         return .{
             .from = @min(self.anchor, self.cursor),
@@ -678,7 +617,6 @@ pub const OpenFile = struct {
         };
     }
 
-    /// Whether there is a selection at all, as opposed to a bare caret.
     pub fn hasSelection(self: *const OpenFile) bool {
         return self.anchor != self.cursor;
     }
@@ -704,14 +642,9 @@ pub const OpenFile = struct {
     }
 };
 
-/// Brings the cache back into step after an edit, told which line it landed in,
-/// how many after it stopped existing, and how many came into being.
-///
-/// Every other entry survives untouched: a line that moved down the screen is
-/// the same shaped line at a different baseline, which is why its glyphs are
-/// kept in coordinates of their own.
-///
-/// Apart from `OpenFile` so it can be tested without one to splice.
+/// Brings the cache back into step after an edit. Every other entry survives
+/// untouched: a line that moved down the screen is the same shaped line at a
+/// different baseline, its glyphs being kept in coordinates of their own.
 fn spliceLines(
     allocator: std.mem.Allocator,
     cache: *std.ArrayList(LineLayout),
@@ -743,17 +676,14 @@ fn spliceLines(
     cache.items[line].stamp = 0;
 }
 
-/// The atlas these test entries were shaped by. Any number but zero will do:
-/// what the tests are about is which entries keep their stamp and which lose it.
 const a_generation: u32 = 7;
 
-/// Whether an entry still says it was shaped by that atlas.
 fn stillShaped(entry: LineLayout) bool {
     return entry.stamp == a_generation;
 }
 
-/// Four lines, each holding a sprite and a caret, so that dropping an entry
-/// without freeing it shows up as a leak rather than as nothing at all.
+/// Four lines, each holding a sprite and a caret, so a dropped entry shows up as
+/// a leak rather than as nothing at all.
 fn testCache(allocator: std.mem.Allocator) !std.ArrayList(LineLayout) {
     var cache: std.ArrayList(LineLayout) = .empty;
     for ([_]usize{ 10, 20, 30, 40 }) |bytes| {

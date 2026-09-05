@@ -10,8 +10,7 @@ const config = @import("./config.zig");
 const Colour = config.Colour;
 const Sprite = @import("./glyph_atlas.zig").Sprite;
 
-/// Somewhere to put something, in device pixels. The window is divided into
-/// these and each one is handed to whatever draws in it.
+/// A box in device pixels, handed to whatever draws in it.
 pub const Rect = struct {
     x: f32,
     y: f32,
@@ -26,9 +25,8 @@ pub const Rect = struct {
     /// `quad` cut down to what falls inside, or null when none of it does.
     ///
     /// A `Sprite` uses one size for both the quad and the region it samples, so
-    /// moving an edge moves both together and what survives samples the part of
-    /// the glyph it should. The rect and the quad are both on whole pixels, so
-    /// the trimmed source stays on a texel and `NEAREST` still lands dead centre.
+    /// moving an edge moves both and what survives samples the right part of the
+    /// glyph -- on whole pixels, so `NEAREST` still lands dead centre on a texel.
     pub fn clip(self: Rect, quad: Sprite) ?Sprite {
         const left = @max(self.x, quad.dest[0]);
         const top = @max(self.y, quad.dest[1]);
@@ -85,22 +83,18 @@ pub const Run = struct {
     count: u32,
 };
 
-/// One buffer for the whole frame, and the runs that describe it.
-///
-/// Cleared rather than freed between frames: it settles at the size of a
-/// screenful and stops allocating, which is what keeps a redraw out of the
-/// allocator.
+/// One buffer for the whole frame, and the runs that describe it. Cleared, not
+/// freed, between frames, so it settles at a screenful's size and a redraw stops
+/// reaching the allocator.
 pub const Painter = struct {
     allocator: std.mem.Allocator,
     quads: std.ArrayList(Sprite) = .empty,
     runs: std.ArrayList(Run) = .empty,
 
-    /// What everything added is cut down to. A component sets this to the room
-    /// it was given, so nothing it draws can reach into anything else's.
-    ///
-    /// Clipped here rather than with a GPU scissor: a scissor is per draw call,
-    /// and calls deliberately hold quads from several components, so scissoring
-    /// would put the rect in the key and split every one of them apart again.
+    /// What everything added is cut down to, so nothing a component draws reaches
+    /// into another's room. Clipped here rather than with a GPU scissor: a scissor
+    /// is per draw call, and a call deliberately holds quads from several
+    /// components, so it would have to go in the key and split them apart.
     clip_to: ?Rect = null,
 
     pub fn init(allocator: std.mem.Allocator) Painter {
@@ -122,14 +116,10 @@ pub const Painter = struct {
         self.clip_to = rect;
     }
 
-    /// Room for `extra` more quads, so a component drawing a screenful of them
-    /// does not grow the buffer a quad at a time.
     pub fn reserve(self: *Painter, extra: usize) !void {
         try self.quads.ensureUnusedCapacity(self.allocator, extra);
     }
 
-    /// Extends the run in progress when the key matches, and starts a new one
-    /// when it does not.
     pub fn add(self: *Painter, key: Key, quad: Sprite) !void {
         const kept = if (self.clip_to) |rect| (rect.clip(quad) orelse return) else quad;
         try self.quads.append(self.allocator, kept);

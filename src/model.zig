@@ -1,14 +1,8 @@
 //! The state the window is showing, and the only thing that outlives a frame.
-//!
-//! Handed to `place` and `draw` as the first argument rather than stored: a
-//! component that kept a copy of the allocator would have a second one to keep
-//! in step with this, which is the thing this is here to stop, and the atlas was
-//! threaded through every one of those calls by hand.
-//!
-//! Components keep almost nothing between frames: what files are open, which are
-//! on screen, where each caret is, where every rect landed, and whether the
-//! window is still up are all here. So both drawing and resolving a click come
-//! down to reading this rather than asking around.
+//! Components keep almost nothing between frames -- what files are open, which
+//! are on screen, where each caret and rect is -- so drawing and resolving a
+//! click both come down to reading this. Handed to `place` and `draw` rather
+//! than stored, so nothing keeps a second copy of the allocator to drift.
 
 const std = @import("std");
 
@@ -28,36 +22,23 @@ const Effect = message.Effect;
 const TextView = @import("./components/text_view.zig").TextView;
 const Tree = @import("./components/tree.zig").Tree;
 
-/// The largest file yaz will open. What still costs per line of the file
-/// rather than per line on screen is the layout cache, which holds a 64-byte
-/// entry for each of them, and the line index behind it.
+/// What still costs per line of the file, not per line on screen, is the layout
+/// cache: a 64-byte entry for each, and the line index behind it.
 const file_limit = 1 << 20;
 
-/// How many matches the finder shows at once. Here rather than with the panel
-/// that draws them because moving the selection has to keep it on screen, and
-/// that is a change to the state rather than to the drawing of it.
 pub const visible_matches = 12;
 
-/// The file finder, while it is open. Null when it is not, which is the whole
-/// of what "the panel is open" means.
-///
-/// It holds no listing of its own. The index is the library's and lives for as
-/// long as the window does; what is here is the query, and the answer to it.
+/// The file finder, while it is open -- null is the whole of what "closed"
+/// means. It holds no listing of its own; the index is the library's.
 pub const Finding = struct {
-    /// What has been typed into it.
     typed: std.ArrayList(u8) = .empty,
 
-    /// What the query matched. Owned: the paths point into it, so it is freed
-    /// when the query changes and when the panel closes.
+    /// Owned: the paths point into it, so it is freed when the query changes.
     found: ?fff.Matches = null,
 
-    /// How many files the index holds. Read once when the panel opens, and
-    /// again from every search, since the watcher moves it while the panel is
-    /// up.
+    /// Re-read from every search, since the watcher moves it while the panel is up.
     files: u32 = 0,
 
-    /// Which match return would open, and which is the first on screen. The
-    /// second follows the first rather than leading it.
     selected: usize = 0,
     top: usize = 0,
 
@@ -66,34 +47,24 @@ pub const Finding = struct {
         return found.count;
     }
 
-    /// Which set of matches these are, for anything caching what it drew of
-    /// them. A new search is a new one; nothing else is.
+    /// Which set of matches these are, so anything caching what it drew of them
+    /// can tell a new search from the same one.
     pub fn token(self: *const Finding) ?*anyopaque {
         const found = self.found orelse return null;
         return found.handle;
     }
 
-    /// The nth match, or none past the end.
     pub fn path(self: *const Finding, nth: usize) ?[]const u8 {
         const found = self.found orelse return null;
         return found.path(@intCast(nth));
     }
 
-    /// What return would open.
     fn chosen(self: *const Finding) ?[]const u8 {
         return self.path(self.selected);
     }
 };
 
-/// The sidebar tree, whether it is open or not.
-///
-/// It holds a listing of its own rather than reading the finder's: the finder
-/// answers a query, best first and cut to a screenful, which is the wrong shape
-/// for a tree. This is the whole of what the index holds, sorted by path, and
-/// the folders the reader has opened over it.
-/// One line of the folded tree: a path (borrowed from `Sidebar.paths`), its
-/// last segment, how deep it sits, and whether it is a folder. On the sidebar so
-/// `update` can turn a press into the row it fell on without a view.
+/// One line of the folded tree: `path` is borrowed from `Sidebar.paths`.
 pub const Row = struct {
     path: []const u8,
     name: []const u8,
@@ -101,46 +72,42 @@ pub const Row = struct {
     is_dir: bool,
 };
 
+/// The sidebar tree, whether open or not. It holds its own listing rather than
+/// the finder's, which is ranked and cut to a screenful -- the wrong shape for a
+/// tree -- so this is the whole of what the index holds, sorted by path.
 pub const Sidebar = struct {
-    /// Whether the panel is on screen. Closed to begin with: a window opens on
-    /// its files.
     open: bool = false,
 
-    /// Every indexed file, relative to the root, sorted by path. Owned here: the
-    /// listing it was read from is let go of at once, so the tree does not
-    /// depend on the library holding it.
+    /// Owned here: the listing it was read from is let go of at once.
     paths: std.ArrayList([]const u8) = .empty,
 
-    /// The folders the reader has opened. A folder not in here is closed. Keys
-    /// are owned, since the path they came from is a row that is rebuilt.
+    /// A folder not in here is closed. Keys are owned, since the path they came
+    /// from is a row that is rebuilt.
     expanded: std.StringHashMapUnmanaged(void) = .empty,
 
-    /// How far the list is scrolled, in pixels. The view clamps it, since only
-    /// the view knows how many rows there are and how tall it is.
+    /// Clamped by the view, which is the only thing that knows how many rows
+    /// there are and how tall it is.
     scroll: f32 = 0,
 
-    /// Bumped whenever `paths` or `expanded` changes, so the fold and the glyphs
-    /// shaped from it are known stale without comparing them.
+    /// Bumped when `paths` or `expanded` changes, so the fold and its glyphs are
+    /// known stale without comparing them.
     revision: u32 = 0,
 
-    /// The strip the tree is drawn in, written by `place`.
+    /// Written by `place`.
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 
-    /// The flat listing folded into a hierarchy, top to bottom, and a shaped line
-    /// for each -- parallel, so `layouts[i]` is `rows[i]` in glyphs. `place`
-    /// folds them when `built` falls behind `revision` and shapes the ones on
-    /// screen; `update` hit-tests them and `draw` paints them.
+    /// The listing folded into a hierarchy and a shaped line for each, parallel.
+    /// `place` folds them when `built` falls behind `revision` and shapes the
+    /// ones on screen.
     rows: std.ArrayList(Row) = .empty,
     layouts: std.ArrayList(LineLayout) = .empty,
     built: ?u32 = null,
 
-    /// The two folder markers, shaped once each.
     chevron_open: LineLayout = .{},
     chevron_shut: LineLayout = .{},
 
-    /// Lets go of the listing, keeping the folders the reader opened: closing
-    /// the panel need not forget which folders were open, and re-reading the
-    /// tree must not leak the last read.
+    /// Keeps the open folders: closing the panel need not forget them, and
+    /// re-reading the tree must not leak the last read.
     fn clearPaths(self: *Sidebar, allocator: std.mem.Allocator) void {
         for (self.paths.items) |path| allocator.free(path);
         self.paths.clearRetainingCapacity();
@@ -165,113 +132,71 @@ pub const Model = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
 
-    /// Owned by the renderer, which outlives everything that draws through it.
-    ///
-    /// Not const, and cannot be: shaping a line nobody has shaped before puts
-    /// its glyphs in, so drawing a file for the first time writes here.
-    ///
-    /// Undefined until `run` has a window, because there is no atlas before
-    /// there is one. Nothing between here and there places, draws or measures.
+    /// Not const: shaping a line nobody has shaped before writes here, so drawing
+    /// a file for the first time does. Undefined until `run` has a window.
     atlas: *GlyphAtlas = undefined,
 
-    /// The tab bar's band, and the unsaved-mark glyph every tab shares, both
-    /// written by `place`. Layout is the mutable pass, and where the bar sits is
-    /// what turns a press into the tab it fell on -- which `update` reads here
-    /// rather than from a view. Each tab's own rect is on the file it names,
-    /// `OpenFile.tab_rect`, since a file has at most one tab.
+    /// The tab bar's band and the unsaved-mark glyph every tab shares, written by
+    /// `place`, so `update` can turn a press into the tab it fell on. Each tab's
+    /// own rect is on the file it names, `OpenFile.tab_rect`.
     tabs_rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     tab_bullet: LineLayout = .{},
 
-    /// The file a save dialog was opened for, while it is open.
-    ///
-    /// The answer comes back on an event rather than from a call, so the focus
-    /// can have moved by the time it does -- and the file can have been closed,
-    /// which is why this is checked against the open files rather than trusted.
+    /// The file a save dialog is open for. Checked against the open files rather
+    /// than trusted, since the answer arrives long after and cmd+W can have
+    /// closed the file in between.
     naming: ?*OpenFile = null,
 
-    /// Every file this window has open, in the order they were opened, which is
-    /// also the order the bar lists them in.
-    ///
-    /// Owned here and nowhere else. A column points at one rather than holding
-    /// it, so looking away from a file costs nothing and gives nothing up: the
-    /// buffer, the line index, every line already shaped and the caret are all
-    /// still here when it comes back. A file no column is pointing at is open
-    /// and out of sight, which is the whole of what used to be a separate set.
-    ///
-    /// Boxed, because both the bar and the columns keep pointers into this and
-    /// the list moves as it grows.
+    /// Owned here and nowhere else; boxed, since the bar and the columns keep
+    /// pointers into this and the list moves as it grows. A column points at one
+    /// rather than holding it, so a file no column shows is just open and unseen.
     files: std.ArrayList(*OpenFile) = .empty,
 
-    /// Which files are on screen, left to right. Every one of these is in
-    /// `files` as well; a file in `files` and not here is open and out of
-    /// sight, which is all being "closed" ever meant short of closing.
+    /// Which files are on screen, left to right; each is in `files` too.
     columns: std.ArrayList(*OpenFile) = .empty,
 
-    /// Which column has the keyboard, and which has the pointer while a press
-    /// is being held. Both are indices into `columns`.
+    /// The column with the keyboard, and the one with the pointer while a press
+    /// is held. Indices into `columns`.
     focus: usize = 0,
     holding: ?usize = null,
 
-    /// The scratch preview, while there is one. A file opened from the finder or
-    /// the tree lands here rather than on a tab of its own: the next file opened
-    /// takes its place, so browsing does not leave a trail of tabs behind. It is
-    /// promoted -- this goes null, the tab becomes its own -- the moment the file
-    /// is edited or its tab is double-clicked.
-    ///
-    /// A pointer, so `close` can clear it and nothing is left pointing at a freed
-    /// file. Null is the common case: nothing typed on the command line is a
-    /// preview, and an edited one is not one any more.
+    /// The scratch preview: a file opened from the finder or tree, replaced by
+    /// the next one opened rather than kept, so browsing leaves no trail of tabs.
+    /// Promoted to null the moment it is edited or its tab double-clicked.
     preview: ?*OpenFile = null,
 
-    /// The library, and the index it keeps of the directory yaz was run in.
-    /// Opened once, at startup, which is also where it was settled that it
-    /// loads. Null only in a window that has no finder -- the healthcheck.
+    /// Opened once at startup. Null only in a window with no finder -- the
+    /// healthcheck.
     library: ?fff.Library = null,
     index: ?fff.Index = null,
 
-    /// The finder, while it is open.
     finding: ?Finding = null,
-
-    /// The sidebar tree: open or not, and the listing behind it.
     sidebar: Sidebar = .{},
 
-    /// The subscription that keeps the tree live, while there is one. Held so it
-    /// can be let go when the panel closes: a watch on a tree nobody is looking
-    /// at is wakeups for nothing.
+    /// Held so it can be let go when the panel closes: a watch on a tree nobody
+    /// is looking at is wakeups for nothing.
     watch_id: ?u64 = null,
 
-    /// Whether anything above has changed since the last frame was drawn.
-    ///
-    /// One flag for the whole model rather than one per component: what a
-    /// window has to decide is whether to draw at all, and presenting blocks,
-    /// so a redundant frame costs latency rather than just work. True to begin
-    /// with, since the first frame has never been drawn.
+    /// One flag for the whole model: presenting blocks, so a redundant frame
+    /// costs latency, not just work. True to begin with.
     dirty: bool = true,
 
-    /// False ends the window. Here rather than in the loop that reads it
-    /// because what decides it is a component: the last file being closed is
-    /// the end of the window, and only the thing holding the files knows that.
+    /// False ends the window. Here because a component decides it: only the thing
+    /// holding the files knows the last one has closed.
     running: bool = true,
 
-    /// Nothing is open yet and there is no atlas yet: the first is `main`
-    /// reading the command line, the second needs a window. Both arrive from
-    /// outside, and nothing draws in between.
     pub fn init(process: std.process.Init) Model {
         return .{ .allocator = process.gpa, .io = process.io };
     }
 
-    /// The atlas, once there is a window to have made one. Called once, before
-    /// anything is placed or drawn.
+    /// The atlas, once there is a window to have made one.
     pub fn attach(self: *Model, atlas: *GlyphAtlas) void {
         self.atlas = atlas;
     }
 
-    /// Opens the library and starts indexing the directory yaz was run in.
-    ///
-    /// The walk happens on a thread of the library's own, so this returns
-    /// before it has finished and the window goes up while it is still
-    /// counting. A cmd+P in that first moment searches what has been found so
-    /// far, which is why nothing here waits.
+    /// Opens the library and starts indexing. The walk runs on a thread of the
+    /// library's own, so this returns before it finishes and a cmd+P in that
+    /// moment searches what has been found so far.
     pub fn locate(self: *Model, environ: std.process.Environ) !void {
         const where = try tools.path(self.allocator, environ, .fff);
         defer self.allocator.free(where);
@@ -281,12 +206,8 @@ pub const Model = struct {
         self.index = try self.library.?.index(".");
     }
 
-    /// Opens the finder. There is nothing to read: the index is already there
-    /// and has been kept up to date since the window opened.
-    ///
-    /// One search with nothing typed, for the count alone. It is what the panel
-    /// says before a query narrows it, and asking is how many files the index
-    /// holds -- which the watcher moves while nobody is looking.
+    /// One search with nothing typed, for the count the panel shows before a
+    /// query narrows it -- which the watcher moves while nobody is looking.
     fn find(self: *Model) !void {
         self.stopFinding();
         self.finding = .{};
@@ -299,8 +220,6 @@ pub const Model = struct {
         self.changed();
     }
 
-    /// Everything that only exists while the finder is open, which is now the
-    /// query and the answer to it. The index outlives the panel.
     fn stopFinding(self: *Model) void {
         const finding = &(self.finding orelse return);
         finding.typed.deinit(self.allocator);
@@ -309,16 +228,14 @@ pub const Model = struct {
         self.changed();
     }
 
-    /// Adds to the query and re-ranks against it.
     fn typeInto(self: *Model, text: []const u8) !void {
         const finding = &(self.finding orelse return);
         try finding.typed.appendSlice(self.allocator, text);
         try self.rank();
     }
 
-    /// Takes a character back off the query. One byte at a time is wrong the
-    /// moment the query is not ASCII, and `Buffer.stepBack` is where that is
-    /// already solved; this is a query, not a file, and cannot reach it.
+    /// One byte at a time, which is wrong the moment the query is not ASCII --
+    /// but a query is not a file, and cannot reach `Buffer.stepBack`.
     fn rubOut(self: *Model) !void {
         const finding = &(self.finding orelse return);
         if (finding.typed.items.len == 0) return;
@@ -326,7 +243,6 @@ pub const Model = struct {
         try self.rank();
     }
 
-    /// Moves the selection, and the window on to it, by one.
     fn select(self: *Model, by: enum { up, down }) void {
         const finding = &(self.finding orelse return);
         switch (by) {
@@ -346,14 +262,8 @@ pub const Model = struct {
         self.changed();
     }
 
-    /// Asks the index for what matches the query.
-    ///
     /// Nothing typed is nothing offered: the whole repository is not an answer,
-    /// and shaping a screenful of it would be work done on the way to being
-    /// thrown away.
-    ///
-    /// This used to spawn fzf and write the whole listing to it, on every
-    /// keystroke. It is now a call into a library holding the tree already.
+    /// and shaping a screenful of it would be thrown away.
     fn rank(self: *Model) !void {
         const finding = &(self.finding orelse return);
         if (finding.found) |*found| found.deinit();
@@ -374,31 +284,20 @@ pub const Model = struct {
         finding.found = found;
     }
 
-    /// What `update` answers with: the model as it now is, and whatever is left
-    /// for the runtime to go and do about the world outside it.
-    ///
-    /// The model comes back rather than being written through a pointer. Most
-    /// of what it holds is behind one -- a document is a `*OpenFile` and its
-    /// text is a gap buffer -- so this is value semantics over a handle rather
-    /// than over the state, and there is only ever one live copy. What it does
-    /// buy is that nothing can move the model except by being handed the result.
+    /// The model as it now is, and whatever is left for the runtime. The model
+    /// comes back rather than being written through a pointer -- value semantics
+    /// over the handles it holds -- so nothing can move it but this.
     pub const Answer = struct { Model, ?Effect };
 
-    /// The one place anything here changes: a message in, the model and whatever
-    /// is left for the runtime out.
-    ///
-    /// A raw pointer message it cannot act on directly -- a press, a drag, a
-    /// wheel -- it hands to `resolve`, which reads the layout `place` left and
-    /// answers with a message that says what was under the pointer; `update` then
-    /// calls itself with that. So a click becomes a caret or a tab or a folder
-    /// without anything outside the model knowing where things were drawn.
-    ///
-    /// Every branch that falls through asks for a frame once, at the bottom;
-    /// those that answer early or with an effect ask for it themselves.
+    /// The one place anything here changes. A raw pointer message it hands to
+    /// `resolve`, which reads the layout `place` left and answers with a message
+    /// saying what was under the pointer; `update` then calls itself with that.
+    /// Every branch that falls through asks for a frame at the bottom; those that
+    /// answer early or with an effect ask for it themselves.
     pub fn update(start: Model, msg: Message) !Answer {
         var self = start;
 
-        // Window-wide, whatever is in front of it.
+        // Handled whatever is in front, before the finder or a column sees it.
         switch (msg) {
             .none => return .{ self, null },
             .quit => {
@@ -422,9 +321,7 @@ pub const Model = struct {
                 const file = self.naming orelse return .{ self, null };
                 self.naming = null;
 
-                // Looked for among the open ones rather than trusted: the
-                // answer arrives whenever the dialog is done with, and cmd+W
-                // can have closed and freed the file in between.
+                // The file may have been closed while the dialog was up.
                 if (self.indexOf(file) == null) return .{ self, null };
 
                 const owned = try self.allocator.dupe(u8, path);
@@ -432,8 +329,8 @@ pub const Model = struct {
                 file.path = owned;
                 self.changed();
 
-                // Written whether it was changed or not: being asked where to
-                // put a file is being asked to put it there.
+                // Written whether changed or not: naming a file is asking to
+                // put it there.
                 const which = self.columnOf(file) orelse return .{ self, null };
                 return .{ self, .{ .save = which } };
             },
@@ -477,8 +374,7 @@ pub const Model = struct {
 
             .insert => |what| {
                 const file = self.column(what.column) orelse return .{ self, null };
-                // Typing over a selection replaces it, which is the one thing
-                // every editor agrees on.
+                // Typing over a selection replaces it.
                 const at = try dropSelection(file);
                 _ = try file.insert(at, what.text);
                 file.cursor = at + what.text.len;
@@ -500,13 +396,9 @@ pub const Model = struct {
             },
             .caret => |where| {
                 const file = self.column(where.column) orelse return .{ self, null };
-                // Putting the caret in a column is choosing that column, which
-                // is why a press does not have to say both.
+                // A press both chooses the column and takes the pointer, so the
+                // drag that may follow stays with it until the release.
                 self.focus = where.column;
-                // A press that lands a caret is also the pointer taking hold:
-                // the drag that may follow belongs to this column wherever it
-                // wanders, and the release is what lets go. A drag says the
-                // same thing again, which changes nothing.
                 self.holding = where.column;
                 file.cursor = @min(where.at, file.buffer.byteLen());
                 if (!where.extend) file.anchor = file.cursor;
@@ -517,33 +409,23 @@ pub const Model = struct {
                 const end = file.buffer.byteLen();
                 file.anchor = @min(what.from, end);
                 file.cursor = @min(what.to, end);
-                // A look can land the selection anywhere; bringing the view to
-                // it is the rest of jumping there. A drag leaves this alone.
                 if (what.follow) file.follow_caret = true;
-                // And the pointer with it, so looking again from a still hand
-                // steps on to the next occurrence.
                 if (what.warp) file.warp_caret = true;
             },
             .scroll => |where| {
                 const file = self.column(where.column) orelse return .{ self, null };
                 file.pending = where.pending;
-                // The fraction moved and nothing else did, so there is nothing
-                // to draw: the window stays as it is until a whole pixel of it
-                // has been asked for.
+                // Only the fraction moved: nothing to draw until a whole pixel is.
                 if (file.scroll == where.to) return .{ self, null };
                 file.scroll = where.to;
             },
             .grab => |where| {
                 const file = self.column(where.column) orelse return .{ self, null };
                 self.focus = where.column;
-                // Held until the release, so a drag that wanders out of the
-                // column it began in stays with it.
                 self.holding = if (where.at == null) null else where.column;
                 file.drag = where.at;
             },
-            // The clipboard and the file are the runtime's; here they are named
-            // by the column with the keyboard. Cut is a copy and a delete, the
-            // delete done now and the copy left for the runtime.
+            // Cut is a delete done now and a copy left for the runtime.
             .copy => return .{ self, .{ .copy = self.focus } },
             .paste => return .{ self, .{ .paste = self.focus } },
             .cut => {
@@ -560,14 +442,9 @@ pub const Model = struct {
                 const which = self.focus;
                 const file = self.column(which) orelse return .{ self, null };
                 if (file.path == null) {
-                    // Asked for rather than refused. Which file is waiting is
-                    // remembered here because the answer arrives whenever the
-                    // dialog is done with, long after this has returned.
                     self.naming = file;
                     return .{ self, .ask_name };
                 }
-                // Nothing to write and nothing to say: what is on disk is
-                // already what is on screen.
                 if (!file.modified) return .{ self, null };
                 return .{ self, .{ .save = which } };
             },
@@ -582,7 +459,6 @@ pub const Model = struct {
 
             .find => try self.find(),
 
-            // Opening reads the tree and asks for a watch; closing lets both go.
             .toggle_tree => {
                 self.sidebar.open = !self.sidebar.open;
                 if (self.sidebar.open) {
@@ -601,14 +477,11 @@ pub const Model = struct {
                 self.sidebar.scroll = to;
             },
 
-            // Reached only as a raw message the branches above did not want,
-            // which is nothing to act on.
             else => return .{ self, null },
         }
 
-        // A scratch preview that has been edited is a file the reader means to
-        // keep. Read once, here, rather than in every branch that can edit:
-        // being changed is exactly what the mark on its tab already says.
+        // An edited preview is a file the reader means to keep. Read once here
+        // rather than in every branch that can edit.
         if (self.preview) |file| {
             if (file.modified) self.preview = null;
         }
@@ -635,14 +508,11 @@ pub const Model = struct {
                         return if (what.clicks >= 2) .{ .pin = nth } else .{ .show = nth };
                 }
 
-                // A press in a column resolves to a caret, which is also what
-                // moves the keyboard there -- so there is no separate focusing
-                // to do when it lands on nothing.
                 const which = self.columnAt(what.at) orelse return .none;
                 return self.columnResolve(which, msg);
             },
-            // Only while the pointer is held: a drag stays with the column it
-            // began in wherever it wanders, and a bare hover reaches no column.
+            // Only while the pointer is held, so a drag stays with the column it
+            // began in and a bare hover reaches no column.
             .move, .release => {
                 const which = self.holding orelse return .none;
                 return self.columnResolve(which, msg);
@@ -661,9 +531,8 @@ pub const Model = struct {
         }
     }
 
-    /// Asks the nth column what a pointer message means in it, from the rect
-    /// `place` gave it. The view is made on the spot: it keeps nothing between
-    /// frames that the file does not already hold.
+    /// Asks the nth column what a pointer message means, from the rect `place`
+    /// left on its file. The view is made on the spot and keeps nothing.
     fn columnResolve(self: *const Model, which: usize, msg: Message) Message {
         const file = self.column(which) orelse return .none;
         const view: TextView = .init(which, file, file.rect);
@@ -677,28 +546,19 @@ pub const Model = struct {
         return null;
     }
 
-    /// Writes a file back to the path it was opened from.
-    ///
-    /// Through a temporary beside it and a rename over the top, so that a write
-    /// that fails part way through leaves the file that was already there
-    /// rather than half of a new one. `tools.install` follows the same rule for
-    /// the same reason.
-    ///
-    /// The temporary is beside the file rather than anywhere tidier because a
-    /// rename is only atomic within one filesystem, and the directory the file
-    /// is in is the one place guaranteed to be on the same one.
+    /// Writes a file back through a temporary beside it and a rename over the
+    /// top, so a write that fails part way leaves the old file rather than half a
+    /// new one. Beside it because a rename is only atomic within one filesystem.
     pub fn writeOut(self: *const Model, file: *OpenFile) !void {
         const path = file.path.?;
 
-        // One slice of the whole file, which copies it when the gap divides it.
-        // A save is rare and already about to write every byte, so a memcpy of
-        // them on the way is not what it costs.
+        // Copies the file when the gap divides it, which a save is about to read
+        // every byte of anyway.
         const text = try file.buffer.slice(0, file.buffer.byteLen());
 
         const restored = if (file.crlf) try withCarriageReturns(self.allocator, text) else null;
         defer if (restored) |owned| self.allocator.free(owned);
 
-        // A bare name is in the working directory, which is what "." is.
         const where = std.fs.path.dirname(path) orelse ".";
         const name = std.fs.path.basename(path);
 
@@ -706,7 +566,7 @@ pub const Model = struct {
         defer dir.close(self.io);
 
         // Hidden and named for what wrote it, so an interrupted save leaves
-        // something a person can recognise rather than wonder about.
+        // something recognisable.
         const partial = try std.fmt.allocPrint(self.allocator, ".{s}.yaz", .{name});
         defer self.allocator.free(partial);
         errdefer dir.deleteFile(self.io, partial) catch {};
@@ -715,28 +575,22 @@ pub const Model = struct {
         try dir.rename(partial, dir, name, self.io);
     }
 
-    /// The file the nth column is showing. Public because performing an effect
-    /// needs it and performing one happens outside.
+    /// Public because performing an effect needs it, and that happens outside.
     pub fn column(self: *const Model, which: usize) ?*OpenFile {
         if (which >= self.columns.items.len) return null;
         return self.columns.items[which];
     }
 
-    /// Puts the selection on the system clipboard.
-    ///
-    /// Nothing selected leaves the clipboard as it was. Cutting nothing should
-    /// not throw away what somebody put there.
-    ///
-    /// SDL's clipboard is a C string either way, so a file holding a zero byte
-    /// copies as far as the first one. Nothing here can do better without
-    /// leaving the API SDL offers.
+    /// Nothing selected leaves the clipboard alone, so cutting nothing does not
+    /// throw away what somebody put there. SDL's clipboard is a C string, so a
+    /// file holding a zero byte copies as far as the first one.
     pub fn copyOut(self: *Model, which: usize) !void {
         const file = self.column(which) orelse return;
         const chosen = file.selected();
         if (chosen.empty()) return;
 
-        // Terminated for SDL, which copies what it is given: the buffer's own
-        // slice is neither terminated nor good past the next call into it.
+        // Terminated for SDL, and good past the buffer's next call, which its own
+        // slice is not.
         const text = try file.buffer.slice(chosen.from, chosen.to);
         const owned = try self.allocator.dupeZ(u8, text);
         defer self.allocator.free(owned);
@@ -746,15 +600,9 @@ pub const Model = struct {
         }
     }
 
-    /// What is on the system clipboard, with its line endings mended, or none
-    /// when there is nothing there. Caller owns the result.
-    ///
-    /// Reading it is the runtime's; typing it in is an `.insert` message like
-    /// any other keystroke, which is why this hands the text back rather than
-    /// putting it anywhere.
+    /// The clipboard with its line endings mended, or none when empty. Caller
+    /// owns the result; typing it in is an `.insert` like any keystroke.
     pub fn clipboard(self: *const Model) !?[]u8 {
-        // A copy SDL made and wants back. Empty rather than null when there is
-        // nothing on the clipboard, which is not an error.
         const given = c.SDL_GetClipboardText();
         if (given == null) return null;
         defer c.SDL_free(given);
@@ -767,9 +615,7 @@ pub const Model = struct {
     }
 
     /// Takes out whatever is selected and answers where the caret ends up.
-    ///
-    /// Nothing selected removes nothing and leaves the caret where it was, so
-    /// everything that edits can call this first and not ask.
+    /// Nothing selected removes nothing, so anything that edits can call it first.
     fn dropSelection(file: *OpenFile) !usize {
         const chosen = file.selected();
         if (chosen.to == chosen.from) return file.cursor;
@@ -780,13 +626,11 @@ pub const Model = struct {
         return chosen.from;
     }
 
-    /// Says the model has moved on and the window has to be drawn again.
     fn changed(self: *Model) void {
         self.dirty = true;
     }
 
-    /// The nth file on the bar, or none when the bar is shorter than that. A
-    /// file nobody named has no tab, so it is not counted.
+    /// The nth named file, which is the nth tab: an unnamed file has no tab.
     fn tab(self: *const Model, which: usize) ?*OpenFile {
         var counted: usize = 0;
         for (self.files.items) |file| {
@@ -797,11 +641,7 @@ pub const Model = struct {
         return null;
     }
 
-    /// Shows the nth file on the bar and nothing else: every other column goes
-    /// back to being open but not on screen.
-    ///
-    /// Choosing one of something is choosing it instead of the rest, which is
-    /// what makes this the plain binding and `cmd+alt` the one that adds.
+    /// Shows the nth file and nothing else; every other column goes off screen.
     fn showOnly(self: *Model, nth: usize) !void {
         const wanted = self.tab(nth) orelse return;
         self.columns.clearRetainingCapacity();
@@ -809,12 +649,8 @@ pub const Model = struct {
         self.focus = 0;
     }
 
-    /// Puts the nth file on the bar beside what is already there, or takes it
-    /// away again when it is already there.
-    ///
-    /// Taking one away is not closing it: the file stays on the bar with its
-    /// caret where it was, so putting it back costs nothing. The last column
-    /// cannot go -- something has to be there to type into.
+    /// Puts the nth file beside what is shown, or takes it away when it already
+    /// is. Taking it away is not closing it; the last column cannot go.
     fn split(self: *Model, nth: usize) !void {
         const wanted = self.tab(nth) orelse return;
 
@@ -837,30 +673,18 @@ pub const Model = struct {
         self.focus = at;
     }
 
-    /// Takes the file the focused column is showing out of the window and out
-    /// of memory, and puts something else in the column.
-    ///
-    /// The column takes the first file nothing else is showing, so closing
-    /// walks back through what is open; when the last file goes the column falls
-    /// back to a blank, which is where a window with no file named starts. So
-    /// the window does not close on its last file -- it empties.
-    ///
-    /// The one thing that does close it is closing that blank in turn: an empty
-    /// window, closed, is the way out. cmd+W on a window that was never given a
-    /// file is the same keystroke and means the same thing.
+    /// Takes the focused file out of the window and memory. The window does not
+    /// close on its last file -- it falls back to a blank; closing that blank in
+    /// turn is the way out.
     fn shut(self: *Model) !void {
         const closing = self.showing() orelse return;
 
-        // The last thing in the window is a blank: closing it is closing the
-        // window. Closing the last *named* file falls through instead, to the
-        // blank it leaves behind.
         if (self.files.items.len == 1 and closing.path == null) {
             self.running = false;
             return;
         }
 
-        // One fewer column to split into. The last one stays, because
-        // something has to be there to type into.
+        // The last column stays; something has to be there to type into.
         if (self.columns.items.len > 1) {
             _ = self.columns.orderedRemove(self.focus);
             if (self.focus >= self.columns.items.len) self.focus = self.columns.items.len - 1;
@@ -878,8 +702,7 @@ pub const Model = struct {
         self.close(closing);
     }
 
-    /// Opens what the finder has selected, in the column with the keyboard, and
-    /// puts the finder away. Picking a file is the end of picking.
+    /// Opens what the finder has selected and puts the finder away.
     fn choose(self: *Model) !void {
         const picked = blk: {
             const finding = &(self.finding orelse return);
@@ -894,29 +717,19 @@ pub const Model = struct {
         try self.openInFocus(path);
     }
 
-    /// Opens `path` in the column with the keyboard, or moves to it when it is
-    /// already on screen. What the finder does with what it chose, and what the
-    /// tree does with what was clicked.
-    ///
-    /// A file opened this way is a scratch preview: the file the focused column
-    /// was showing is kept as a tab, unless it was itself the preview, in which
-    /// case it is closed and the new file takes the tab it had. So opening one
-    /// file after another leaves one tab, not a row of them, until one is kept.
+    /// Opens `path` in the focused column, or moves to it if already on screen. A
+    /// freshly opened file is a scratch preview; a reopened one is a kept tab, so
+    /// opening one file after another leaves one tab, not a row of them.
     fn openInFocus(self: *Model, path: []const u8) !void {
-        // Asked before opening, since opening it is what would put it there:
-        // reopening a file that is already a tab is not the same as browsing to
-        // a new one, and does not turn a kept tab back into a preview.
+        // Asked before opening: reopening a tab must not turn it into a preview.
         const fresh = self.opened(path) == null;
         const wanted = try self.open(path);
 
-        // Already on screen: move to it and leave the scratch tab as it is.
         if (self.columnOf(wanted)) |which| {
             self.focus = which;
             return;
         }
 
-        // What the focused column is about to stop showing. It is off screen
-        // once the new file is in, since a file is in at most one column.
         const leaving = self.column(self.focus);
 
         if (self.focus < self.columns.items.len) {
@@ -926,30 +739,22 @@ pub const Model = struct {
             self.focus = self.columns.items.len - 1;
         }
 
-        // The scratch tab the column just left is done: the new file takes it.
-        // `close` clears `preview` as it frees, so nothing points at it after.
+        // The preview the column just left is done; the new file takes its tab.
         if (leaving) |gone| {
             if (gone == self.preview) self.close(gone);
         }
 
-        // A freshly opened file is the new scratch preview. A reopened one is a
-        // tab the reader already meant to keep, so it is not.
         if (fresh) self.preview = wanted;
     }
 
-    /// Promotes the nth tab out of being the scratch preview, so the next file
-    /// opened does not replace it. What double-clicking a tab asks for, and what
-    /// editing a previewed file does on its own.
+    /// Promotes the nth tab out of being the scratch preview.
     fn pin(self: *Model, which: usize) void {
         const file = self.tab(which) orelse return;
         if (self.preview == file) self.preview = null;
     }
 
-    /// Re-reads the whole tree into `sidebar.paths`, sorted by path. What every
-    /// change on disk comes back to, and what opening the panel does first.
-    ///
-    /// The listing is let go of at once: the paths are copied out, so the tree
-    /// does not hold the library's answer for as long as it is on screen.
+    /// Re-reads the tree into `sidebar.paths`, sorted. The paths are copied out,
+    /// so the tree does not hold the library's answer while it is on screen.
     fn refreshTree(self: *Model) !void {
         const index = self.index orelse return;
 
@@ -971,8 +776,7 @@ pub const Model = struct {
         self.sidebar.revision +%= 1;
     }
 
-    /// Opens a folder that is closed, or closes one that is open. The key is
-    /// copied on the way in, since the path it came from is a row the next
+    /// The key is copied in, since the path it came from is a row the next
     /// rebuild throws away.
     fn toggleDir(self: *Model, path: []const u8) !void {
         if (self.sidebar.expanded.fetchRemove(path)) |gone| {
@@ -985,12 +789,10 @@ pub const Model = struct {
         self.sidebar.revision +%= 1;
     }
 
-    /// Subscribes to changes under the root, so the tree stays live while it is
-    /// open. Reported rather than returned: a watch that will not start is a
-    /// tree that does not update on its own, not a window that cannot go up.
-    ///
-    /// The effect the `.toggle_tree` message asks for. Performed outside the
-    /// model because the callback it registers pushes an SDL event.
+    /// A watch that will not start is a tree that does not update on its own, not
+    /// a window that cannot go up, so its failure is logged rather than returned.
+    /// Performed outside the model because it registers a callback that pushes an
+    /// SDL event.
     pub fn watchTree(self: *Model) void {
         const index = self.index orelse return;
         if (self.watch_id != null) return;
@@ -1000,8 +802,7 @@ pub const Model = struct {
         };
     }
 
-    /// Lets the subscription go. A no-op when there is none, so it is safe to
-    /// call on the way out whether the tree was ever opened or not.
+    /// A no-op when there is no watch, so it is safe to call on the way out.
     pub fn unwatchTree(self: *Model) void {
         const index = self.index orelse return;
         const id = self.watch_id orelse return;
@@ -1009,16 +810,12 @@ pub const Model = struct {
         self.watch_id = null;
     }
 
-    /// What the column with the keyboard is showing, or none before there is a
-    /// column. Asked rather than stored: it is `columns` and `focus`, and two
-    /// facts that agree by construction cannot drift.
+    /// What the focused column is showing, or none before there is a column.
     pub fn showing(self: *const Model) ?*OpenFile {
         if (self.focus >= self.columns.items.len) return null;
         return self.columns.items[self.focus];
     }
 
-    /// Whether a column is showing `file`. The bar asks this of every file it
-    /// lists, which is few enough that a walk is the whole of it.
     pub fn onScreen(self: *const Model, file: *const OpenFile) bool {
         for (self.columns.items) |shown| {
             if (shown == file) return true;
@@ -1026,7 +823,6 @@ pub const Model = struct {
         return false;
     }
 
-    /// Which column is showing `file`, if one is.
     fn columnOf(self: *const Model, file: *const OpenFile) ?usize {
         for (self.columns.items, 0..) |shown, which| {
             if (shown == file) return which;
@@ -1049,13 +845,8 @@ pub const Model = struct {
         self.files.deinit(self.allocator);
     }
 
-    /// The file called `path`, opened if it is not open already.
-    ///
-    /// Asking twice gives the same file back, which is what stops two columns
-    /// showing two copies of one file that drift apart.
-    /// Opens a file, or hands back the one already open on that path. Public
-    /// for `main`, which opens what the command line named; the finder reaches
-    /// it through `choose`.
+    /// The file called `path`, opened if it is not already. Asking twice gives
+    /// the same file back, so two columns cannot show copies that drift apart.
     pub fn open(self: *Model, path: []const u8) !*OpenFile {
         if (self.opened(path)) |already| return already;
 
@@ -1064,10 +855,7 @@ pub const Model = struct {
         return self.hold(was.text, path, was.crlf);
     }
 
-    /// A file nobody named, which is what a window with nothing to show has.
-    /// A file with nothing in it and no name. Public for the same reason as
-    /// `open`: a window has to have something in it, and `main` is where that
-    /// is decided when the command line named nothing.
+    /// An empty, nameless file, which is what a window with nothing to show has.
     pub fn blank(self: *Model) !*OpenFile {
         return self.hold("", null, false);
     }
@@ -1087,11 +875,9 @@ pub const Model = struct {
         return null;
     }
 
-    /// Out of the window and out of memory. Closing is the one thing that means
-    /// a file is finished with.
+    /// Out of the window and out of memory.
     fn close(self: *Model, file: *OpenFile) void {
-        // Nothing may point at it once it is freed, and the scratch preview is
-        // the one thing besides a column that might.
+        // The preview is the one thing besides a column that might point at it.
         if (self.preview == file) self.preview = null;
         const which = self.indexOf(file) orelse return;
         _ = self.files.orderedRemove(which);
@@ -1106,7 +892,7 @@ pub const Model = struct {
         file.* = try OpenFile.init(self.allocator, text, path);
         errdefer file.deinit();
 
-        // What it came in as, so that saving can put it back that way.
+        // Remembered so saving can put the line endings back as they came.
         file.crlf = crlf;
 
         try self.files.append(self.allocator, file);
@@ -1145,35 +931,24 @@ pub const Model = struct {
     }
 };
 
-/// Orders two paths for the tree's listing. Bytewise, which puts a folder's
-/// files in the order they read and is what the view folds a hierarchy out of.
+/// Bytewise, which puts a folder's files in the order the fold expects.
 fn lessPath(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
-/// What the library's watcher calls when the tree changes, on a thread of its
-/// own. So it touches nothing but what is safe from anywhere: it wakes the
-/// window, and lets the batch go.
-///
-/// Which paths changed is not read. The library has already folded them into
-/// its index by the time this runs, and the tree re-reads that whole rather
-/// than acting on one path, so the batch is freed unlooked-at.
+/// Called on the library's watcher thread, so it touches nothing but SDL and the
+/// batch. Which paths changed is not read: the tree re-reads the whole index.
 fn onDiskChange(_: u64, batch: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     sdl.pushTreeChanged();
     if (batch) |owned| fff.freeWatchEvents(owned);
 }
 
-/// An offset rather than a yes or no, because the offset is the part a caller
-/// can act on.
-///
-/// Worth refusing over rather than drawing: HarfBuzz would substitute a
-/// replacement character and only look wrong, but `stepBack` walks continuation
-/// bytes until it finds one that is not, so backspace over stray bytes deletes
-/// however many happen to be adjacent.
+/// The offset of the first invalid byte, or none. Worth refusing over: HarfBuzz
+/// would only draw a replacement character, but `stepBack` walks continuation
+/// bytes, so backspace over stray ones would delete however many are adjacent.
 fn firstInvalidUtf8(text: []const u8) ?usize {
-    // Not `utf8ValidateSlice` first with this only on failure: that is two
-    // pieces of code deciding what UTF-8 is, and the day they disagreed the
-    // fast path would say no and this would find nothing to point at.
+    // Not `utf8ValidateSlice` with this only on failure: two deciders of what
+    // UTF-8 is would, the day they disagreed, leave nothing to point at.
     var at: usize = 0;
     while (at < text.len) {
         const length = std.unicode.utf8ByteSequenceLength(text[at]) catch return at;
@@ -1214,12 +989,9 @@ test "firstInvalidUtf8 rejects a surrogate half" {
     try std.testing.expectEqual(@as(?usize, 0), firstInvalidUtf8("\xed\xa0\x80"));
 }
 
-/// Turns CRLF into LF, freeing what it is given only if it has to replace it.
-///
-/// A carriage return is not a line break to the line index, so it would reach
-/// the shaper and set as .notdef at the end of every line. The bytes then stop
-/// matching the file exactly, which is a trade to revisit when there is a way
-/// to save.
+/// Turns CRLF into LF, freeing what it is given only if it has to replace it. A
+/// carriage return is not a line break here, so left in it would shape as .notdef
+/// at the end of every line.
 fn stripCarriageReturns(allocator: std.mem.Allocator, text: []u8) !Read {
     var found: usize = 0;
     for (text, 0..) |byte, i| {
@@ -1240,18 +1012,15 @@ fn stripCarriageReturns(allocator: std.mem.Allocator, text: []u8) !Read {
     return .{ .text = stripped, .crlf = true };
 }
 
-/// What came back from reading a file: the text, and whether its lines ended
-/// with a carriage return before they were taken out.
-///
-/// Carried rather than worked out again later. The returns are gone from the
-/// text by the time anything else sees it, so this is the only chance to know.
+/// The text, and whether its lines ended with a carriage return before it was
+/// stripped -- the only chance to know, since the returns are gone by then.
 const Read = struct {
     text: []u8,
     crlf: bool,
 };
 
-/// The text with a carriage return in front of every newline, which is how a
-/// file that came in with them goes back out.
+/// The text with a carriage return before every newline: how a file that came in
+/// with them goes back out.
 fn withCarriageReturns(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     const breaks = std.mem.count(u8, text, "\n");
     const out = try allocator.alloc(u8, text.len + breaks);
@@ -1323,16 +1092,9 @@ test "stripCarriageReturns handles a trailing carriage return" {
     try std.testing.expectEqualStrings("one\n\r", stripped.text);
 }
 
-/// Clipboard text with its line endings made into the one the line index
-/// counts, or null when it already has them.
-///
-/// Windows puts CRLF on the clipboard and SDL hands it over unchanged; older
-/// Mac text is a bare CR. Only `\n` starts a line here, so either would land in
-/// the file as a byte with nothing on screen to account for it -- a glyph at
-/// the end of every pasted line, and a column count nobody could explain.
-///
-/// Null rather than a copy when there is nothing to mend, which is every paste
-/// that came from another window of this editor.
+/// Clipboard text with CRLF (Windows) or bare CR (old Mac) turned into the LF
+/// the line index counts, or null when there is nothing to mend. Only `\n`
+/// starts a line here, so a stray `\r` would draw as a glyph at every line end.
 fn unixEndings(allocator: std.mem.Allocator, text: []const u8) !?[]u8 {
     if (std.mem.indexOfScalar(u8, text, '\r') == null) return null;
 
@@ -1374,17 +1136,14 @@ test "a CR on its own is a line ending too" {
     try std.testing.expectEqualStrings("one\ntwo\nthree", mended);
 }
 
-/// Moves the model and puts it back down, which is what `App.update` does, and
-/// hands back whatever was left for the runtime to do. Most of the tests below
-/// have nothing left and ignore it.
 fn moved(model: *Model, change: Message) !?Effect {
     const next, const effect = model.update(change) catch |err| return err;
     model.* = next;
     return effect;
 }
 
-/// As much of the runtime's half as a test can do. The clipboard and the dialog
-/// need a window; writing a file does not.
+/// As much of the runtime's half as a test can do: writing a file needs no
+/// window, unlike the clipboard and the dialog.
 fn performed(model: *Model, effect: Effect) !void {
     switch (effect) {
         .save => |which| {
@@ -1396,14 +1155,11 @@ fn performed(model: *Model, effect: Effect) !void {
     }
 }
 
-/// Both halves, for the tests that want the whole round trip.
 fn moveAndPerform(model: *Model, change: Message) !void {
     if (try moved(model, change)) |effect| try performed(model, effect);
 }
 
-/// A model with one file in one column, which is what the tests below all want
-/// and none of them varies. The io is never reached: nothing here reads or
-/// writes anything.
+/// A model with one file in one column. The io is never reached.
 fn oneOpenFile(allocator: std.mem.Allocator, text: []const u8) !Model {
     var model: Model = .{ .allocator = allocator, .io = undefined };
     errdefer model.deinit();
@@ -1419,7 +1175,6 @@ fn oneOpenFile(allocator: std.mem.Allocator, text: []const u8) !Model {
     return model;
 }
 
-/// What the one file holds, which is the only thing these tests read back.
 fn whatIsIn(model: *Model) ![]const u8 {
     const file = model.columns.items[0];
     return file.buffer.slice(0, file.buffer.byteLen());
@@ -1434,8 +1189,7 @@ test "typing over a selection replaces it" {
 
     try std.testing.expectEqualStrings("one six three", try whatIsIn(&model));
 
-    // The caret lands after what was typed, with nothing selected: a
-    // replacement is one edit, not a selection that survives it.
+    // The caret lands after what was typed, with nothing selected.
     const file = model.columns.items[0];
     try std.testing.expectEqual(@as(usize, 7), file.cursor);
     try std.testing.expect(!file.hasSelection());
@@ -1448,8 +1202,7 @@ test "backspace over a selection takes the selection and no more" {
     _ = try moved(&model, .{ .selection = .{ .column = 0, .from = 4, .to = 7 } });
     _ = try moved(&model, .backspace);
 
-    // The space before `two` is still there: backspacing a selection is not
-    // backspacing a selection and then a character.
+    // The space before `two` survives: a selection, not a selection and a char.
     try std.testing.expectEqualStrings("one  three", try whatIsIn(&model));
     try std.testing.expectEqual(@as(usize, 4), model.columns.items[0].cursor);
 }
@@ -1490,7 +1243,6 @@ test "a selection past the end of the file is clamped to it" {
 }
 
 /// A model whose one file is on disk at `path`, with a real io to reach it by.
-/// The tests below are the only place anything here writes anything.
 fn oneSavedFile(allocator: std.mem.Allocator, path: []const u8, text: []const u8) !Model {
     var model = try oneOpenFile(allocator, text);
     errdefer model.deinit();
@@ -1500,8 +1252,7 @@ fn oneSavedFile(allocator: std.mem.Allocator, path: []const u8, text: []const u8
     return model;
 }
 
-/// Where a temporary directory sits, said the way the working directory sees
-/// it: `writeOut` opens the directory a path names, so the path has to be one.
+/// A tmp path relative to the working directory, which is what `writeOut` opens.
 fn under(allocator: std.mem.Allocator, tmp: *const std.testing.TmpDir, name: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, name });
 }
@@ -1566,7 +1317,7 @@ test "saving a file nothing has changed writes nothing at all" {
 
     try moveAndPerform(&model, .save);
 
-    // Not even created: a save that had nothing to do did nothing.
+    // Not even created: a save with nothing to do touches nothing.
     try std.testing.expectError(
         error.FileNotFound,
         std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 16)),
@@ -1623,7 +1374,6 @@ test "a file given a name is written under it and keeps it" {
 
     try std.testing.expectEqualStrings(path, file.path.?);
     try std.testing.expect(!file.modified);
-    // Asked and answered: nothing is still waiting for a name.
     try std.testing.expect(model.naming == null);
 
     const written = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 16));
@@ -1681,8 +1431,7 @@ test "asking for a name a second time replaces the first" {
     model.naming = file;
     try moveAndPerform(&model, .{ .named = second });
 
-    // The old path is let go of rather than leaked, which the testing
-    // allocator is what checks.
+    // The testing allocator checks the old path was freed, not leaked.
     try std.testing.expectEqualStrings(second, file.path.?);
 }
 
@@ -1767,7 +1516,6 @@ test "closing the last file leaves a blank rather than closing the window" {
 
     _ = try moved(&model, .close);
 
-    // Still up, now showing a single blank where the file was.
     try std.testing.expect(model.running);
     try std.testing.expectEqual(@as(usize, 1), model.files.items.len);
     try std.testing.expectEqual(@as(usize, 1), model.columns.items.len);
@@ -1792,7 +1540,6 @@ test "closing the blank a last file left behind closes the window" {
 
 test "closing a window that never had a file named closes it" {
     const allocator = std.testing.allocator;
-    // A blank, which is what a window opened with no path shows.
     var model = try oneOpenFile(allocator, "");
     defer model.deinit();
 
@@ -1801,8 +1548,7 @@ test "closing a window that never had a file named closes it" {
 }
 
 /// A window on a blank, with an io to open files by. The names below do not
-/// exist, so opening one is an empty file with that path -- which is all these
-/// tests read of it.
+/// exist, so opening one is an empty file with that path.
 fn browsing(allocator: std.mem.Allocator) !Model {
     var model = try oneOpenFile(allocator, "");
     errdefer model.deinit();
@@ -1810,7 +1556,6 @@ fn browsing(allocator: std.mem.Allocator) !Model {
     return model;
 }
 
-/// Whether a file with `path` is still open.
 fn isOpen(model: *const Model, path: []const u8) bool {
     for (model.files.items) |file| {
         const named = file.path orelse continue;
@@ -1825,12 +1570,11 @@ test "opening one file after another replaces the scratch preview" {
     defer model.deinit();
 
     _ = try moved(&model, .{ .open_file = "scratch-a.zzz" });
-    // The file just opened is the preview, and it is what the column shows.
     try std.testing.expect(model.preview == model.showing().?);
     try std.testing.expect(isOpen(&model, "scratch-a.zzz"));
 
     _ = try moved(&model, .{ .open_file = "scratch-b.zzz" });
-    // The second takes the first's place: the first is gone, not left on a tab.
+    // The second takes the first's place, rather than leaving it on a tab.
     try std.testing.expectEqualStrings("scratch-b.zzz", model.showing().?.path.?);
     try std.testing.expect(!isOpen(&model, "scratch-a.zzz"));
     try std.testing.expect(model.preview == model.showing().?);
@@ -1849,7 +1593,7 @@ test "editing a previewed file keeps it, so the next opens beside it" {
     try std.testing.expect(model.preview == null);
 
     _ = try moved(&model, .{ .open_file = "scratch-b.zzz" });
-    // Both are open now: the edited one was kept.
+    // The edited one was kept, so both are open.
     try std.testing.expect(isOpen(&model, "scratch-a.zzz"));
     try std.testing.expect(isOpen(&model, "scratch-b.zzz"));
 }
@@ -1862,8 +1606,7 @@ test "double-clicking a tab keeps it out of being replaced" {
     _ = try moved(&model, .{ .open_file = "scratch-a.zzz" });
     try std.testing.expect(model.preview != null);
 
-    // The blank has no tab, so the opened file is the first and only one on the
-    // bar. Pinning it is what a double-click asks for.
+    // The blank has no tab, so the opened file is the only one on the bar.
     _ = try moved(&model, .{ .pin = 0 });
     try std.testing.expect(model.preview == null);
 

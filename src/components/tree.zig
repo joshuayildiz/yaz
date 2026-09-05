@@ -1,19 +1,12 @@
 //! The sidebar file tree: cmd+B, click a folder to open it, click a file to
 //! open it in the column with the keyboard.
 //!
-//! It holds no listing of its own. `model.sidebar` is the whole of what the
-//! index found, sorted by path, and the folders the reader has opened over it;
-//! this folds that flat list into a hierarchy, shapes the rows on screen, and
-//! turns a press back into the row it landed in.
+//! It holds no listing of its own: `model.sidebar` is the flat, sorted index and
+//! the open folders, which this folds into a hierarchy, shapes, and hit-tests.
+//! The fold is redone only when `model.sidebar.revision` moves.
 //!
-//! The fold is redone only when the listing or the open folders change, which
-//! `model.sidebar.revision` says: a scroll moves the same rows, and a redraw of
-//! them shapes nothing that was shaped before.
-//!
-//! Files come in flat -- `src/main.zig`, not a `src` with a `main.zig` under it
-//! -- so the folders are the path prefixes. A folder with no files under it is
-//! not in the index and so not here, which is the one thing this shows less of
-//! than the disk holds.
+//! Paths come in flat, so the folders are their prefixes; a folder with no files
+//! under it is not in the index and so not shown.
 
 const std = @import("std");
 
@@ -32,36 +25,23 @@ const Rect = painter_mod.Rect;
 const drawLine = @import("../text.zig").draw;
 const advance = @import("../text.zig").advance;
 
-/// The ground, the rule that closes it off on the right, and the words. The
-/// ground and the rule cannot share a layer: the ground covers the whole strip,
-/// the rule sits at its right edge, and within a layer the painter reorders, so
-/// the rule would draw under the ground it is meant to sit on.
+/// Ground and rule need separate layers: the ground covers the strip and the
+/// rule sits at its edge, and within a layer the painter would reorder them.
 const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = .chip };
 const rule_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = .edge };
 const name_key: Key = .{ .layer = 2, .pipeline = .glyphs, .colour = .text };
-
-/// The folder marker, said quietly: it is a hint about what a row does, not part
-/// of the name.
 const chevron_key: Key = .{ .layer = 2, .pipeline = .glyphs, .colour = .muted };
 
-/// A folder open, and a folder shut. Two glyphs, shaped once and set down again
-/// for every folder on screen.
 const chevron_open_glyph = "\u{25BE}";
 const chevron_shut_glyph = "\u{25B8}";
 
-/// In points, scaled like the font: the air at the left edge and above a row,
-/// how far one level of nesting steps in, and the gap between the marker and the
-/// name.
 const pad = 6;
 const indent_step = 14;
 const gap = 4;
-
-/// Rows are set a little looser than the font's own line so the list reads as
-/// set rather than stacked.
 const leading = 1.3;
 
-/// A node while the hierarchy is being built. Lives in the fold's arena and is
-/// gone by the time it returns; the rows it produces point at the model instead.
+/// A node while the hierarchy is being built: lives in the fold's arena and is
+/// gone by the time it returns, so its rows point at the model's paths instead.
 const Node = struct {
     name: []const u8,
     full: []const u8,
@@ -72,9 +52,8 @@ const Node = struct {
 pub const Tree = struct {
     pub fn deinit(_: *Tree, _: std.mem.Allocator) void {}
 
-    /// Folds the listing, shapes the markers and the rows on screen, and records
-    /// the strip -- all into `model.sidebar`, so `update` can hit-test and `draw`
-    /// paint without either folding or shaping.
+    /// Folds the listing, shapes the markers and the on-screen rows, and records
+    /// the strip -- all into `model.sidebar`, so `resolve` and `draw` only read.
     pub fn place(_: *Tree, model: *Model, rect: Rect) !void {
         model.sidebar.rect = rect;
         try ensureBuilt(model);
@@ -99,10 +78,8 @@ pub const Tree = struct {
         }
     }
 
-    /// What a press means: a folder to open or shut, a file to open, or nothing
-    /// when it fell past the last row. A wheel moves the list, clamped here
-    /// because only this knows how many rows there are. A free function, not a
-    /// method: `Model.update` calls it with the model it already holds.
+    /// A press to a folder to toggle or a file to open; a wheel to a clamped
+    /// scroll. A free function: `Model.update` calls it with the model it holds.
     pub fn resolve(model: *const Model, message: Message) Message {
         const sidebar = &model.sidebar;
         const s = step(model);
@@ -132,8 +109,8 @@ pub const Tree = struct {
         const sidebar = &model.sidebar;
         const rect = sidebar.rect;
 
-        // So a row scrolled up cannot draw above the strip, and a name too long
-        // for it cannot draw into the files beside it.
+        // So a scrolled row cannot draw above the strip, nor a long name into
+        // the files beside it.
         painter.clipTo(rect);
         defer painter.clipTo(null);
 
@@ -146,8 +123,7 @@ pub const Tree = struct {
 
         if (sidebar.rows.items.len == 0) return;
 
-        // Reserved on every row whether it carries a marker or not, so a file
-        // and the folder above it line their names up.
+        // Reserved on every row, marker or not, so files and folders line up.
         const marker = @round(@max(advance(&sidebar.chevron_open), advance(&sidebar.chevron_shut)) + gap * model.atlas.scale);
 
         const s = step(model);
@@ -177,15 +153,13 @@ pub const Tree = struct {
         }
     }
 
-    /// How tall one row is. A number of the font's own lines, so it grows with
-    /// the display's scale without anyone here converting.
+    /// How tall one row is, as a number of the font's lines.
     fn step(model: *const Model) f32 {
         return @round(model.atlas.line_height * leading);
     }
 
-    /// Folds the flat listing into rows, once per revision. The old rows and the
-    /// glyphs shaped for them are let go of first: a fold is a new set of rows,
-    /// not an edit of the last.
+    /// Folds the flat listing into rows, once per revision, freeing the old rows
+    /// and their glyphs first.
     fn ensureBuilt(model: *Model) !void {
         const sidebar = &model.sidebar;
         if (sidebar.built != null and sidebar.built.? == sidebar.revision) return;
@@ -195,8 +169,6 @@ pub const Tree = struct {
         sidebar.rows.clearRetainingCapacity();
         sidebar.layouts.clearRetainingCapacity();
 
-        // The nodes and their maps live only as long as the fold. The rows that
-        // come out of it point at the model's paths, which outlast it.
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         try fold(allocator, arena.allocator(), sidebar.paths.items, &sidebar.expanded, &sidebar.rows);
@@ -208,12 +180,9 @@ pub const Tree = struct {
     }
 };
 
-/// Folds sorted file paths into rows, folders before files, opening a folder's
-/// contents only when it is in `expanded`.
-///
-/// `gpa` is where the rows go and outlives the call; `arena` holds the tree of
-/// nodes and is thrown away as this returns. The rows point at the paths, so
-/// they last as long as the listing does.
+/// Folds sorted paths into rows, folders before files, opening a folder only
+/// when it is in `expanded`. The rows go in `gpa` and point at the paths; the
+/// node tree lives in `arena` and is thrown away here.
 fn fold(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -237,7 +206,6 @@ fn fold(
             }
 
             const segment = path[start..at];
-            // More of the path to come means this segment is a folder.
             const is_dir = at < path.len;
 
             const found = try into.getOrPut(arena, segment);
@@ -254,7 +222,7 @@ fn fold(
     try emit(gpa, arena, &root, 0, expanded, rows);
 }
 
-/// Walks one level, folders first, and descends into the open ones.
+/// Walks one level, folders first, descending into the open ones.
 fn emit(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -263,8 +231,7 @@ fn emit(
     expanded: *const std.StringHashMapUnmanaged(void),
     rows: *std.ArrayList(Row),
 ) !void {
-    // A copy, because the map's own order is the order paths arrived in and this
-    // wants folders first.
+    // A copy, since the map's own order is the order paths arrived in.
     const ordered = try arena.dupe(*Node, level.values());
     std.mem.sort(*Node, ordered, {}, lessNode);
 
@@ -276,7 +243,6 @@ fn emit(
     }
 }
 
-/// Folders before files, and each group by name.
 fn lessNode(_: void, a: *Node, b: *Node) bool {
     if (a.is_dir != b.is_dir) return a.is_dir;
     return std.mem.lessThan(u8, a.name, b.name);
@@ -284,9 +250,7 @@ fn lessNode(_: void, a: *Node, b: *Node) bool {
 
 const testing = std.testing;
 
-/// The rows a fold produces for a listing, with the given folders open. The
-/// caller frees the returned list; the arena holds the scratch and is freed
-/// here.
+/// The rows a fold produces, with the given folders open. Caller frees the list.
 fn foldedWith(
     gpa: std.mem.Allocator,
     paths: []const []const u8,
@@ -315,8 +279,7 @@ test "a closed tree shows only the top level, folders first" {
     }, &.{});
     defer rows.deinit(gpa);
 
-    // assets and src are folders and sort ahead of the one file; nothing under
-    // them shows, because neither is open.
+    // Folders sort ahead of the file, and nothing under them shows.
     try testing.expectEqual(@as(usize, 3), rows.items.len);
     try testing.expectEqualStrings("assets", rows.items[0].name);
     try testing.expect(rows.items[0].is_dir);
@@ -335,8 +298,7 @@ test "opening a folder shows its contents, indented, and only that folder's" {
     }, &.{"src"});
     defer rows.deinit(gpa);
 
-    // src is open: its two files appear under it, one level in. assets stays
-    // shut, so its file does not.
+    // src is open, so its files appear indented under it; assets stays shut.
     try testing.expectEqual(@as(usize, 5), rows.items.len);
     try testing.expectEqualStrings("assets", rows.items[0].name);
     try testing.expectEqualStrings("src", rows.items[1].name);

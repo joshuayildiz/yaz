@@ -9,20 +9,13 @@ pub const font_path = "assets/DejaVuSansMono.ttf";
 /// scale, so text is the same size to look at on any display.
 pub const font_size = 13;
 
-/// What one step of indentation is worth, written as the text it is as wide as.
-///
-/// A digit rather than a space, because a proportional font's space is far too
-/// thin to indent with: in DejaVu Sans a space is about half a digit, so four of
-/// them come out narrower than one letter of the code they would be indenting.
-/// A digit is the one glyph in a text font that is reliably wide and the same
-/// width as its fellows.
+/// One step of indentation, as the text it is as wide as. A digit, not a space:
+/// a proportional font's space is too thin to indent with, and a digit is its
+/// one reliably wide, fixed-width glyph.
 pub const indent_stop = "0";
 
-/// How many of those a tab is worth.
-///
-/// A count rather than a second width, so that a tab and `tab_stops` spaces are
-/// the same distance by construction. A file that indents with both would come
-/// apart otherwise.
+/// A count rather than a width, so a tab and `tab_stops` spaces come out the same
+/// distance by construction.
 pub const tab_stops = 4;
 
 // -- Theme --------------------------------------------------------------------
@@ -35,8 +28,7 @@ pub const tab_stops = 4;
 
 const std = @import("std");
 
-/// Light or dark, followed from the system. What decides which palette a
-/// `Colour` resolves against.
+/// Followed from the system; decides which palette a `Colour` resolves against.
 pub const Theme = enum { light, dark };
 
 /// A semantic colour role. A `Key` carries one of these rather than an rgba.
@@ -45,17 +37,14 @@ pub const Colour = enum {
     text,
     caret,
     scrollbar,
-    /// The band under selected text. An off-yellow, so a selection catches the
-    /// eye while the text still reads through it.
+    /// The band under selected text.
     text_selection,
-    /// A surface floating over the file -- the finder's panel, the healthcheck's
-    /// card. `chip` is the recessed strip a tab or a tree row sits in; `edge` the
-    /// hairline round a floating surface.
+    /// A surface floating over the file. `chip` is the recessed strip a tab or
+    /// tree row sits in; `edge` the hairline round a floating surface.
     panel,
     chip,
     edge,
-    /// The finder's chosen row: a tint, since a panel already has edges to agree
-    /// with.
+    /// The finder's chosen row.
     selection,
     /// Said quietly (a path), and quieter still (a directory, a count).
     muted,
@@ -102,8 +91,7 @@ const dark: Palette = .init(.{
     .bad = .{ 0.95, 0.48, 0.48, 1 },
 });
 
-/// What a role looks like in a theme: the one place a `Colour` becomes numbers,
-/// called by the renderer as it fills each draw.
+/// The one place a `Colour` becomes numbers, called by the renderer per draw.
 pub fn rgba(theme: Theme, colour: Colour) [4]f32 {
     return (switch (theme) {
         .light => light,

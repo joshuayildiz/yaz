@@ -19,6 +19,18 @@ CLAUDE.md is for rules addressed to you. It is not project documentation.
 Anything a human reader needs — what the project is, how to build it, how to
 set up tooling, platform quirks — belongs in README.md.
 
+### Comments earn their place or go
+
+A comment must add **significant** value — the non-obvious *why*: a gotcha, an
+invariant, a platform or library quirk, a memory-ownership note, a keybinding,
+or the one load-bearing reason behind a choice. If it does not, delete it.
+
+- Do not restate what the code, its names, or its types already say.
+- Do not narrate what the next block does, and do not add flavour.
+- Keep rationale to its one essential sentence; cut the rest.
+- A stale comment is worse than none. When the code moves, fix or delete the
+  comments around it.
+
 ### Small commits, one per feature
 
 Tidy history is a must.

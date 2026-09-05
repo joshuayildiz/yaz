@@ -25,29 +25,22 @@ const advance = @import("../text.zig").advance;
 
 const tools = @import("../tools.zig");
 
-/// The card is behind everything, the accent and the chip on it, the text on top
-/// of both. Nothing within a layer overlaps.
+/// Card behind, accent and chip on it, text over both; nothing within a layer
+/// overlaps.
 const card_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = .panel };
 const accent_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = .bad };
 const chip_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = .chip };
 const text_layer = 2;
 
-/// In points, scaled like the font. Multiples of a common step, so the spacing
-/// reads as deliberate rather than as whatever fitted.
 const pad = 36;
 const gap = 14;
 const chip_pad = 8;
 
-/// The one strong mark on the card, in its own gutter down the left of the
-/// heading. It is what a border, a rule and a dot per tool were doing between
-/// them before.
+/// The one strong mark on the card, down the left of the heading.
 const accent = 3;
 
-/// A run of text placed on its own.
-///
-/// The view is pieces rather than lines because the font is proportional: a
-/// column can only be lined up by measuring what is in it, and padding with
-/// spaces comes out ragged.
+/// A run of text placed on its own -- pieces rather than lines because a
+/// proportional font's columns can only be lined up by measuring what is in them.
 const Piece = struct {
     text: []u8,
     colour: config.Colour,
@@ -68,9 +61,7 @@ const Piece = struct {
     }
 };
 
-/// One tool across the row: its name, whether it runs, and where it was looked
-/// for. The status is a word and a colour together, so neither is carrying it
-/// alone and neither needs a mark of its own beside it.
+/// One tool's row: its name, whether it runs, and where it was looked for.
 const Row = struct {
     name: Piece,
     status: Piece,
@@ -150,8 +141,7 @@ pub const Healthcheck = struct {
 
     const piece_count = 4 + tools.Tool.all.len * 3;
 
-    /// Every piece there is, so that shaping and dropping cannot disagree about
-    /// what the view is made of.
+    /// Every piece there is, so shaping and dropping cannot disagree.
     fn pieces(self: *Healthcheck, out: *[piece_count]*Piece) void {
         var at: usize = 0;
         out[at] = &self.heading;
@@ -169,9 +159,8 @@ pub const Healthcheck = struct {
         std.debug.assert(at == out.len);
     }
 
-    /// Rows of the card, top to bottom. Blank ones are spacing, and are here
-    /// rather than as pixel constants so the rhythm stays a multiple of the line
-    /// height whatever the font size is.
+    /// Rows of the card, blanks included as spacing, so the rhythm stays a
+    /// multiple of the line height whatever the font size.
     const heading_row = 0;
     const first_tool_row = 2;
     const footer_row = first_tool_row + tools.Tool.all.len + 1;
@@ -181,8 +170,8 @@ pub const Healthcheck = struct {
         painter.clipTo(self.rect);
         defer painter.clipTo(null);
 
-        // Shaped before anything is placed: every column here is lined up from
-        // measured widths, and nothing can be measured until it is shaped.
+        // Shaped before placing: the columns line up from measured widths, and
+        // nothing can be measured until it is shaped.
         var all: [piece_count]*Piece = undefined;
         self.pieces(&all);
         for (all) |target| {
@@ -216,11 +205,8 @@ pub const Healthcheck = struct {
             .x = 0,
             .y = 0,
         };
-        // Horizontally centred; vertically a little above it, because a box at
-        // the exact middle of a window reads as sitting low.
-        //
-        // Whole pixels: the text inside is placed from here, and a fractional
-        // origin would change which subpixel variant it uses.
+        // A little above the middle, which reads as centred; a box at the exact
+        // middle reads low. Whole pixels, since the text is placed from here.
         const left = @round(self.rect.x + (self.rect.width - card.width) / 2);
         const top = @round(self.rect.y + (self.rect.height - card.height) * 0.42);
 
@@ -236,12 +222,9 @@ pub const Healthcheck = struct {
         const heading_y = baseline(top, padding, step, model.atlas.ascent, heading_row);
         try self.heading.draw(painter, .{ text_left, heading_y });
 
-        // Beside the heading only, and as tall as it: down the whole card it
-        // would be a border again rather than a mark.
-        //
-        // It hangs in the left padding rather than in a gutter of its own, so
-        // that the words start where the padding says and the card stays even
-        // on both sides.
+        // Beside the heading only, in the left padding rather than a gutter of
+        // its own, so the card stays even on both sides. Down the whole card it
+        // would read as a border, not a mark.
         const mark = @round(accent * scale);
         try painter.add(accent_key, .solid(
             .{ text_left - spacing - mark, @round(heading_y - model.atlas.ascent) },

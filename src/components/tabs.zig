@@ -12,7 +12,6 @@
 
 const std = @import("std");
 
-
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Model = @import("../model.zig").Model;
 const LineLayout = glyph_atlas.LineLayout;
@@ -25,12 +24,8 @@ const Rect = painter_mod.Rect;
 const drawLine = @import("../text.zig").draw;
 const advance = @import("../text.zig").advance;
 
-/// Below the finder's 3 and above, and never over a file: the bar has the
-/// top strip to itself. The ground and the rule under it do not overlap, so they
+/// The ground and the rule under it are cut so they do not overlap, so they can
 /// share a layer; the tab in front covers both and needs one of its own.
-/// The strip is recessed so that a tab lifted out of it reads as lifted. Against
-/// the panel colour it did not: three parts in a hundred is not a difference
-/// anyone can see.
 const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = .chip };
 const rule_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = .edge };
 const shown_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = .background };
@@ -38,23 +33,16 @@ const seam_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = .edge };
 const name_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = .text };
 const other_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = .muted };
 
-/// In points, scaled like the font: the air either side of a tab, above and
-/// below the name, and between the mark and the name.
-///
-/// Tight, because a bar of names is scanned rather than read. What keeps two
-/// names apart at this spacing is the seam between their tabs rather than the
-/// space, which is why the seam is here at all.
+/// In points, scaled like the font: the air across a tab, above and below the
+/// name, and between the mark and the name.
 const across = 4;
 const down = 4;
 const beside = 3;
 
-/// What says a file has been changed and not saved. One glyph, shaped once and
-/// set down again for every tab that needs it -- a round mark, which a quad
-/// cannot be.
 const unsaved_mark = "\u{2022}";
 
 /// Where a glyph's ink sits inside its advance: how far past the pen it starts,
-/// and how wide it actually is.
+/// and how wide it is.
 const Ink = struct {
     from: f32 = 0,
     wide: f32 = 0,
@@ -63,19 +51,16 @@ const Ink = struct {
 pub const Tabs = struct {
     pub fn deinit(_: *Tabs, _: std.mem.Allocator) void {}
 
-    /// Nothing at all when no file has been named: a strip with no tabs on it
-    /// is a promise of something that is not there.
+    /// No bar at all until a file has a name.
     pub fn height(_: *const Tabs, model: *const Model) ?f32 {
         if (listed(model) == 0) return 0;
         return @round(model.atlas.line_height + 2 * @round(down * model.atlas.scale));
     }
 
-    /// Lays the bar out: shapes the mark and every name, works out where each
-    /// tab sits, and writes the band onto the model and each tab's rect onto the
-    /// file it names. Drawing then only reads, and a press -- which comes after a
-    /// frame -- has rects to hit. The mark's width is reserved on both sides of
-    /// every name, so a file being typed into does not shift the bar and its name
-    /// sits centred rather than hard against the right edge.
+    /// Shapes the mark and every name, works out where each tab sits, and writes
+    /// the band onto the model and each tab's rect onto the file it names. The
+    /// mark's width is reserved on both sides of every name, so a file being
+    /// typed into does not shift the bar and its name stays centred.
     pub fn place(_: *Tabs, model: *Model, rect: Rect) !void {
         model.tabs_rect = rect;
         if (listed(model) == 0) return;
@@ -90,10 +75,8 @@ pub const Tabs = struct {
         for (model.files.items) |file| {
             const path = file.path orelse continue;
 
-            // A scratch preview leans, so a tab that will be replaced by the
-            // next file opened reads as the loan it is. Reshaped when the slant
-            // has to change as well as when the atlas has, since the generation
-            // is the same either way and cannot say the style went stale.
+            // A scratch preview leans. Reshaped on a change of slant as well as
+            // of atlas, since the generation cannot say the style went stale.
             const preview = model.preview == file;
             if (model.atlas.stale(&file.name) or file.name.slanted != preview) {
                 const basename = std.fs.path.basename(path);
@@ -118,8 +101,6 @@ pub const Tabs = struct {
         const gap = @round(beside * model.atlas.scale);
         const ink = inkOf(&model.tab_bullet);
 
-        // The strip, and the rule that closes it off. Cut so they do not
-        // overlap, which is what lets them share a layer.
         try painter.add(ground_key, .solid(
             .{ bar.x, bar.y },
             .{ bar.width, @max(0, bar.height - line) },
@@ -133,20 +114,15 @@ pub const Tabs = struct {
             if (file.path == null) continue;
             const r = file.tab_rect;
 
-            // The one in front is the colour of the page. It stops short of the
-            // rule along the bottom rather than covering it, so the bar's edge
+            // Two signals, with different answers in a split: the ground says
+            // whether the file is on screen, the name's colour whether it has
+            // the keyboard. The ground stops short of the rule so the bar's edge
             // runs unbroken under every tab.
-            // Two signals, because there are two questions and with the window
-            // split they have different answers: the ground says whether the
-            // file is on screen at all, and the name's colour says whether it is
-            // the one being typed into.
             if (model.onScreen(file)) try painter.add(shown_key, .solid(
                 .{ r.x, bar.y },
                 .{ r.width, @max(0, bar.height - line) },
             ));
 
-            // Down the right edge of every tab, over the fill rather than under
-            // it, so the one in front is edged on both sides like the rest.
             try painter.add(seam_key, .solid(
                 .{ r.x + r.width - line, bar.y },
                 .{ line, @max(0, bar.height - line) },
@@ -155,8 +131,8 @@ pub const Tabs = struct {
             const key = if (model.showing() == file) name_key else other_key;
             const baseline = @round(bar.y + @round(down * model.atlas.scale) + model.atlas.ascent);
 
-            // The mark's room is taken whether or not it is drawn, placed by its
-            // ink rather than its pen so what was reserved is what appears there.
+            // Placed by its ink rather than its pen, so what was reserved for it
+            // is what appears there.
             if (file.modified) {
                 try drawLine(painter, key, &model.tab_bullet, .{ @round(r.x + inset - ink.from), baseline });
             }
@@ -164,17 +140,14 @@ pub const Tabs = struct {
         }
     }
 
-    /// What the mark draws, not what it advances. A bullet carries wide side
-    /// bearings, and reserving them twice over would be paying for space
-    /// `beside` is already providing -- on a bar this tight, twice.
+    /// What the mark draws, not what it advances: a bullet's wide side bearings
+    /// are already covered by `beside`, and would be paid for twice otherwise.
     fn inkOf(bullet: *const LineLayout) Ink {
         if (bullet.sprites.items.len == 0) return .{};
         return .{ .from = bullet.sprites.items[0].dest[0], .wide = bullet.sprites.items[0].size[0] };
     }
 
-    /// How many files have a name, which is how many tabs there are: a file
-    /// nobody named has nothing to write on one, and a window showing one has
-    /// no bar at all.
+    /// How many files have a name, which is how many tabs there are.
     fn listed(model: *const Model) usize {
         var count: usize = 0;
         for (model.files.items) |file| {
