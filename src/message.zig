@@ -10,181 +10,127 @@ const c = sdl.c;
 /// else a wheel event is detents, and a detent is a number of lines.
 const macos = builtin.target.os.tag == .macos;
 
-/// How far one detent goes. Three is what Windows scrolls by default, and what
-/// the desktops elsewhere settled on; a wheel that moved by some distance of
-/// its own would be the only thing on the machine that did.
 const lines_per_notch = 3;
 
-/// What the runtime is asked to go and do, once the model has moved as far as
-/// it can on its own.
-///
-/// A message is everything the model can do to itself; an effect is everything
-/// it cannot -- the clipboard, the filesystem, a dialog. `Model.update` answers
-/// with one rather than performing it, which is what keeps SDL and the
-/// filesystem out of every branch of it, and out of its tests.
-///
-/// Whatever performing one produces comes back in as a message, like anything
-/// else that ever moves the model.
+/// What the runtime is asked to do once the model has moved as far as it can on
+/// its own: an effect is everything the model cannot do to itself -- the
+/// clipboard, the filesystem, a dialog. `Model.update` answers with one rather
+/// than performing it, which keeps SDL and the filesystem out of its tests, and
+/// whatever performing one produces comes back as a message.
 pub const Effect = union(enum) {
-    /// The nth column's selection, to the system clipboard.
     copy: usize,
-
-    /// The system clipboard, into the nth column over whatever is selected.
     paste: usize,
-
-    /// The nth column's file, to the path it was opened from.
     save: usize,
 
-    /// Where to put a file that has no name yet. Which file is waiting for the
-    /// answer is the model's to remember, so there is nothing to say here.
+    /// Which file is waiting for the name is the model's to remember, so there
+    /// is nothing to carry here.
     ask_name,
 
-    /// Start or stop the filesystem watch that keeps the sidebar tree live.
-    /// Gated on the sidebar being open, so a closed tree wakes the window for
-    /// nothing -- which is the whole of why these are effects and not just a
-    /// flag flipped in the model.
+    /// The filesystem watch that keeps the tree live. An effect and not a flag
+    /// because starting it registers a callback that pushes SDL events.
     watch,
     unwatch,
 };
 
-/// Already in pixels by the time one of these is made, so nothing that handles
-/// one has to know what a display scale is, and nothing that handles one has to
-/// know what SDL calls things.
+/// Already in pixels by the time one of these is made, so nothing downstream has
+/// to know what a display scale is or what SDL calls things.
 pub const Message = union(enum) {
-    /// Nothing here acts on, which is most of what SDL sends: a key with no
-    /// binding, an exposure the resize watch has already drawn, an event of a
-    /// kind yaz does not read. Named rather than left as a null so `init` says
-    /// what it means and hands back a message like any other; the loop drops it.
+    /// Nothing here acts on, which is most of what SDL sends. Named rather than a
+    /// null so `init` hands back a message like any other; the loop drops it.
     none,
 
     quit,
     resized,
-    /// The system flipped between light and dark. Nothing in the model moved,
-    /// but the palette every colour resolves against did, so the window redraws.
     themed,
 
     text: []const u8,
     newline,
     backspace,
 
-    /// Show the file finder.
     find,
-    /// Open or close the sidebar tree: cmd+B.
+    /// cmd+B.
     toggle_tree,
-    /// The tree the sidebar shows changed on disk. Pushed from the library's
-    /// watcher, so it wakes the window rather than being a keystroke.
+    /// Pushed from the library's watcher thread, so it wakes the window rather
+    /// than being a keystroke.
     disk_changed,
-    /// Show the nth file open in the window, counted from zero: cmd+1 to cmd+9,
-    /// or the tab a press landed on. Named for what it asks for rather than for
-    /// the strip it is asked from, which leaves `tab` to mean the key.
+    /// Show the nth open file, or the tab a press landed on: cmd+1 to cmd+9.
     show: usize,
-    /// Put the nth file beside what is already split, or take it away again:
-    /// cmd+alt+1 to cmd+alt+9.
+    /// Put the nth file beside what is split, or take it away: cmd+alt+1 up.
     split: usize,
-    /// Take the file in front off the bar and out of memory: cmd+W.
+    /// cmd+W.
     close,
-    /// Take the whole file: cmd+A.
+    /// cmd+A.
     select_all,
-    /// The tab key. Not text and does not arrive as any: SDL drops a keystroke
-    /// whose text is a control character, and a tab is one.
+    /// SDL drops a keystroke whose text is a control character, and a tab is one,
+    /// so it arrives as a key or not at all.
     tab,
-    /// The selection to the system clipboard and back: cmd+X, cmd+C, cmd+V.
+    /// cmd+X, cmd+C, cmd+V.
     cut,
     copy,
     paste,
-    /// Write the focused file back to where it came from: cmd+S.
+    /// cmd+S.
     save,
-    /// Where to put the file that had no name. The window's, not a column's:
-    /// the file that asked is remembered by the model, since the answer can
-    /// take as long as somebody takes to give it.
+    /// The path a save dialog answered with. Its file is the model's to remember,
+    /// since the answer can take as long as somebody takes to give it.
     named: []const u8,
-    /// Move a selection, not a caret: nothing in a file reads these yet.
     up,
     down,
-    /// Escape. Put back whatever was in front of this.
     cancel,
 
-    /// Pixels to move a view by, positive downwards, and where the pointer was
-    /// while it happened -- which is what decides whose view moves.
+    /// `at` is where the pointer was, which is what decides whose view a wheel
+    /// moves.
     wheel: struct { delta: f32, at: [2]f32 },
-    /// `extend` is shift being held, which keeps the far end of the selection
-    /// where it is instead of starting a new one. `clicks` is how many presses
-    /// in a row this is, which is what tells a click from a double-click.
+    /// `extend` is shift held; `clicks` is how many presses in a row, which tells
+    /// a click from a double-click.
     press: struct { at: [2]f32, extend: bool, clicks: u8 },
     move: [2]f32,
     release,
 
-    /// Button 3, and where it fell: acme's "look". The word it lands on is what
-    /// gets searched for, so a column can jump to the next place that word
-    /// appears rather than putting a caret down.
+    /// Acme's "look", on button 3: the word it lands on is searched for.
     look: [2]f32,
 
-    // -- Resolved intents ----------------------------------------------------
-    //
-    // What `Model.resolve` turns a raw pointer message into, and what an effect
-    // that finished loops back as. `update` recurses on the raw ones and mutates
-    // on these; nothing but `update` itself produces them, so they never reach
-    // `resolve`.
+    // What `Model.resolve` turns a raw pointer message into, and what a finished
+    // effect loops back as. `update` recurses on the raw ones and mutates on
+    // these, so they never reach `resolve`.
 
-    /// Keep the nth tab: promote it out of being the scratch preview, so the
-    /// next file opened does not replace it. What a double-click on a tab asks
-    /// for.
     pin: usize,
 
-    /// Put the caret at a byte offset in the nth column. `extend` leaves the far
-    /// end of the selection where it is and moves only this one, which is what a
-    /// shifted press and a drag both do; without it the selection collapses.
+    /// `extend` moves only this end, leaving the other -- a shifted press or a
+    /// drag; without it the selection collapses to the caret.
     caret: struct { column: usize, at: usize, extend: bool = false },
 
-    /// Both ends of a selection at once. `follow` brings the view to it the way
-    /// an edit does; `warp` brings the pointer too, which is what lets a look
-    /// step on to the next occurrence under a still hand. A drag sets neither.
+    /// `follow` brings the view to it as an edit does; `warp` brings the pointer
+    /// too, so a look steps on to the next occurrence under a still hand.
     selection: struct { column: usize, from: usize, to: usize, follow: bool = false, warp: bool = false },
 
-    /// The top of the nth column's view, in pixels. `pending` is the fraction of
-    /// a gesture too small to have moved a whole pixel yet, carried rather than
-    /// kept, so a scroll that only moves the fraction changes nothing on screen.
+    /// `pending` is the fraction of a gesture too small to move a whole pixel
+    /// yet, carried rather than kept.
     scroll: struct { column: usize, to: f32, pending: f32 = 0 },
 
-    /// Where on the nth column's scrollbar thumb a press took hold. Null lets go.
+    /// Where on the thumb a press took hold. Null lets go.
     grab: struct { column: usize, at: ?f32 },
 
-    /// Type text into the nth column over whatever is selected. Carries the
-    /// bytes, so it is also what a paste loops back as.
+    /// Also what a paste loops back as.
     insert: struct { column: usize, text: []const u8 },
 
-    /// The nth column's file has been written: clears the mark on its tab. What
-    /// an `Effect.save` that worked loops back as.
     saved: usize,
 
-    /// Open or close one folder in the tree, open one file in the focused
-    /// column, or move the list. The paths are borrowed from the sidebar's own
-    /// rows, which outlive the call, so nothing here owns memory.
+    /// The paths are borrowed from the sidebar's rows, which outlive the call.
     toggle_dir: []const u8,
     open_file: []const u8,
     scroll_tree: f32,
 
-    /// Whether a key was pressed with the modifier that means "this is a
-    /// command". Cmd on macOS, Ctrl elsewhere -- either is accepted everywhere,
-    /// so one binding is right on every platform and nothing has to ask which
-    /// one it is on.
-    ///
-    /// The letters go by this. The digits do not: see `numbered`.
+    /// The "this is a command" modifier: cmd on macOS, ctrl elsewhere, either
+    /// accepted everywhere. The letters go by this; the digits by `numbered`.
     fn commanded(mod: c.SDL_Keymod) bool {
         return mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL) != 0;
     }
 
-    /// The two things a digit can mean, or neither.
-    ///
-    /// The one family of bindings that is not the same everywhere. macOS holds
-    /// the command key and adds alt for the second of them, because shift is
-    /// not available to it: shift+cmd+3 and shift+cmd+4 are the system's
-    /// screenshots and never reach an application.
-    ///
-    /// Everywhere else it is alt on its own, which is what the tab strip of
-    /// every other window on those machines answers to, and shift for the
-    /// second. Ctrl says nothing about a digit there -- with alt meaning a tab,
-    /// ctrl+1 and ctrl+alt+1 are chords this no longer has an answer for.
+    /// The two things a digit can mean, or neither -- the one family of bindings
+    /// that differs by platform. macOS adds alt for the second because shift is
+    /// taken: shift+cmd+3 and shift+cmd+4 are the system's screenshots and never
+    /// reach an application. Everywhere else it is alt alone -- what every other
+    /// window's tab strip answers to -- and shift for the second.
     fn numbered(mod: c.SDL_Keymod) ?enum { show, split } {
         const alt = mod & c.SDL_KMOD_ALT != 0;
 
@@ -197,25 +143,17 @@ pub const Message = union(enum) {
         return if (mod & c.SDL_KMOD_SHIFT != 0) .split else .show;
     }
 
-    /// `.none` for what nothing here acts on, which is most of what SDL sends.
-    ///
-    /// `density` is how many pixels a window coordinate is worth, and
-    /// `line_height` is how tall a line already is in them. Applying both here
-    /// is what lets everything downstream speak in one unit.
+    /// `.none` for what nothing here acts on. `density` turns a window coordinate
+    /// into pixels; `line_height` is already in them.
     pub fn init(from: *const c.SDL_Event, density: f32, line_height: f32) Message {
-        // Asked before the switch because the type is claimed at runtime and
-        // cannot be one of its cases. The path is borrowed the way a text
-        // event's characters are: `run` lets go of it once this has been acted
-        // on.
+        // Registered event types are claimed at runtime, so they cannot be cases
+        // of the switch below. The path is borrowed; `run` lets go of it once
+        // this has been acted on.
         if (sdl.path_chosen != 0 and from.type == sdl.path_chosen) {
             const owned = from.user.data1 orelse return .none;
             const named: [*:0]const u8 = @ptrCast(owned);
             return .{ .named = std.mem.span(named) };
         }
-
-        // Carries nothing: which paths changed is the library's to have already
-        // folded into its index, and the tree re-reads that whole rather than
-        // acting on one path.
         if (sdl.tree_changed != 0 and from.type == sdl.tree_changed) return .disk_changed;
 
         return switch (from.type) {
@@ -223,14 +161,11 @@ pub const Message = union(enum) {
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => .resized,
             c.SDL_EVENT_SYSTEM_THEME_CHANGED => .themed,
 
-            // Text arrives as finished characters rather than keys; return and
-            // backspace are not text and do not arrive as any.
             c.SDL_EVENT_TEXT_INPUT => .{ .text = std.mem.span(from.text.text) },
             c.SDL_EVENT_KEY_DOWN => key: {
-                // The digits are read off the scancode rather than the keycode:
-                // a modifier turns `1` into something else on most layouts, and
-                // what these mean is the key under the finger. They are
-                // contiguous, so the key is its own index.
+                // Read off the scancode, not the keycode: a modifier turns `1`
+                // into something else on most layouts, and what a digit means is
+                // the key under the finger. They are contiguous, so it indexes.
                 const code = from.key.scancode;
                 if (code >= c.SDL_SCANCODE_1 and code <= c.SDL_SCANCODE_9) {
                     if (numbered(from.key.mod)) |what| {
@@ -249,17 +184,12 @@ pub const Message = union(enum) {
                     c.SDLK_UP => .up,
                     c.SDLK_DOWN => .down,
                     c.SDLK_ESCAPE => .cancel,
-                    c.SDLK_P => if (commanded(from.key.mod))
-                        .find
-                    else
-                        // Plain `p` is a character, and arrives as text input.
-                        .none,
+                    c.SDLK_P => if (commanded(from.key.mod)) .find else .none,
                     c.SDLK_W => if (commanded(from.key.mod)) .close else .none,
                     c.SDLK_B => if (commanded(from.key.mod)) .toggle_tree else .none,
                     c.SDLK_A => if (commanded(from.key.mod)) .select_all else .none,
-                    // The letters are safe to bind: SDL drops a keystroke whose
-                    // text is a control character, so ctrl+C does not also
-                    // arrive as the 0x03 Windows makes of it.
+                    // Safe to bind because SDL drops a control-character
+                    // keystroke: ctrl+C does not also arrive as the 0x03 of it.
                     c.SDLK_X => if (commanded(from.key.mod)) .cut else .none,
                     c.SDLK_C => if (commanded(from.key.mod)) .copy else .none,
                     c.SDLK_V => if (commanded(from.key.mod)) .paste else .none,
@@ -268,19 +198,10 @@ pub const Message = union(enum) {
                 };
             },
 
-            // What the delta counts is the platform's business. macOS reports a
-            // precise device in tenths of a point, so ten times it is how far a
-            // finger moved; everywhere else it is detents, and a detent is
-            // `lines_per_notch` lines. Reading detents as points was ten pixels
-            // a notch on Windows -- two thirds of a line, whatever the display
-            // scale, against the three lines every other window there moves.
-            //
-            // A line is measured in pixels already, so only the point path
-            // wants the density. A Windows touchpad sends a fraction of a
-            // detent and gets that fraction of the lines.
-            //
-            // Negated because SDL counts a wheel positive away from the reader,
-            // which is towards the start of the file.
+            // macOS reports a precise device in tenths of a point, so ten times
+            // it is pixels moved; everywhere else it is detents, each worth
+            // `lines_per_notch` lines already in pixels. Negated because SDL
+            // counts a wheel positive away from the reader.
             c.SDL_EVENT_MOUSE_WHEEL => .{ .wheel = .{
                 .delta = if (macos)
                     -from.wheel.y * 10 * density
@@ -289,17 +210,14 @@ pub const Message = union(enum) {
                 .at = .{ from.wheel.mouse_x * density, from.wheel.mouse_y * density },
             } },
 
-            // The modifier is asked for rather than read off the event: SDL puts
-            // one on a key but not on a button, and shift is the difference
-            // between starting a selection and extending the one already there.
+            // Shift is asked for rather than read off the event: SDL puts a
+            // modifier on a key but not on a button.
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => switch (from.button.button) {
                 c.SDL_BUTTON_LEFT => .{ .press = .{
                     .at = .{ from.button.x * density, from.button.y * density },
                     .extend = c.SDL_GetModState() & c.SDL_KMOD_SHIFT != 0,
                     .clicks = from.button.clicks,
                 } },
-                // Button 3 is acme's look: a search, not a caret, so it says
-                // where it fell and lets the column work out the rest.
                 c.SDL_BUTTON_RIGHT => .{ .look = .{ from.button.x * density, from.button.y * density } },
                 else => .none,
             },
@@ -309,29 +227,23 @@ pub const Message = union(enum) {
             else
                 .none,
 
-            // Exposure belongs to the resize watch, which has already drawn by
-            // the time the message arrives here; acting on it would draw twice.
             else => .none,
         };
     }
 };
 
-/// A line to measure the tests in. The bindings do not care what it is; the
-/// wheel counts its notches in it.
 const a_line: f32 = 15;
 
-/// What means "show the nth file" and "put it beside what is there" on the
-/// platform the tests are running on, so a test can say which binding it means
-/// without saying which keys that is.
+/// The modifiers that show and split a tab on the platform the tests run on, so
+/// a test can name the binding without naming the keys.
 const shows: u16 = if (macos) c.SDL_KMOD_LGUI else c.SDL_KMOD_LALT;
 const splits: u16 = if (macos)
     c.SDL_KMOD_LGUI | c.SDL_KMOD_LALT
 else
     c.SDL_KMOD_LALT | c.SDL_KMOD_LSHIFT;
 
-/// A key going down, as SDL reports one. The scancode is the key's place on the
-/// keyboard and the keycode is what it would type; the bindings below care about
-/// one or the other, never both.
+/// The scancode is the key's place on the keyboard, the keycode what it would
+/// type; the bindings care about one or the other, never both.
 fn pressed(scancode: c_uint, keycode: u32, mod: u16) c.SDL_Event {
     var message: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
     message.type = c.SDL_EVENT_KEY_DOWN;
@@ -367,11 +279,9 @@ test "ctrl still does what cmd does for the letters, on any platform" {
 test "off macOS the digits are alt's, and ctrl has no answer for them" {
     if (macos) return error.SkipZigTest;
 
-    // What used to show a tab.
     const with_ctrl = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LCTRL);
     try std.testing.expectEqual(Message.none, Message.init(&with_ctrl, 1, a_line));
 
-    // And what used to split one.
     const with_both = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LCTRL | c.SDL_KMOD_LALT);
     try std.testing.expectEqual(Message.none, Message.init(&with_both, 1, a_line));
 }
@@ -379,7 +289,7 @@ test "off macOS the digits are alt's, and ctrl has no answer for them" {
 test "on macOS the command key is still what the digits answer to" {
     if (!macos) return error.SkipZigTest;
 
-    // Alt on its own is the binding everywhere else, and nothing here.
+    // Alt alone is the binding everywhere else, and nothing here.
     const alone = pressed(c.SDL_SCANCODE_1, c.SDLK_1, c.SDL_KMOD_LALT);
     try std.testing.expectEqual(Message.none, Message.init(&alone, 1, a_line));
 
