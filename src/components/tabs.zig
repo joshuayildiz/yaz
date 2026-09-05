@@ -15,7 +15,6 @@
 
 const std = @import("std");
 
-const config = @import("../config.zig");
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Model = @import("../model.zig").Model;
@@ -35,12 +34,12 @@ const advance = @import("../text.zig").advance;
 /// The strip is recessed so that a tab lifted out of it reads as lifted. Against
 /// the panel colour it did not: three parts in a hundred is not a difference
 /// anyone can see.
-const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.chip_colour };
-const rule_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.edge_colour };
-const shown_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.background };
-const seam_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.edge_colour };
-const name_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = config.text_colour };
-const other_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = config.muted_colour };
+const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = .chip };
+const rule_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = .edge };
+const shown_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = .background };
+const seam_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = .edge };
+const name_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = .text };
+const other_key: Key = .{ .layer = 3, .pipeline = .glyphs, .colour = .muted };
 
 /// In points, scaled like the font: the air either side of a tab, above and
 /// below the name, and between the mark and the name.

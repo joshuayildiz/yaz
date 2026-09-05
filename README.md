@@ -413,8 +413,9 @@ instead.
 That leaves a strip with nothing in it, which has to be some colour until a
 redraw fills it. A `CALayer`'s background is unset and SDL marks the layer
 opaque, so it composites as black: against a light theme, a dark edge trailing
-the drag. The layer is given `config.background` instead. Measured by growing the
-window with redraws suspended, the strip is 100% black without it and 100% white
+the drag. The layer is given the theme's background instead — set at startup and
+again whenever the system flips light to dark. Measured by growing the window
+with redraws suspended, the strip is 100% black without it and matches the page
 with it.
 
 SDL sets neither property and will not hand over the view it made, so the layer
@@ -768,8 +769,10 @@ every sprite — four more floats uploaded per glyph per frame to repeat one val
 The vertex uniform holds what the whole frame shares, the viewport and the atlas
 size. The fragment stage has one of its own for the colour, because the atlas
 stores coverage rather than colour: a glyph's bitmap says how much of each pixel
-is ink, and nothing about what ink is. That colour, the caret's and the
-background are the theme, and all three live in `config.zig`.
+is ink, and nothing about what ink is. A `Key` carries a colour *role*, not an
+rgba, and the renderer turns it into numbers as it fills each draw — against the
+light or dark palette in `config.zig`, followed from the system, so the whole
+frame flips theme without a single cached glyph being reshaped.
 
 Neither shader knows what a selection, a caret or a scrollbar is; they are quads
 with a colour, and the colour is the only thing the second pipeline is told.

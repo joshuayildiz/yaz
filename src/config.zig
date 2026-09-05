@@ -27,46 +27,86 @@ pub const tab_stops = 4;
 
 // -- Theme --------------------------------------------------------------------
 //
-// The swapchain is a plain UNORM target, so these are the numbers that reach it.
-// Alpha on the text multiplies the glyph's coverage rather than replacing it.
-//
-// The dark pair these replaced: background `.{ 0.07, 0.07, 0.08, 1 }`.
+// Colours are named by what they are *for*, not by what they look like: the look
+// is the theme's, chosen at the last moment in the renderer, so the same frame
+// reads light or dark without anything being rebuilt. The swapchain is a plain
+// UNORM target, so these are the numbers that reach it, and alpha on text
+// multiplies the glyph's coverage rather than replacing it.
 
-pub const background: [4]f32 = .{ 1, 1, 1, 1 };
-pub const text_colour: [4]f32 = .{ 0, 0, 0, 1 };
-pub const caret_colour: [4]f32 = .{ 0, 0, 0, 1 };
-pub const scrollbar_colour: [4]f32 = .{ 0, 0, 0, 0.28 };
+const std = @import("std");
 
-/// The band under selected text. An off-yellow -- amber, warmed away from a
-/// pure yellow -- so a selection catches the eye against the page while black
-/// text still reads through it. Its own colour rather than the finder's row
-/// tint, which agrees quietly with a panel and has a different job.
-pub const text_selection_colour: [4]f32 = .{ 0.99, 0.86, 0.36, 1 };
+/// Light or dark, followed from the system. What decides which palette a
+/// `Colour` resolves against.
+pub const Theme = enum { light, dark };
 
-// The two things yaz draws that are not a file: the healthcheck's card, and
-// the finder's panel. Both are surfaces laid over the window rather than boxes
-// drawn in it, so they carry their own ground and their own edge.
+/// A semantic colour role. A `Key` carries one of these rather than an rgba.
+pub const Colour = enum {
+    background,
+    text,
+    caret,
+    scrollbar,
+    /// The band under selected text. An off-yellow, so a selection catches the
+    /// eye while the text still reads through it.
+    text_selection,
+    /// A surface floating over the file -- the finder's panel, the healthcheck's
+    /// card. `chip` is the recessed strip a tab or a tree row sits in; `edge` the
+    /// hairline round a floating surface.
+    panel,
+    chip,
+    edge,
+    /// The finder's chosen row: a tint, since a panel already has edges to agree
+    /// with.
+    selection,
+    /// Said quietly (a path), and quieter still (a directory, a count).
+    muted,
+    faint,
+    /// A tool that runs, and one that does not.
+    good,
+    bad,
+};
 
-pub const panel_colour: [4]f32 = .{ 0.965, 0.965, 0.975, 1 };
-pub const chip_colour: [4]f32 = .{ 0.855, 0.855, 0.875, 1 };
+const Palette = std.EnumArray(Colour, [4]f32);
 
-/// A hairline round a surface that is floating over something else. Strong
-/// enough to hold an edge against the text behind it, which a rule laid on the
-/// page does not have to do.
-pub const edge_colour: [4]f32 = .{ 0.78, 0.78, 0.81, 1 };
+/// Black text on white.
+const light: Palette = .init(.{
+    .background = .{ 1, 1, 1, 1 },
+    .text = .{ 0, 0, 0, 1 },
+    .caret = .{ 0, 0, 0, 1 },
+    .scrollbar = .{ 0, 0, 0, 0.28 },
+    .text_selection = .{ 0.99, 0.86, 0.36, 1 },
+    .panel = .{ 0.965, 0.965, 0.975, 1 },
+    .chip = .{ 0.855, 0.855, 0.875, 1 },
+    .edge = .{ 0.78, 0.78, 0.81, 1 },
+    .selection = .{ 0.855, 0.865, 0.90, 1 },
+    .muted = .{ 0.40, 0.40, 0.44, 1 },
+    .faint = .{ 0.62, 0.62, 0.66, 1 },
+    .good = .{ 0.13, 0.52, 0.28, 1 },
+    .bad = .{ 0.72, 0.17, 0.17, 1 },
+});
 
-/// The row return would open. A tint rather than a mark, because by the time
-/// there is a panel there are already edges on the screen for it to agree with.
-pub const selection_colour: [4]f32 = .{ 0.855, 0.865, 0.90, 1 };
+/// Off-white on near-black. The greys flip and the selection amber darkens so
+/// light text reads on it.
+const dark: Palette = .init(.{
+    .background = .{ 0.08, 0.08, 0.10, 1 },
+    .text = .{ 0.90, 0.90, 0.93, 1 },
+    .caret = .{ 0.90, 0.90, 0.93, 1 },
+    .scrollbar = .{ 1, 1, 1, 0.28 },
+    .text_selection = .{ 0.46, 0.37, 0.12, 1 },
+    .panel = .{ 0.14, 0.14, 0.17, 1 },
+    .chip = .{ 0.13, 0.13, 0.16, 1 },
+    .edge = .{ 0.30, 0.30, 0.34, 1 },
+    .selection = .{ 0.22, 0.25, 0.34, 1 },
+    .muted = .{ 0.60, 0.60, 0.65, 1 },
+    .faint = .{ 0.45, 0.45, 0.50, 1 },
+    .good = .{ 0.42, 0.80, 0.52, 1 },
+    .bad = .{ 0.95, 0.48, 0.48, 1 },
+});
 
-/// Paths and anything else said quietly.
-pub const muted_colour: [4]f32 = .{ 0.40, 0.40, 0.44, 1 };
-
-/// Quieter still: the directory in front of a filename, and a count nobody is
-/// reading unless they went looking for it.
-pub const faint_colour: [4]f32 = .{ 0.62, 0.62, 0.66, 1 };
-
-/// A tool that runs, and one that does not. Both are said in words as well, so
-/// the colour is a second signal rather than the only one.
-pub const good_colour: [4]f32 = .{ 0.13, 0.52, 0.28, 1 };
-pub const bad_colour: [4]f32 = .{ 0.72, 0.17, 0.17, 1 };
+/// What a role looks like in a theme: the one place a `Colour` becomes numbers,
+/// called by the renderer as it fills each draw.
+pub fn rgba(theme: Theme, colour: Colour) [4]f32 {
+    return (switch (theme) {
+        .light => light,
+        .dark => dark,
+    }).get(colour);
+}

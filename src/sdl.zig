@@ -8,9 +8,22 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const config = @import("./config.zig");
+
 pub const c = @cImport({
     @cInclude("SDL3/SDL.h");
 });
+
+/// The system's light/dark preference, followed for the theme. Unknown -- a
+/// platform with nothing to say -- is taken as light, the default a window opens
+/// on. Read fresh each redraw, and `SDL_EVENT_SYSTEM_THEME_CHANGED` is what asks
+/// for one when it moves.
+pub fn systemTheme() config.Theme {
+    return switch (c.SDL_GetSystemTheme()) {
+        c.SDL_SYSTEM_THEME_DARK => .dark,
+        else => .light,
+    };
+}
 
 /// The event a save dialog's answer comes back on. Zero until `registerEvents`
 /// has run, which is also how anything reading it knows there is one.

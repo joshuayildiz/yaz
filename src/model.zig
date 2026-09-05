@@ -405,8 +405,9 @@ pub const Model = struct {
                 self.running = false;
                 return .{ self, null };
             },
-            // Nothing moved but the room did, which only a redraw answers.
-            .resized => {
+            // Nothing in the model moved -- the room did, or the palette did --
+            // but the window has to be drawn again either way.
+            .resized, .themed => {
                 self.changed();
                 return .{ self, null };
             },

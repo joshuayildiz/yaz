@@ -59,6 +59,9 @@ pub const Message = union(enum) {
 
     quit,
     resized,
+    /// The system flipped between light and dark. Nothing in the model moved,
+    /// but the palette every colour resolves against did, so the window redraws.
+    themed,
 
     text: []const u8,
     newline,
@@ -218,6 +221,7 @@ pub const Message = union(enum) {
         return switch (from.type) {
             c.SDL_EVENT_QUIT => .quit,
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED => .resized,
+            c.SDL_EVENT_SYSTEM_THEME_CHANGED => .themed,
 
             // Text arrives as finished characters rather than keys; return and
             // backspace are not text and do not arrive as any.

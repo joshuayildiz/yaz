@@ -6,6 +6,8 @@
 
 const std = @import("std");
 
+const config = @import("./config.zig");
+const Colour = config.Colour;
 const Sprite = @import("./glyph_atlas.zig").Sprite;
 
 /// Somewhere to put something, in device pixels. The window is divided into
@@ -54,11 +56,12 @@ pub const Key = struct {
     /// whole rule, and it is what makes reordering safe for alpha-blended quads.
     layer: u8,
     pipeline: Pipeline,
-    colour: [4]f32,
+    /// A role, not an rgba: the renderer turns it into numbers against the theme
+    /// as it fills each draw, so the same key reads light or dark.
+    colour: Colour,
 
     pub fn eql(a: Key, b: Key) bool {
-        return a.layer == b.layer and a.pipeline == b.pipeline and
-            std.mem.eql(f32, &a.colour, &b.colour);
+        return a.layer == b.layer and a.pipeline == b.pipeline and a.colour == b.colour;
     }
 
     /// A total order, so runs can be sorted into as few calls as possible.
@@ -69,10 +72,7 @@ pub const Key = struct {
         const bp = @intFromEnum(b.pipeline);
         if (ap != bp) return ap < bp;
 
-        for (a.colour, b.colour) |x, y| {
-            if (x != y) return x < y;
-        }
-        return false;
+        return @intFromEnum(a.colour) < @intFromEnum(b.colour);
     }
 };
 
@@ -153,7 +153,7 @@ test "quads under one key become one run" {
     var painter: Painter = .init(std.testing.allocator);
     defer painter.deinit();
 
-    const key: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = .{ 0, 0, 0, 1 } };
+    const key: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = .text };
     try painter.add(key, .solid(.{ 0, 0 }, .{ 1, 1 }));
     try painter.add(key, .solid(.{ 1, 1 }, .{ 1, 1 }));
 
@@ -165,8 +165,8 @@ test "a change of key starts a run" {
     var painter: Painter = .init(std.testing.allocator);
     defer painter.deinit();
 
-    const text: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = .{ 0, 0, 0, 1 } };
-    const caret: Key = .{ .layer = 1, .pipeline = .solid, .colour = .{ 0, 0, 0, 1 } };
+    const text: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = .text };
+    const caret: Key = .{ .layer = 1, .pipeline = .solid, .colour = .text };
     try painter.add(text, .solid(.{ 0, 0 }, .{ 1, 1 }));
     try painter.add(caret, .solid(.{ 1, 1 }, .{ 1, 1 }));
     try painter.add(text, .solid(.{ 2, 2 }, .{ 1, 1 }));
@@ -175,9 +175,9 @@ test "a change of key starts a run" {
 }
 
 test "sorting gathers the runs a key belongs to" {
-    const text: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = .{ 0, 0, 0, 1 } };
-    const caret: Key = .{ .layer = 1, .pipeline = .solid, .colour = .{ 0, 0, 0, 1 } };
-    const bar: Key = .{ .layer = 2, .pipeline = .solid, .colour = .{ 0, 0, 0, 0.28 } };
+    const text: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = .text };
+    const caret: Key = .{ .layer = 1, .pipeline = .solid, .colour = .text };
+    const bar: Key = .{ .layer = 2, .pipeline = .solid, .colour = .scrollbar };
 
     // Two components' worth, interleaved the way they would be drawn.
     var runs = [_]Run{
@@ -243,7 +243,7 @@ test "a painter clipped to a rect keeps only what falls in it" {
     defer painter.deinit();
     painter.clipTo(.{ .x = 0, .y = 0, .width = 100, .height = 100 });
 
-    const key: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = .{ 0, 0, 0, 1 } };
+    const key: Key = .{ .layer = 0, .pipeline = .glyphs, .colour = .text };
     try painter.add(key, .{ .dest = .{ 10, 10 }, .source = .{ 0, 0 }, .size = .{ 5, 5 } });
     try painter.add(key, .{ .dest = .{ 500, 10 }, .source = .{ 0, 0 }, .size = .{ 5, 5 } });
 

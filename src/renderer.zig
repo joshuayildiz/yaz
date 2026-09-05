@@ -61,6 +61,10 @@ pub const Renderer = struct {
     sampler: *c.SDL_GPUSampler,
     atlas: GlyphAtlas,
 
+    /// Which palette every `Colour` resolves against, followed from the system.
+    /// Read by `present`; the window sets it and asks for a redraw when it moves.
+    theme: config.Theme,
+
     /// The frame's sprites as the vertex shader indexes them, and the staging
     /// buffer they are written through. Both are kept and grown rather than
     /// created per frame: a redraw maps and fills them, which is the whole of
@@ -86,9 +90,11 @@ pub const Renderer = struct {
 
         errdefer c.SDL_ReleaseWindowFromGPUDevice(gpu, window);
 
+        const theme = sdl.systemTheme();
+
         // The layer exists now and not before.
         sdl.anchorContentsTopLeft(window);
-        sdl.setLayerBackground(window, config.background);
+        sdl.setLayerBackground(window, config.rgba(theme, .background));
 
         const device_name = c.SDL_GetStringProperty(
             c.SDL_GetGPUDeviceProperties(gpu),
@@ -142,6 +148,7 @@ pub const Renderer = struct {
             .instances = instances,
             .transfer = transfer,
             .capacity = initial_sprites,
+            .theme = theme,
         };
     }
 
@@ -206,13 +213,14 @@ pub const Renderer = struct {
             return;
         }
 
+        const ground = config.rgba(self.theme, .background);
         const target = std.mem.zeroInit(c.SDL_GPUColorTargetInfo, .{
             .texture = swapchain,
             .clear_color = c.SDL_FColor{
-                .r = config.background[0],
-                .g = config.background[1],
-                .b = config.background[2],
-                .a = config.background[3],
+                .r = ground[0],
+                .g = ground[1],
+                .b = ground[2],
+                .a = ground[3],
             },
             .load_op = c.SDL_GPU_LOADOP_CLEAR,
             .store_op = c.SDL_GPU_STOREOP_STORE,
@@ -262,7 +270,7 @@ pub const Renderer = struct {
                     bound = run.key.pipeline;
                 }
 
-                const ink: Ink = .{ .colour = run.key.colour };
+                const ink: Ink = .{ .colour = config.rgba(self.theme, run.key.colour) };
                 c.SDL_PushGPUFragmentUniformData(cmd, 0, &ink, @sizeOf(Ink));
                 c.SDL_DrawGPUPrimitives(pass, 4, instances_in_call, 0, run.first);
 

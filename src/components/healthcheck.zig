@@ -27,9 +27,9 @@ const tools = @import("../tools.zig");
 
 /// The card is behind everything, the accent and the chip on it, the text on top
 /// of both. Nothing within a layer overlaps.
-const card_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.panel_colour };
-const accent_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.bad_colour };
-const chip_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.chip_colour };
+const card_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = .panel };
+const accent_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = .bad };
+const chip_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = .chip };
 const text_layer = 2;
 
 /// In points, scaled like the font. Multiples of a common step, so the spacing
@@ -50,7 +50,7 @@ const accent = 3;
 /// spaces comes out ragged.
 const Piece = struct {
     text: []u8,
-    colour: [4]f32,
+    colour: config.Colour,
     layout: LineLayout = .{},
 
     fn deinit(self: *Piece, allocator: std.mem.Allocator) void {
@@ -107,27 +107,27 @@ pub const Healthcheck = struct {
             errdefer allocator.free(where);
 
             row.* = .{
-                .name = try piece(allocator, tool.title(), config.text_colour),
+                .name = try piece(allocator, tool.title(), .text),
                 .status = try piece(
                     allocator,
                     if (absent) "not installed" else "ready",
-                    if (absent) config.bad_colour else config.good_colour,
+                    if (absent) .bad else .good,
                 ),
-                .where = .{ .text = where, .colour = config.muted_colour },
+                .where = .{ .text = where, .colour = .muted },
             };
             made += 1;
         }
 
         return .{
-            .heading = try piece(allocator, "yaz can't start", config.text_colour),
+            .heading = try piece(allocator, "yaz can't start", .text),
             .rows = rows,
-            .run = try piece(allocator, "Run", config.muted_colour),
-            .command = try piece(allocator, "yaz setup", config.text_colour),
-            .tail = try piece(allocator, "and start yaz again.", config.muted_colour),
+            .run = try piece(allocator, "Run", .muted),
+            .command = try piece(allocator, "yaz setup", .text),
+            .tail = try piece(allocator, "and start yaz again.", .muted),
         };
     }
 
-    fn piece(allocator: std.mem.Allocator, text: []const u8, colour: [4]f32) !Piece {
+    fn piece(allocator: std.mem.Allocator, text: []const u8, colour: config.Colour) !Piece {
         return .{ .text = try allocator.dupe(u8, text), .colour = colour };
     }
 

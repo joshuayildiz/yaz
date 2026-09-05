@@ -17,7 +17,6 @@
 
 const std = @import("std");
 
-const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
 
@@ -37,13 +36,13 @@ const advance = @import("../text.zig").advance;
 /// ground and the rule cannot share a layer: the ground covers the whole strip,
 /// the rule sits at its right edge, and within a layer the painter reorders, so
 /// the rule would draw under the ground it is meant to sit on.
-const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.chip_colour };
-const rule_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = config.edge_colour };
-const name_key: Key = .{ .layer = 2, .pipeline = .glyphs, .colour = config.text_colour };
+const ground_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = .chip };
+const rule_key: Key = .{ .layer = 1, .pipeline = .solid, .colour = .edge };
+const name_key: Key = .{ .layer = 2, .pipeline = .glyphs, .colour = .text };
 
 /// The folder marker, said quietly: it is a hint about what a row does, not part
 /// of the name.
-const chevron_key: Key = .{ .layer = 2, .pipeline = .glyphs, .colour = config.muted_colour };
+const chevron_key: Key = .{ .layer = 2, .pipeline = .glyphs, .colour = .muted };
 
 /// A folder open, and a folder shut. Two glyphs, shaped once and set down again
 /// for every folder on screen.

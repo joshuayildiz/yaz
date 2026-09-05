@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const config = @import("./config.zig");
 const Renderer = @import("./renderer.zig").Renderer;
 const displayScale = @import("./renderer.zig").displayScale;
 const Model = @import("./model.zig").Model;
@@ -147,6 +148,15 @@ fn App(comptime Component: type) type {
             // a rebuild answers `stale` for itself, wherever it is kept.
             const scale = displayScale(self.renderer.window);
             try self.renderer.atlas.setScale(scale);
+
+            // Read rather than listened for, like the scale: the palette is
+            // resolved fresh each frame, and the strip a resize grows into is
+            // repainted only when the theme actually moves.
+            const theme = sdl.systemTheme();
+            if (theme != self.renderer.theme) {
+                self.renderer.theme = theme;
+                sdl.setLayerBackground(self.renderer.window, config.rgba(theme, .background));
+            }
 
             // The window rather than the swapchain, which is not acquired until
             // `present`. The two can disagree for a frame mid-resize, which is

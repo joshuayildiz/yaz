@@ -8,7 +8,6 @@
 
 const std = @import("std");
 
-const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
 const painter_mod = @import("../painter.zig");
@@ -62,10 +61,10 @@ const newline_stub = 4;
 /// The selection is the one thing under the text. Within a layer a solid quad
 /// is drawn after a glyph, so being underneath is a layer of its own rather
 /// than an ordering.
-const select_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = config.text_selection_colour };
-const glyph_key: Key = .{ .layer = 1, .pipeline = .glyphs, .colour = config.text_colour };
-const caret_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = config.caret_colour };
-const bar_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = config.scrollbar_colour };
+const select_key: Key = .{ .layer = 0, .pipeline = .solid, .colour = .text_selection };
+const glyph_key: Key = .{ .layer = 1, .pipeline = .glyphs, .colour = .text };
+const caret_key: Key = .{ .layer = 2, .pipeline = .solid, .colour = .caret };
+const bar_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = .scrollbar };
 
 /// One column: a file, and the room it has been given.
 ///
