@@ -10,12 +10,9 @@
 const std = @import("std");
 
 const config = @import("../config.zig");
-const message_mod = @import("../message.zig");
-const Message = message_mod.Message;
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Model = @import("../model.zig").Model;
-const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 
 const painter_mod = @import("../painter.zig");

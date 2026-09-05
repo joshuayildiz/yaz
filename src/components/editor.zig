@@ -16,9 +16,6 @@ const std = @import("std");
 
 const Model = @import("../model.zig").Model;
 
-const message_mod = @import("../message.zig");
-const Message = message_mod.Message;
-
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
 const Rect = painter_mod.Rect;
@@ -36,10 +33,6 @@ pub const Editor = struct {
     tree: Tree = .{},
     finder: Finder = .{},
 
-    /// Where the sidebar sits when it is open, kept so a press can be turned
-    /// back into it. Zero-width when it is closed, which no press falls in.
-    sidebar: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-
     pub fn deinit(self: *Editor, allocator: std.mem.Allocator) void {
         self.workbench.deinit(allocator);
         self.tree.deinit(allocator);
@@ -48,12 +41,13 @@ pub const Editor = struct {
 
     /// The tree takes a strip off the left when it is open and the workbench
     /// takes the rest; when it is closed the workbench takes it all. The finder
-    /// lies over everything and wants the whole window to measure from.
+    /// lies over everything and wants the whole window to measure from. Where
+    /// the strip landed is `tree.place`'s to record, on `model.sidebar`, which
+    /// is where a press is tested against it.
     pub fn place(self: *Editor, model: *Model, rect: Rect) !void {
         if (model.sidebar.open) {
             const width = @min(@round(sidebar_width * model.atlas.scale), @round(rect.width / 2));
-            self.sidebar = .{ .x = rect.x, .y = rect.y, .width = width, .height = rect.height };
-            try self.tree.place(model, self.sidebar);
+            try self.tree.place(model, .{ .x = rect.x, .y = rect.y, .width = width, .height = rect.height });
             try self.workbench.place(model, .{
                 .x = rect.x + width,
                 .y = rect.y,
@@ -61,7 +55,6 @@ pub const Editor = struct {
                 .height = rect.height,
             });
         } else {
-            self.sidebar = .{ .x = rect.x, .y = rect.y, .width = 0, .height = rect.height };
             try self.workbench.place(model, rect);
         }
 

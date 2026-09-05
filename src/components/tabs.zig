@@ -19,8 +19,6 @@ const config = @import("../config.zig");
 
 const glyph_atlas = @import("../glyph_atlas.zig");
 const Model = @import("../model.zig").Model;
-const OpenFile = @import("../open_file.zig").OpenFile;
-const GlyphAtlas = glyph_atlas.GlyphAtlas;
 const LineLayout = glyph_atlas.LineLayout;
 
 const painter_mod = @import("../painter.zig");

@@ -95,11 +95,6 @@ fn App(comptime Component: type) type {
         /// worked out. Naming one of them breaks the loop.
         fn perform(self: *Self, effect: Effect) anyerror!void {
             switch (effect) {
-                .batch => |these| {
-                    defer self.model.allocator.free(these);
-                    for (these) |each| try self.perform(each);
-                },
-
                 // Reported rather than returned, all three of them. A clipboard
                 // that will not take text, a file that cannot be written --
                 // read-only, no room, a directory gone -- is something to be

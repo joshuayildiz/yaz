@@ -14,10 +14,6 @@
 const std = @import("std");
 
 const Model = @import("../model.zig").Model;
-const OpenFile = @import("../open_file.zig").OpenFile;
-
-const message_mod = @import("../message.zig");
-const Message = message_mod.Message;
 
 const painter_mod = @import("../painter.zig");
 const Painter = painter_mod.Painter;
@@ -86,14 +82,7 @@ const Views = struct {
 const Stack = VTuple(&.{ Tabs, Views });
 
 pub const Workbench = struct {
-    /// The columns have the keyboard from the moment there is a window. A bar
-    /// is something to press, not something to type into, and the first member
-    /// of a column would otherwise have it by default.
-    stack: Stack = stack: {
-        var built: Stack = .init(.{ .{}, .{} });
-        built.focusOn(Views);
-        break :stack built;
-    },
+    stack: Stack = .init(.{ .{}, .{} }),
 
     pub fn deinit(self: *Workbench, allocator: std.mem.Allocator) void {
         self.stack.deinit(allocator);

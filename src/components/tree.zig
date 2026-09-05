@@ -21,12 +21,9 @@ const config = @import("../config.zig");
 const message_mod = @import("../message.zig");
 const Message = message_mod.Message;
 
-const glyph_atlas = @import("../glyph_atlas.zig");
 const model_mod = @import("../model.zig");
 const Model = model_mod.Model;
 const Row = model_mod.Row;
-const GlyphAtlas = glyph_atlas.GlyphAtlas;
-const LineLayout = glyph_atlas.LineLayout;
 
 const painter_mod = @import("../painter.zig");
 const Key = painter_mod.Key;

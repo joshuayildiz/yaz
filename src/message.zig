@@ -45,16 +45,6 @@ pub const Effect = union(enum) {
     /// flag flipped in the model.
     watch,
     unwatch,
-
-    /// Several of these, in order. Owned, and freed by whoever performs it: the
-    /// slice a caller writes at a return is gone by the time it is walked.
-    batch: []const Effect,
-
-    /// Gathers effects into one, copying the list somewhere that outlives the
-    /// call so a stack literal survives being handed over.
-    pub fn gather(allocator: std.mem.Allocator, these: []const Effect) !Effect {
-        return .{ .batch = try allocator.dupe(Effect, these) };
-    }
 };
 
 /// Already in pixels by the time one of these is made, so nothing that handles
@@ -163,10 +153,6 @@ pub const Message = union(enum) {
     /// Type text into the nth column over whatever is selected. Carries the
     /// bytes, so it is also what a paste loops back as.
     insert: struct { column: usize, text: []const u8 },
-
-    /// Take out what is selected in the nth column, leaving the caret where it
-    /// began. Nothing selected takes nothing out.
-    delete_selection: usize,
 
     /// The nth column's file has been written: clears the mark on its tab. What
     /// an `Effect.save` that worked loops back as.

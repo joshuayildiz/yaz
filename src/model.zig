@@ -559,12 +559,6 @@ pub const Model = struct {
                 self.changed();
                 return .{ self, .{ .copy = which } };
             },
-            .delete_selection => |which| {
-                const file = self.column(which) orelse return .{ self, null };
-                if (!file.hasSelection()) return .{ self, null };
-                _ = try dropSelection(file);
-                file.follow_caret = true;
-            },
             .save => {
                 const which = self.focus;
                 const file = self.column(which) orelse return .{ self, null };
@@ -1399,10 +1393,6 @@ fn moved(model: *Model, change: Message) !?Effect {
 /// need a window; writing a file does not.
 fn performed(model: *Model, effect: Effect) !void {
     switch (effect) {
-        .batch => |these| {
-            defer model.allocator.free(these);
-            for (these) |each| try performed(model, each);
-        },
         .save => |which| {
             const file = model.column(which).?;
             try model.writeOut(file);
@@ -1702,33 +1692,20 @@ test "asking for a name a second time replaces the first" {
     try std.testing.expectEqualStrings(second, file.path.?);
 }
 
-test "deleting the selection takes it and leaves the caret where it began" {
+test "cutting takes the selection and leaves the caret where it began" {
     const allocator = std.testing.allocator;
     var model = try oneOpenFile(allocator, "one two three");
     defer model.deinit();
 
     _ = try moved(&model, .{ .selection = .{ .column = 0, .from = 4, .to = 8 } });
-    _ = try moved(&model, .{ .delete_selection = 0 });
+    // Cut is the one path that still takes a selection out on its own.
+    _ = try moved(&model, .cut);
 
     try std.testing.expectEqualStrings("one three", try whatIsIn(&model));
 
     const file = model.columns.items[0];
     try std.testing.expectEqual(@as(usize, 4), file.cursor);
     try std.testing.expect(!file.hasSelection());
-}
-
-test "deleting with nothing selected takes nothing" {
-    const allocator = std.testing.allocator;
-    var model = try oneOpenFile(allocator, "one two");
-    defer model.deinit();
-
-    _ = try moved(&model, .{ .caret = .{ .column = 0, .at = 3 } });
-    model.dirty = false;
-    _ = try moved(&model, .{ .delete_selection = 0 });
-
-    try std.testing.expectEqualStrings("one two", try whatIsIn(&model));
-    // Nothing moved, so nothing to draw.
-    try std.testing.expect(!model.dirty);
 }
 
 test "update answers with the model and what is left to be done" {

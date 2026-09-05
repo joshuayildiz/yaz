@@ -71,14 +71,8 @@ const bar_key: Key = .{ .layer = 3, .pipeline = .solid, .colour = config.scrollb
 ///
 /// Made where it is needed rather than kept, because there is nothing left in
 /// it to keep. Everything a column remembers between frames -- the caret, the
-/// scroll, the gesture in flight -- is on the file, since a file is shown in at
-/// most one column at a time.
-/// One column: a file, and the room it has been given.
-///
-/// Made where it is needed rather than kept, because there is nothing left in
-/// it to keep. Everything a column remembers between frames -- the caret, the
-/// scroll, the gesture in flight -- is on the file, since a file is shown in at
-/// most one column at a time.
+/// scroll, the gesture in flight, the rect -- is on the file, since a file is
+/// shown in at most one column at a time.
 pub const TextView = struct {
     file: *OpenFile,
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
@@ -136,11 +130,6 @@ pub const TextView = struct {
             // Nothing else reaches a column: the window keeps the keyboard.
             else => return .none,
         }
-    }
-
-    /// Hands the column the room it has.
-    pub fn place(self: *TextView, _: *Model, rect: Rect) void {
-        self.rect = rect;
     }
 
     /// Where the first line's top-left corner sits. Whole pixels, which the

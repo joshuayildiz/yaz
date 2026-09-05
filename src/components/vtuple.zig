@@ -8,15 +8,12 @@
 //! a line is worth is a property of the font at the display's scale rather than
 //! of the layout.
 //!
-//! All of them draw, since none covers another. A press moves the keyboard and
-//! takes the pointer until the release.
+//! All of them draw, since none covers another. It lays out and paints, and
+//! nothing more: which member a pointer fell in is `Model.resolve`'s to work out
+//! from the rects it left.
 
 const std = @import("std");
 
-const message_mod = @import("../message.zig");
-const Message = message_mod.Message;
-
-const GlyphAtlas = @import("../glyph_atlas.zig").GlyphAtlas;
 const Model = @import("../model.zig").Model;
 
 const painter_mod = @import("../painter.zig");
@@ -32,14 +29,8 @@ pub fn VTuple(comptime members: []const type) type {
 
         items: std.meta.Tuple(members),
 
-        /// Which member a keystroke goes to.
-        focus: usize = 0,
-
-        /// Which member has the pointer, from a press until the release.
-        holding: ?usize = null,
-
-        /// What each member was given, so a point can be turned back into the
-        /// member it fell in.
+        /// What each member was given, kept only so a test can read back where
+        /// the bands landed.
         rects: [count]Rect = empty: {
             var none: [count]Rect = undefined;
             for (&none) |*rect| rect.* = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
@@ -52,20 +43,6 @@ pub fn VTuple(comptime members: []const type) type {
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             inline for (0..count) |i| self.items[i].deinit(allocator);
-        }
-
-        /// Hands the keyboard to `T`, for whoever knows something the column
-        /// does not -- that choosing a file in one member is a request to type
-        /// into another.
-        pub fn focusOn(self: *Self, comptime T: type) void {
-            self.focus = comptime indexOf(T);
-        }
-
-        fn indexOf(comptime T: type) usize {
-            inline for (members, 0..) |member, i| {
-                if (member == T) return i;
-            }
-            @compileError(@typeName(T) ++ " is not in this column");
         }
 
         /// Asks every member how tall it wants to be, hands what is left to the
