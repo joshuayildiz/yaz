@@ -128,6 +128,22 @@ pub const Sidebar = struct {
     }
 };
 
+/// Which layout the window is in, swapped at runtime.
+pub const View = enum { sublime, acme };
+
+/// One acme column: a stack of file windows, side by side with other columns.
+/// The acme view's own state, parallel to the sublime `columns`; `view` says
+/// which is live. Every open file is a window in exactly one column.
+pub const Column = struct {
+    panes: std.ArrayList(*OpenFile) = .empty,
+    /// The strip `place` last drew it in, so a press can be turned back into it.
+    rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+
+    fn deinit(self: *Column, allocator: std.mem.Allocator) void {
+        self.panes.deinit(allocator);
+    }
+};
+
 pub const Model = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -152,13 +168,20 @@ pub const Model = struct {
     /// rather than holding it, so a file no column shows is just open and unseen.
     files: std.ArrayList(*OpenFile) = .empty,
 
-    /// Which files are on screen, left to right; each is in `files` too.
+    /// The sublime view's on-screen files, left to right; each is in `files` too.
+    /// Left untouched while the acme view is live, so a toggle finds it as it was.
     columns: std.ArrayList(*OpenFile) = .empty,
 
-    /// The column with the keyboard, and the one with the pointer while a press
-    /// is held. Indices into `columns`.
+    /// The window with the keyboard, and the one with the pointer while a press
+    /// is held. Indices into whichever view's window list is live -- `columns`
+    /// for sublime, the flattened `acme` columns for acme -- via `column`.
     focus: usize = 0,
     holding: ?usize = null,
+
+    /// Sublime by default; swapped at runtime. `acme` is the acme view's columns
+    /// of windows, read only while `view` is `.acme`.
+    view: View = .sublime,
+    acme: std.ArrayList(Column) = .empty,
 
     /// The scratch preview: a file opened from the finder or tree, replaced by
     /// the next one opened rather than kept, so browsing leaves no trail of tabs.
@@ -308,6 +331,10 @@ pub const Model = struct {
             // but the window has to be drawn again either way.
             .resized, .themed => {
                 self.changed();
+                return .{ self, null };
+            },
+            .toggle_view => {
+                try self.switchView();
                 return .{ self, null };
             },
             // A change on disk while nobody is looking is nothing to redraw for:
@@ -500,12 +527,14 @@ pub const Model = struct {
                 if (self.sidebar.open and self.sidebar.rect.contains(what.at))
                     return Tree.resolve(self, msg);
 
-                var nth: usize = 0;
-                for (self.files.items) |file| {
-                    if (file.path == null) continue;
-                    defer nth += 1;
-                    if (file.tab_rect.contains(what.at))
-                        return if (what.clicks >= 2) .{ .pin = nth } else .{ .show = nth };
+                if (self.view == .sublime) {
+                    var nth: usize = 0;
+                    for (self.files.items) |file| {
+                        if (file.path == null) continue;
+                        defer nth += 1;
+                        if (file.tab_rect.contains(what.at))
+                            return if (what.clicks >= 2) .{ .pin = nth } else .{ .show = nth };
+                    }
                 }
 
                 const which = self.columnAt(what.at) orelse return .none;
@@ -540,8 +569,9 @@ pub const Model = struct {
     }
 
     fn columnAt(self: *const Model, at: [2]f32) ?usize {
-        for (self.columns.items, 0..) |file, which| {
-            if (file.rect.contains(at)) return which;
+        var i: usize = 0;
+        while (i < self.windowCount()) : (i += 1) {
+            if (self.column(i).?.rect.contains(at)) return i;
         }
         return null;
     }
@@ -575,10 +605,27 @@ pub const Model = struct {
         try dir.rename(partial, dir, name, self.io);
     }
 
-    /// Public because performing an effect needs it, and that happens outside.
+    /// The nth on-screen window's file, how the messages and the focus address
+    /// one: sublime counts its columns left to right, acme its panes in
+    /// column-major order. Public because performing an effect needs it.
     pub fn column(self: *const Model, which: usize) ?*OpenFile {
-        if (which >= self.columns.items.len) return null;
-        return self.columns.items[which];
+        if (self.view == .sublime) {
+            return if (which < self.columns.items.len) self.columns.items[which] else null;
+        }
+        var n = which;
+        for (self.acme.items) |col| {
+            if (n < col.panes.items.len) return col.panes.items[n];
+            n -= col.panes.items.len;
+        }
+        return null;
+    }
+
+    /// How many windows are on screen in the live view.
+    fn windowCount(self: *const Model) usize {
+        if (self.view == .sublime) return self.columns.items.len;
+        var total: usize = 0;
+        for (self.acme.items) |col| total += col.panes.items.len;
+        return total;
     }
 
     /// Nothing selected leaves the clipboard alone, so cutting nothing does not
@@ -810,24 +857,45 @@ pub const Model = struct {
         self.watch_id = null;
     }
 
-    /// What the focused column is showing, or none before there is a column.
+    /// The file the focused window is showing, or none before there is one.
     pub fn showing(self: *const Model) ?*OpenFile {
-        if (self.focus >= self.columns.items.len) return null;
-        return self.columns.items[self.focus];
+        return self.column(self.focus);
     }
 
     pub fn onScreen(self: *const Model, file: *const OpenFile) bool {
-        for (self.columns.items) |shown| {
-            if (shown == file) return true;
-        }
-        return false;
+        return self.columnOf(file) != null;
     }
 
     fn columnOf(self: *const Model, file: *const OpenFile) ?usize {
-        for (self.columns.items, 0..) |shown, which| {
-            if (shown == file) return which;
+        var i: usize = 0;
+        while (i < self.windowCount()) : (i += 1) {
+            if (self.column(i).? == file) return i;
         }
         return null;
+    }
+
+    /// Swaps the live view. Entering acme lays every open file out as a window so
+    /// nothing is hidden; the sublime `columns` are left as they were for the
+    /// return trip.
+    fn switchView(self: *Model) !void {
+        self.view = if (self.view == .sublime) .acme else .sublime;
+        if (self.view == .acme) try self.layOutAcme();
+        self.focus = 0;
+        self.holding = null;
+        self.changed();
+    }
+
+    /// Rebuilds the acme columns from the open files, so files opened or closed in
+    /// sublime turn up. Two columns, or one when there is little to show.
+    fn layOutAcme(self: *Model) !void {
+        for (self.acme.items) |*col| col.deinit(self.allocator);
+        self.acme.clearRetainingCapacity();
+
+        const cols = @max(1, @min(2, self.files.items.len));
+        try self.acme.appendNTimes(self.allocator, .{}, cols);
+        for (self.files.items, 0..) |file, i| {
+            try self.acme.items[i % cols].panes.append(self.allocator, file);
+        }
     }
 
     pub fn deinit(self: *Model) void {
@@ -837,6 +905,8 @@ pub const Model = struct {
         self.sidebar.deinit(self.allocator);
         if (self.index) |*indexed| indexed.close();
         if (self.library) |*loaded| loaded.close();
+        for (self.acme.items) |*col| col.deinit(self.allocator);
+        self.acme.deinit(self.allocator);
         self.columns.deinit(self.allocator);
         for (self.files.items) |file| {
             file.deinit();
@@ -1632,4 +1702,33 @@ test "reopening a kept file does not turn it back into a preview" {
     try std.testing.expectEqualStrings("scratch-a.zzz", model.showing().?.path.?);
     try std.testing.expect(model.preview == null);
     try std.testing.expect(!isOpen(&model, "scratch-b.zzz"));
+}
+
+test "the acme view makes a window of every open file, sublime of the shown one" {
+    const allocator = std.testing.allocator;
+    var model = try browsing(allocator);
+    defer model.deinit();
+
+    // Two named files kept plus the blank the window opened on: three open, one
+    // shown in sublime.
+    _ = try moved(&model, .{ .open_file = "a.zzz" });
+    _ = try moved(&model, .{ .pin = 0 });
+    _ = try moved(&model, .{ .open_file = "b.zzz" });
+    try std.testing.expectEqual(@as(usize, 1), model.windowCount());
+
+    _ = try moved(&model, .toggle_view);
+    try std.testing.expectEqual(View.acme, model.view);
+    try std.testing.expectEqual(model.files.items.len, model.windowCount());
+    for (model.files.items) |file| try std.testing.expect(model.onScreen(file));
+
+    // Typing reaches the focused window, whichever view addresses it.
+    const focused = model.column(model.focus).?;
+    _ = try moved(&model, .{ .text = "Z" });
+    const text = try focused.buffer.slice(0, focused.buffer.byteLen());
+    try std.testing.expect(text.len > 0 and text[0] == 'Z');
+
+    // Back to sublime finds its one column as it was.
+    _ = try moved(&model, .toggle_view);
+    try std.testing.expectEqual(View.sublime, model.view);
+    try std.testing.expectEqual(@as(usize, 1), model.windowCount());
 }

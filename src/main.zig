@@ -342,6 +342,7 @@ test {
     _ = @import("./components/tabs.zig");
     _ = @import("./components/vtuple.zig");
     _ = @import("./components/workbench.zig");
+    _ = @import("./components/columns.zig");
     _ = @import("./components/tree.zig");
     _ = @import("./glyph_atlas.zig");
 }

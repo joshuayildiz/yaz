@@ -21,6 +21,7 @@ const Rect = painter_mod.Rect;
 const Finder = @import("./finder.zig").Finder;
 const Tree = @import("./tree.zig").Tree;
 const Workbench = @import("./workbench.zig").Workbench;
+const Columns = @import("./columns.zig").Columns;
 
 /// How wide the sidebar is, in points scaled like the font. Never more than half
 /// the window, so a narrow one still leaves the files somewhere to be.
@@ -28,37 +29,40 @@ const sidebar_width = 240;
 
 pub const Editor = struct {
     workbench: Workbench = .init(.{ .{}, .{} }),
+    columns: Columns = .{},
     tree: Tree = .{},
     finder: Finder = .{},
 
     pub fn deinit(self: *Editor, allocator: std.mem.Allocator) void {
         self.workbench.deinit(allocator);
+        self.columns.deinit(allocator);
         self.tree.deinit(allocator);
         self.finder.deinit(allocator);
     }
 
-    /// The tree takes a strip off the left when open, the workbench the rest (or
-    /// all of it), and the finder lies over everything. `tree.place` records
-    /// where the strip landed on `model.sidebar`, where a press is tested.
+    /// The tree takes a strip off the left when open; the live view -- sublime's
+    /// workbench or acme's columns -- takes the rest; the finder lies over
+    /// everything. `tree.place` records the strip on `model.sidebar`.
     pub fn place(self: *Editor, model: *Model, rect: Rect) !void {
+        var body = rect;
         if (model.sidebar.open) {
             const width = @min(@round(sidebar_width * model.atlas.scale), @round(rect.width / 2));
             try self.tree.place(model, .{ .x = rect.x, .y = rect.y, .width = width, .height = rect.height });
-            try self.workbench.place(model, .{
-                .x = rect.x + width,
-                .y = rect.y,
-                .width = rect.width - width,
-                .height = rect.height,
-            });
-        } else {
-            try self.workbench.place(model, rect);
+            body = .{ .x = rect.x + width, .y = rect.y, .width = rect.width - width, .height = rect.height };
         }
 
+        switch (model.view) {
+            .sublime => try self.workbench.place(model, body),
+            .acme => try self.columns.place(model, body),
+        }
         try self.finder.place(model, rect);
     }
 
     pub fn draw(self: *Editor, model: *const Model, painter: *Painter) !void {
-        try self.workbench.draw(model, painter);
+        switch (model.view) {
+            .sublime => try self.workbench.draw(model, painter),
+            .acme => try self.columns.draw(model, painter),
+        }
         if (model.sidebar.open) try self.tree.draw(model, painter);
         try self.finder.draw(model, painter);
     }

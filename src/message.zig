@@ -50,6 +50,8 @@ pub const Message = union(enum) {
     find,
     /// cmd+B.
     toggle_tree,
+    /// cmd+E: swap the sublime and acme views.
+    toggle_view,
     /// Pushed from the library's watcher thread, so it wakes the window rather
     /// than being a keystroke.
     disk_changed,
@@ -187,6 +189,7 @@ pub const Message = union(enum) {
                     c.SDLK_P => if (commanded(from.key.mod)) .find else .none,
                     c.SDLK_W => if (commanded(from.key.mod)) .close else .none,
                     c.SDLK_B => if (commanded(from.key.mod)) .toggle_tree else .none,
+                    c.SDLK_E => if (commanded(from.key.mod)) .toggle_view else .none,
                     c.SDLK_A => if (commanded(from.key.mod)) .select_all else .none,
                     // Safe to bind because SDL drops a control-character
                     // keystroke: ctrl+C does not also arrive as the 0x03 of it.
