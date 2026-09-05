@@ -855,9 +855,9 @@ from `SDL_EVENT_KEY_DOWN` instead. SDL drops a keystroke whose text is a control
 character, and all three of them are one; a tab is 0x09. See
 [Indentation](#indentation) for what one is worth once it is in.
 
-The message for the key is `.tab`, and the one that shows the nth file on the
-bar — which used to have that name — is now `.show`, after the change it has
-always produced.
+The message for the key is `.tab`; the one that shows the nth file on the bar —
+which once had that name — is `.show`, named for what it asks for rather than for
+the key it came from.
 
 Backspace removes **a whole UTF-8 sequence rather than a byte** — one press
 takes off `é` or `漢` entire. Not yet a whole grapheme cluster, though: `e` plus
@@ -958,15 +958,14 @@ without which three selected lines look like three selected pieces of text.
 ### Cut, copy and paste
 
 **cmd+X**, **cmd+C** and **cmd+V** (ctrl elsewhere). The model makes the SDL
-calls: the changes name a column and carry nothing else, since the text is in the
-file already or on the clipboard already, and copying it into a change would be
-one more thing that owned memory.
+calls; the messages carry nothing but which they are and act on the column with
+the keyboard, since the text is in the file already or on the clipboard already.
+What names a column is the `Effect` the model answers with, not the message.
 
-**There is no cut change.** Cutting is a `copy` and a `delete_selection`, and
-cmd+X is a [batch](#layout) of the two — which is
-what a batch is for. A change that copied *and* deleted would be a third thing
-named after what it is used for rather than after what it changes, and `apply`
-would have two changes inside one branch while claiming one message means one.
+**There is no separate cut effect.** Cutting takes the selection out in the model
+and answers with the same `copy` effect cmd+C uses — a delete the model does and
+a copy it leaves for the runtime, rather than a third operation named after what
+it is used for.
 
 Pasted text has its **line endings mended** first. Windows puts CRLF on the
 clipboard and SDL hands it over unchanged, and only `\n` starts a line here, so a
@@ -994,7 +993,7 @@ would only be faithful from one yaz window to another.
 
 **cmd+S writes the focused column's file back** to the path it was opened from
 (ctrl+S elsewhere). The write itself is an `Effect`, so `update` decides *that*
-a file should be written and `App.perform` is what writes it; the `saved` change
+a file should be written and `App.perform` is what writes it; the `saved` message
 that comes back is what clears the mark on the tab. A file nothing has changed is not written at all, so a save
 with nothing to do does not so much as touch the file's timestamp.
 
@@ -1131,35 +1130,38 @@ assets/
   shaders/
 ```
 
-**Nothing imports upwards**, which is the shortest description of the design and
-the order to read it in:
+**Almost nothing imports upwards**, and the order below is the order to read it
+in. The one loop is at the resolve boundary: `model.zig` reaches back into
+`text_view.zig` and `tree.zig` for the geometry that turns a pointer into a
+place, and those import the `Model` in turn. Everything else points one way.
 
 | | imports |
 | --- | --- |
 | `config.zig`, `sdl.zig` | nothing of ours |
 | `message.zig` | sdl |
 | `glyph_atlas.zig` | config, sdl |
-| `open_file.zig` | glyph_atlas |
+| `open_file.zig` | glyph_atlas, painter |
 | `painter.zig` | glyph_atlas |
 | `text.zig` | glyph_atlas, painter |
 | `renderer.zig` | config, sdl, glyph_atlas, painter |
 | `fff.zig` | nothing of ours |
 | `tools.zig` | fff |
-| `model.zig` | fff, glyph_atlas, open_file, tools |
-| `components/vtuple.zig` | model, message, painter |
-| `components/tabs.zig` | config, model, message, glyph_atlas, open_file, painter, text |
+| `model.zig` | fff, glyph_atlas, open_file, tools, sdl, message, painter, text_view, tree |
+| `components/vtuple.zig` | model, painter |
+| `components/tabs.zig` | config, model, glyph_atlas, painter, text |
+| `components/tree.zig` | config, model, message, painter, text |
 | `components/text_view.zig` | config, model, message, glyph_atlas, open_file, painter, text |
-| `components/healthcheck.zig` | config, model, message, glyph_atlas, painter, text, tools |
-| `components/finder.zig` | config, model, message, glyph_atlas, painter, text, vtuple |
-| `components/editor.zig` | model, message, painter, finder, workbench |
-| `components/workbench.zig` | model, message, open_file, painter, tabs, text_view, vtuple |
+| `components/healthcheck.zig` | config, model, glyph_atlas, painter, text, tools |
+| `components/finder.zig` | config, model, glyph_atlas, painter, text, vtuple |
+| `components/editor.zig` | model, painter, finder, tree, workbench |
+| `components/workbench.zig` | model, painter, tabs, text_view, vtuple |
 | `main.zig` | all of the above |
 
 **The only components that import another are the ones whose whole job is
 composition.** A tuple or a list holds members and forwards to them; the
 workbench is a bar over a row of columns and the finder is a query over a list
-of results. Nothing else knows another component exists: each is given a rect,
-told what happened in it and asked for its quads.
+of results. Nothing else knows another component exists: each is given a rect and
+asked for its quads, and nothing more.
 
 **Every one of those calls takes a `Model` first.** It carries the allocator,
 `std.Io`, the glyph atlas, the files that are open but not on screen, and
@@ -1167,29 +1169,31 @@ whether the window is still up. Nothing stores it -- a component that kept a
 copy of the allocator would have a second one to keep in step with the first,
 which is what this exists to stop, and it is why `deinit` takes one too.
 
-Where to start depends on what you are changing: what a keystroke does is
-`TextView.update`; where text lands on screen is `TextView.draw`; what a glyph
-looks like is `glyph_atlas.zig`; how big or what colour anything is is
+Where to start depends on what you are changing: what a keystroke or a click
+does is `Model.update`; where text lands on screen is `TextView.draw`; what a
+glyph looks like is `glyph_atlas.zig`; how big or what colour anything is is
 `config.zig`.
 
-**SDL stops at the event loop.** `Message.init` turns what SDL sends into what
-happened — quit, resized, typed text, a key, a wheel delta, a press, a move, a
-release — and answers null for the rest, which is most of it. Window coordinates
-become pixels there, once, so nothing downstream knows what a display scale is.
+**SDL stops at the event loop.** `Message.init` turns what SDL sends into a
+message — quit, resized, typed text, a key, a wheel delta, a press, a move, a
+release — and answers `.none` for the rest, which is most of it. Window
+coordinates become pixels there, once, so nothing downstream knows what a display
+scale is.
 
-What comes out goes to `App` first, which acts on the two events that belong to
-the window itself — quit and resize — and hands everything else to the one
-component it was given. It asks no questions about what that component is.
-Nothing below takes an `SDL_Event`.
+What comes out goes to `App`, which hands it straight to `Model.update` and does
+whatever the model leaves behind. It asks no questions about the message and none
+about the component; nothing below takes an `SDL_Event`.
 
-Every component shares the same three: `place` to be given room, `update` to be
-told what happened, and `draw` to add quads to a painter. A parent calls them on
-its children, so the tree is the type system rather than a vtable.
+Every component is two calls: `place` to be given room and `draw` to add quads to
+a painter. A parent calls them on its children, so the tree is the type system
+rather than a vtable. There is no `update` — what a message *does* is the model's,
+not a component's; a component only lays out and paints.
 
-There used to be a fourth. The atlas rebuilt at a different scale is the one
-thing no cached layout survives, and every component that held one had an
-`invalidate` to drop it — twelve of them, half being parents forwarding the call
-and two being empty because the interface demanded the method. **The atlas
+There used to be more. One was `update`, which the model swallowed when it took
+over resolving. Another was `invalidate`: the atlas rebuilt at a different scale
+is the one thing no cached layout survives, and every component that held one had
+an `invalidate` to drop it — twelve of them, half being parents forwarding the
+call and two being empty because the interface demanded the method. **The atlas
 stamps its work instead.** It carries a `generation`, bumped on every rebuild;
 every `LineLayout` carries the generation it was shaped by; and a cache is worth
 drawing only if `atlas.stale(entry)` says no. Nobody is told anything, so
@@ -1204,51 +1208,49 @@ The one cache that is not a `LineLayout` is the finder's list of rows, which
 memoises on which set of matches it drew. That takes the generation as one more
 part of its key.
 
-**`update` is handed the model to read and nothing more.** Its signature says
-so — `*const Model` — and what it returns is a `Change`: the change it worked
-out should happen, named rather than made. `Model.update` is the other half, and
-it is the only place in the program where any of this moves.
+**`Model.update` is the one place anything moves**: `fn update(start: Model, msg:
+Message) !struct { Model, ?Effect }`. The model comes back rather than being
+written through a pointer, so `App` is the one place it is put down again. Most of
+what it holds is behind a pointer — a document is a `*OpenFile` and its text a gap
+buffer — so this is value semantics over a handle rather than over the state, and
+there is only ever one live copy. What it buys is that nothing can move the model
+except by being handed the result.
 
-**`update` takes the model and answers with it**: `fn update(start: Model,
-change: Change) !struct { Model, ?Effect }`. The model comes back rather than
-being written through a pointer, and `App.change` is the one place it is put
-down again. Most of what a model holds is behind a pointer — a document is a
-`*OpenFile` and its text is a gap buffer — so this is value semantics over a
-handle rather than over the state, and there is only ever one live copy. What it
-buys is that nothing can move the model except by being handed the result.
+**A raw pointer message cannot be acted on until it is resolved.** A press
+carries a pixel, not a place: which column, which byte, which tab, which folder
+row is a question about the layout. So `update`, given a press, a move, a wheel or
+a look, hands it to `Model.resolve`, which reads the layout `place` left and
+answers with the message that says what was under the pointer — a `caret`, a
+`selection`, a `show`, a `toggle_dir` — and then calls itself with that. A click
+becomes a caret without anything outside the model knowing where things were
+drawn, and each resolved message is testable apart from the geometry behind it.
+
+That is why the layout lives on the model. A column's rect and its tab's rect are
+on the `OpenFile`; the tab bar with its mark and the folded tree are on the
+`Model`; `place` writes all of it and `draw` only reads. `Model.resolve` reaches
+a column by making a `TextView` on the spot from the file's rect and asking it —
+the geometry is `TextView.resolve` and `Tree.resolve`, kept next to the drawing
+that shares the same arithmetic.
 
 **An `Effect` is what the model could not do itself**: the clipboard, the
 filesystem, a dialog. `update` answers with one rather than performing it, and
-`App.perform` is what performs it — which is why no branch of `update` reaches
-for SDL or for a file, and why it can be tested without either. Whatever doing
-one produces comes back in as a `Change`: a paste reads the clipboard and then
-becomes an ordinary `insert`, and a write becomes a `saved` that clears the mark
-on the tab.
+`App.perform` is what performs it — which is why no branch of `update` reaches for
+SDL or for a file, and why it can be tested without either. Whatever performing
+one produces comes back in as a message: a paste reads the clipboard and becomes
+an ordinary `insert`, and a write becomes a `saved` that clears the mark on the
+tab.
 
-That is what makes the redraw question answer itself. A change is a change to
-the model, so
-the frame is asked for once, in `apply`, rather than by every component
-remembering to say it changed something; `none` is the absence of a change
-and leaves the window alone.
+That is what makes the redraw question answer itself. Every branch that changes
+anything asks for a frame once, at the foot of `update`, rather than each caller
+remembering to; `.none` is the absence of a change and leaves the window alone.
+There is no damage tracking — the whole window is redrawn — but presenting blocks
+on the swapchain, so the question worth asking is only ever *whether* to draw.
 
-**`batch` is one message meaning several changes**, walked in order. It is the
-one change that owns anything, and it cannot avoid it: a union may not hold an
-array of itself, so several changes can only travel as a slice, and a slice of a
-list written at the point of return is on a stack frame that has gone by the
-time `apply` reads it. That compiles, warns about nothing, and reads rubbish
-— changes carry runtime values like a column index, so there is nothing
-comptime enough to be placed somewhere lasting. `Change.gather` copies the list
-into the model's allocator and `apply` frees it once it has walked it, so a
-batch is handed over rather than lent, and building one by hand is the mistake
-`gather` exists to stop. A batch of nothing asks for no frame, and a batch
-inside a batch is walked and freed like any other. There is no damage tracking — the whole window is
-redrawn — but presenting blocks on the swapchain, so the question worth asking
-is only ever *whether* to draw.
-
-The one seam is `place`. Fitting a file to the room a column has — clamping a
-scroll to a shorter column, bringing the caret back on screen after typing —
-needs a height that nothing knew when the keystroke arrived, so layout is
-allowed to write that much back. Everything else goes through a change.
+`place` is the mutable pass, and it runs before anything reads. It fits each file
+to the room its column has — clamping a scroll to a shorter column, bringing the
+caret back on screen after typing — and shapes and measures everything `draw`
+will paint, writing the rects and glyphs the model then reads. `draw` only reads;
+a message moves everything else.
 
 **A window is one component, and that component is the whole of what is on
 screen.** With the library missing it is a `Healthcheck` and nothing else is
@@ -1266,23 +1268,22 @@ That is why the finder can be two small surfaces with the code still at full
 contrast either side of them — the file underneath is genuinely still being
 drawn — and why a click cannot reach a column the panel is covering.
 
-**A `Change` owns no memory.** A tab is named by where it sits on the bar and
-a match by the fact that it is the selected one, so nothing here is a path that
-somebody has to free — which is the whole of what the finder and the workbench
-have to say to each other. The finder knows a file was picked and nothing about
-columns; `apply` knows what a picked file means and nothing about panels.
+**A message owns almost no memory.** A tab is named by where it sits on the bar
+and a match by being the selected one, so nothing the finder or the workbench
+says is a path somebody has to free. The finder knows a file was picked and
+nothing about columns; the model knows what a picked file means and nothing about
+panels.
 
-Some changes carry what only the component could work out. A click becomes the
-byte offset it landed on, a wheel becomes the whole pixel to scroll to and the
-fraction left over, because resolving either needs the layout and the room.
+The resolved messages carry what only the layout could work out. A click becomes
+the byte offset it landed on, a wheel the whole pixel to scroll to and the
+fraction left over — which is exactly what `resolve` reads the room to answer.
 
 **The columns divide the window between them.** They sit side by side in equal
-shares, *all of them draw* because none covers another, and *the one with the
-keyboard is told what happened*. A press moves the keyboard and takes the
-pointer until the release, so a scrollbar drag that wanders out of the column it
-began in stays with it. Only the pointer is caught that way — typing goes to the
-focused column even mid-drag, and the wheel turns whatever it is under without
-deciding where typing lands.
+shares and *all of them draw*, because none covers another. A press resolves to
+the column it fell in and moves the keyboard there; the model holds which column
+has the pointer, so a scrollbar drag that wanders out of the column it began in
+stays with it. Typing goes to the focused column even mid-drag, and the wheel
+turns whatever it is under without deciding where typing lands.
 
 Focus is not drawn in the columns themselves — every view shows the same caret —
 but the bar above them says it twice over: a tab is lifted out of the strip when
@@ -1294,10 +1295,11 @@ column the file landed in, so a tab press ends with the document ready to be
 typed into rather than with the bar holding it.
 
 `Tabs` lays its own tabs out rather than dividing the bar evenly, because a row
-of equal shares is the wrong shape for a row of words: each tab is as wide as
-the name in it. It answers a press with `Change.show` and the tab's place on the
-bar, which is exactly what the digit binding means, so a tab reached either way
-says the same thing and neither has to name a file.
+of equal shares is the wrong shape for a row of words: each tab is as wide as the
+name in it, and `place` records where each landed on the file it names. A press
+resolves to `.show` and the tab's place on the bar, which is exactly what the
+digit binding means, so a tab reached either way says the same thing and neither
+has to name a file.
 
 **`VTuple` stacks members top to bottom, and is the one place where they are
 not all the same size.** Each is asked how tall it wants to be, and one that
@@ -1315,10 +1317,12 @@ The view therefore names no SDL type and makes no SDL call. It does reach
 `sdl.zig` through `message.zig`, so the separation is one of vocabulary rather than
 of linkage.
 
-`open_file.zig` is one file the window has open: the text, where its lines
-begin, what each line shaped to, the name on its tab, and where its reader was.
-It does not know that text gets drawn, and holds no coordinates but its own,
-which is why it can be read and tested on its own.
+`open_file.zig` is one file the window has open: the text, where its lines begin,
+what each line shaped to, the name on its tab, where its reader was, and the room
+its column and its tab were last given. A file is shown in at most one column, so
+those two rects have one answer each and live here with the caret and the scroll
+— `Model.resolve` reads them to turn a press into a place, and they are stale
+while the file is off screen, which no press reaches.
 
 The layout cache is there rather than in the view because it depends on a line's
 bytes and the atlas scale and on nothing a view has, which is also what lets
@@ -1330,12 +1334,12 @@ asked without the other — shaping decides which glyphs exist, rasterizing deci
 where they land. It shapes one line at a time, into that line's own coordinates,
 and knows nothing about files.
 
-`components/text_view.zig` points at an open file and adds what a *view* of one
-has: a scrollbar, the rect everything is measured from, and the gesture in
-progress. It is the only thing that turns a click into a byte offset. Pointing
-it at another file hands nothing back and drops nothing — the file it was
-showing stays open, which is why looking away from one and returning to it
-reshapes nothing and the caret is where you left it.
+`components/text_view.zig` is a *view* of an open file: it draws the text and the
+scrollbar, and turns a click into a byte offset when the model asks. It keeps
+nothing between frames — the rect, the scroll, the gesture in progress are all on
+the file — so it is made on the spot wherever one is needed and dropped again,
+which is why looking away from a file and returning to it reshapes nothing and
+the caret is where you left it.
 
 `renderer.zig` is handed a finished array of quads and knows nothing else: not
 what they spell, not which line each came from, not that shaping happened.
